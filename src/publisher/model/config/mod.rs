@@ -57,9 +57,8 @@ pub struct Config {
     /// A cert will be generated and stored here if one doesn't already exist. Custom
     /// format (not pem).
     pub cert_path: PathBuf,
-    /// Address other nodes will connect to to retrieve data.  Use this if this doesn't
-    /// match the bind address (ex: binding to private ip, but forwarded from public
-    /// ip) - defaults to `bind_addr`.
-    pub advertise_addr: Option<SocketAddr>,
+    /// URL other nodes will connect to to retrieve data - should match however to
+    /// reach bind_addr externally (i.e. http/https, public instead of local ip)
+    pub advertise_addr: SocketAddr,
     pub data: DataConfig,
 }

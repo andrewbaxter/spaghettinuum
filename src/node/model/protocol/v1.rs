@@ -14,6 +14,7 @@ use std::{
         IpAddr,
         Ipv4Addr,
         SocketAddr,
+        Ipv6Addr,
     },
     fmt::Display,
 };
@@ -42,6 +43,7 @@ impl<'a, B: Serialize> TempChallengeSigBody<'a, B> {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
+#[serde(rename_all = "snake_case")]
 pub enum FindMode {
     Nodes(NodeIdentity),
     Put(Identity),
@@ -56,13 +58,21 @@ pub struct FindRequest {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum SerialAddr {
     V4(SerialIpv4),
+    V6(SerialIpv6),
 }
 
 #[derive(Serialize, Deserialize)]
 struct SerialIpv4 {
     addr: [u8; 4],
+    port: u16,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SerialIpv6 {
+    addr: [u16; 8],
     port: u16,
 }
 
@@ -79,13 +89,16 @@ impl Serialize for Addr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer {
-        Serialize::serialize(&SerialAddr::V4(match self.0.ip() {
-            IpAddr::V4(ip) => SerialIpv4 {
+        Serialize::serialize(&match self.0.ip() {
+            IpAddr::V4(ip) => SerialAddr::V4(SerialIpv4 {
                 addr: ip.octets(),
                 port: self.0.port(),
-            },
-            IpAddr::V6(_) => panic!(""),
-        }), serializer)
+            }),
+            IpAddr::V6(ip) => SerialAddr::V6(SerialIpv6 {
+                addr: ip.segments(),
+                port: self.0.port(),
+            }),
+        }, serializer)
     }
 }
 
@@ -97,6 +110,23 @@ impl<'a> Deserialize<'a> for Addr {
             SerialAddr::V4(addr) => Addr(
                 SocketAddr::new(
                     IpAddr::V4(Ipv4Addr::new(addr.addr[0], addr.addr[1], addr.addr[2], addr.addr[3])),
+                    addr.port,
+                ),
+            ),
+            SerialAddr::V6(addr) => Addr(
+                SocketAddr::new(
+                    IpAddr::V6(
+                        Ipv6Addr::new(
+                            addr.addr[0],
+                            addr.addr[1],
+                            addr.addr[2],
+                            addr.addr[3],
+                            addr.addr[4],
+                            addr.addr[5],
+                            addr.addr[6],
+                            addr.addr[7],
+                        ),
+                    ),
                     addr.port,
                 ),
             ),
@@ -137,6 +167,7 @@ impl Value {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
 pub enum FindResponseModeBody {
     Nodes(Vec<NodeInfo>),
     Value(Value),
@@ -168,6 +199,7 @@ pub struct ChallengeResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Message {
     FindRequest(FindRequest),
     FindResponse(FindResponse),

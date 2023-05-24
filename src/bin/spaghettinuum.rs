@@ -27,14 +27,19 @@ use spaghettinuum::{
 #[derive(Parser)]
 struct Args {
     pub config: PathBuf,
+    #[arg(long)]
+    pub debug: bool,
 }
 
 #[tokio::main]
 async fn main() {
-    let log = Log::new(loga::Level::Info);
-
-    async fn inner(log: &Log) -> Result<(), loga::Error> {
+    async fn inner() -> Result<(), loga::Error> {
         let args = Args::parse();
+        let log = &Log::new(if args.debug {
+            loga::Level::Debug
+        } else {
+            loga::Level::Info
+        });
         let config = {
             let log = log.fork(ea!(path = args.config.to_string_lossy()));
             serde_json::from_slice::<Config>(
@@ -57,7 +62,7 @@ async fn main() {
         return Ok(());
     }
 
-    match inner(&log).await {
+    match inner().await {
         Ok(_) => { },
         Err(e) => {
             loga::fatal(e);

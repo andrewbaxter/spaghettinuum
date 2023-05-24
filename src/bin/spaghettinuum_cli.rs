@@ -33,8 +33,12 @@ use openpgp_card_sequoia::{
     Card,
 };
 use poem::{
-    http::Uri,
+    http::{
+        Uri,
+    },
+    async_trait,
 };
+use reqwest::Response;
 use serde::{
     Serialize,
     Deserialize,
@@ -49,7 +53,10 @@ use spaghettinuum::{
             Config,
         },
         self,
-        publish::v1::KeyValues,
+        publish::v1::{
+            KeyValues,
+            Value,
+        },
     },
     utils::{
         card,
@@ -187,6 +194,46 @@ struct IdentitySecretFile {
     secret: IdentitySecret,
 }
 
+#[async_trait]
+trait ReqwestCheck {
+    async fn check(self) -> Result<(), loga::Error>;
+    async fn check_text(self) -> Result<String, loga::Error>;
+}
+
+#[async_trait]
+impl ReqwestCheck for Result<Response, reqwest::Error> {
+    async fn check(self) -> Result<(), loga::Error> {
+        let resp = self?;
+        let status = resp.status();
+        let body = resp.bytes().await?.to_vec();
+        if !status.is_success() {
+            return Err(
+                loga::Error::new("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+            );
+        }
+        return Ok(());
+    }
+
+    async fn check_text(self) -> Result<String, loga::Error> {
+        let resp = self?;
+        let status = resp.status();
+        let body = resp.bytes().await?.to_vec();
+        if !status.is_success() {
+            return Err(
+                loga::Error::new("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+            );
+        }
+        return Ok(
+            String::from_utf8(
+                body.clone(),
+            ).context(
+                "Failed to parse response as bytes",
+                ea!(status = status, body = String::from_utf8_lossy(&body)),
+            )?,
+        );
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let log = Log::new(loga::Level::Info);
@@ -213,7 +260,7 @@ async fn main() {
                 reqwest::ClientBuilder::new()
                     .build()
                     .unwrap()
-                    .post(format!("{}/identities", config.server))
+                    .post(format!("{}identity", config.server))
                     .json(
                         &publisher::model::protocol::admin::RegisterIdentityRequest::Local(
                             publisher::model::protocol::admin::RegisterIdentityRequestLocal {
@@ -223,8 +270,9 @@ async fn main() {
                         ),
                     )
                     .send()
-                    .await?
-                    .error_for_status()?;
+                    .await
+                    .check()
+                    .await?;
             },
             Args::ListCards => {
                 for card in PcscBackend::cards(None).log_context(log, "Failed to list smart cards", ea!())? {
@@ -255,7 +303,7 @@ async fn main() {
                 reqwest::ClientBuilder::new()
                     .build()
                     .unwrap()
-                    .post(format!("{}/identities", config.server))
+                    .post(format!("{}identity", config.server))
                     .json(
                         &crate::publisher::model::protocol::admin::RegisterIdentityRequest::Card(
                             crate::publisher::model::protocol::admin::RegisteryIdentityRequestCard {
@@ -264,51 +312,50 @@ async fn main() {
                         ),
                     )
                     .send()
-                    .await?
-                    .error_for_status()?;
+                    .await
+                    .check()
+                    .await?;
             },
             Args::UnregisterIdentity(config) => {
                 reqwest::ClientBuilder::new()
                     .build()
                     .unwrap()
-                    .delete(format!("{}/identities/{}", config.server, config.identity))
+                    .delete(format!("{}identity/{}", config.server, config.identity))
                     .send()
-                    .await?
-                    .error_for_status()?;
+                    .await
+                    .check()
+                    .await?;
             },
             Args::Publish(config) => {
                 reqwest::ClientBuilder::new()
                     .build()
                     .unwrap()
-                    .post(format!("{}/publish/{}", config.server, config.identity))
+                    .post(format!("{}publish/{}", config.server, config.identity))
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
                     .body(fs::read(&config.data).log_context(log, "Failed to open data to publish", ea!())?)
                     .send()
-                    .await?
-                    .error_for_status()?;
+                    .await
+                    .check()
+                    .await?;
             },
             Args::Query(config) => {
                 println!(
                     "{}",
-                    String::from_utf8(
-                        reqwest::ClientBuilder::new()
-                            .build()
-                            .unwrap()
-                            .get(
-                                format!(
-                                    "{}/{}?{}",
-                                    config.server,
-                                    config.identity,
-                                    config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
-                                ),
-                            )
-                            .send()
-                            .await?
-                            .error_for_status()?
-                            .bytes()
-                            .await
-                            .log_context(log, "Failed reading response from server", ea!())?
-                            .to_vec(),
-                    ).log_context(log, "Couldn't read response as text", ea!())?
+                    reqwest::ClientBuilder::new()
+                        .build()
+                        .unwrap()
+                        .get(
+                            format!(
+                                "{}/{}?{}",
+                                config.server,
+                                config.identity,
+                                config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
+                            ),
+                        )
+                        .send()
+                        .await
+                        .check_text()
+                        .await?
                 );
             },
             Args::GenerateConfig(config) => {
@@ -346,8 +393,8 @@ async fn main() {
                                 match IpAddr::from_str(
                                     &resp,
                                 ).log_context(&log, "Unable to parse reported external ip", ea!(body = resp))? {
-                                    IpAddr::V4(i) => Some(SocketAddr::V4(SocketAddrV4::new(i, PORT))),
-                                    IpAddr::V6(i) => Some(SocketAddr::V6(SocketAddrV6::new(i, PORT, 0, 0))),
+                                    IpAddr::V4(i) => SocketAddr::V4(SocketAddrV4::new(i, PORT)),
+                                    IpAddr::V6(i) => SocketAddr::V6(SocketAddrV6::new(i, PORT, 0, 0)),
                                 }
                             },
                             data: match c {
@@ -365,10 +412,10 @@ async fn main() {
                                             secret: SecretType::Local(local.secret),
                                             kvs: {
                                                 let mut kvs = HashMap::new();
-                                                kvs.insert(
-                                                    "somekey".to_string(),
-                                                    (3600u32, "somevalue".to_string()),
-                                                );
+                                                kvs.insert("somekey".to_string(), Value {
+                                                    ttl: 3600u32,
+                                                    data: "somevalue".to_string(),
+                                                });
                                                 KeyValues(kvs)
                                             },
                                         });
@@ -400,10 +447,10 @@ async fn main() {
                                             secret: SecretType::Card(card.clone()),
                                             kvs: {
                                                 let mut kvs = HashMap::new();
-                                                kvs.insert(
-                                                    "somekey".to_string(),
-                                                    (3600u32, "somevalue".to_string()),
-                                                );
+                                                kvs.insert("somekey".to_string(), Value {
+                                                    ttl: 3600u32,
+                                                    data: "somevalue".to_string(),
+                                                });
                                                 KeyValues(kvs)
                                             },
                                         });

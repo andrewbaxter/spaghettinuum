@@ -5,11 +5,14 @@ use std::{
     },
     net::{
         SocketAddr,
+        Ipv6Addr,
+        Ipv4Addr,
     },
     path::PathBuf,
     collections::HashMap,
     fs,
     io::ErrorKind,
+    str::FromStr,
 };
 use chrono::{
     Utc,
@@ -85,7 +88,7 @@ use crate::{
         },
         publish::{
             v1::{
-                Value,
+                ResolveValue,
             },
             self,
             ResolveKeyValues,
@@ -97,89 +100,31 @@ use crate::{
     utils::{
         ResultVisErr,
         VisErr,
+        standard::{
+            KEY_DNS_A,
+            KEY_DNS_AAAA,
+            KEY_DNS_CNAME,
+            KEY_DNS_NS,
+            KEY_DNS_PTR,
+            KEY_DNS_SOA,
+            KEY_DNS_TXT,
+            KEY_DNS_MX,
+            COMMON_KEYS_DNS,
+        },
     },
     aes2,
 };
 
 pub mod db;
 
-const KEY_DNS_A: &'static str = "dsf9oyfz83fatqpscp9yt8wkuw";
-const KEY_DNS_AAAA: &'static str = "wwfukygd6tykiqrmi3jp6qnoiw";
-const KEY_DNS_CNAME: &'static str = "gi3saqn8pfn7tmwbd4pxj3tour";
-const KEY_DNS_MX: &'static str = "zm5zzaotiib4bbqg9befbr1kro";
-const KEY_DNS_NS: &'static str = "ic6hcun6zjnqtxe5ft8i6wox4w";
-const KEY_DNS_PTR: &'static str = "t7ou17qiefnozbe1uef7ym5hih";
-const KEY_DNS_SOA: &'static str = "371z1qxg5jnftcjr3g9x7ihzdo";
-const KEY_DNS_SRV: &'static str = "pyte8mamfbgijefzc8a47gcq4h";
-const KEY_DNS_TXT: &'static str = "rht6tfoc4pnbipesgjejkzeeta";
-const KEY_DNS_NSEC: &'static str = "o5qooyyh4pfo7pm8j8z5aaxtwo";
-const KEY_DNS_NSEC3: &'static str = "x18s8kzedpgy9k9yhm46gxjdky";
-const KEY_DNS_NSEC3PARAM: &'static str = "k1qkz4rn5p8gp8qmurt7ohijuy";
-const KEY_DNS_RRSIG: &'static str = "xdgo9zk4p7ntxjuk1tomoqpfja";
-const KEY_DNS_TLSA: &'static str = "75raif7nhtf87gxqf7h4binmdr";
-const KEY_DNS_DNSKEY: &'static str = "wngk1zrw4p8ojbkbpxzdqk6wwy";
-const KEY_DNS_DS: &'static str = "wjfjjd8ysiyb5xdgmmm514e64c";
-const KEY_DNS_CDNSKEY: &'static str = "5m9p4wwsjprtxpzkp7s4ctk3hh";
-const COMMON_KEYS_DNS: &[&'static str] =
-    &[
-        KEY_DNS_A,
-        KEY_DNS_AAAA,
-        KEY_DNS_CNAME,
-        KEY_DNS_MX,
-        KEY_DNS_NS,
-        KEY_DNS_PTR,
-        KEY_DNS_SOA,
-        KEY_DNS_SRV,
-        KEY_DNS_TXT,
-        KEY_DNS_NSEC,
-        KEY_DNS_NSEC3,
-        KEY_DNS_NSEC3PARAM,
-        KEY_DNS_RRSIG,
-        KEY_DNS_TLSA,
-        KEY_DNS_DNSKEY,
-        KEY_DNS_DS,
-        KEY_DNS_CDNSKEY,
-    ];
-
 #[derive(Deserialize, Serialize, Clone, Debug)]
-pub enum DnsRecordJson {
-    Cname(String),
+#[serde(rename_all = "snake_case")]
+pub enum DnsRecordsetJson {
+    Cname(Vec<String>),
+    A(Vec<String>),
+    AAAA(Vec<String>),
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct DnsRecordsetJson(Vec<DnsRecordJson>);
-
-//. Unsupported
-//. const KEY_DNS_AFSDB: &'static str = "3dmm7eocsjbnmy1jokcban5bre";
-//. const KEY_DNS_APL: &'static str = "74yih9nx63gd5e5ea9u77bswjc";
-//. const KEY_DNS_CAA: &'static str = "mkt18be4ebyzjd9ushujkdgd3w";
-//. const KEY_DNS_CDS: &'static str = "yfp769ynsfneubrsya773f9ubr";
-//. const KEY_DNS_CERT: &'static str = "xtby1psjtff1me44w3wnrdwfdw";
-//. const KEY_DNS_CSYNC: &'static str = "px8ana558tbyubn11by9ju7xue";
-//. const KEY_DNS_DHCID: &'static str = "6bn6oyeertbizy3bd6eiim8xxh";
-//. const KEY_DNS_DLV: &'static str = "xbuh5zkc87rktgpbux8mx7adeh";
-//. const KEY_DNS_DNAME: &'static str = "39b73zajj3bwx8h9x3c9fzxkxc";
-//. const KEY_DNS_EUI48: &'static str = "yzaykod1utd3xy5mm31niktoew";
-//. const KEY_DNS_EUI64: &'static str = "bobfkaefs3ywzecfx6kwc7q8ye";
-//. const KEY_DNS_HINFO: &'static str = "wijsunu9hidqipabhdosj1ryor";
-//. const KEY_DNS_HIP: &'static str = "ir4mz7q7jjrumr8io5x1rmxb7o";
-//. const KEY_DNS_HTTPS: &'static str = "af9ggtncy7gk5qrg7e1qrka4he";
-//. const KEY_DNS_IPSECKEY: &'static str = "oz181b9dhff4mgsahcqwf3o84o";
-//. const KEY_DNS_KEY: &'static str = "d6n1q796ntfef8w4xhfdd8e3ih";
-//. const KEY_DNS_KX: &'static str = "7tsx91qyu3rwmdgsdscbc448py";
-//. const KEY_DNS_LOC: &'static str = "41ciwyocmtyxxecagfau633wqo";
-//. const KEY_DNS_NAPTR: &'static str = "edncym8jgjgctjagghc81n4r7e";
-//. const KEY_DNS_OPENPGPKEY: &'static str = "bus8bas8jfbh9g4wi13s5cix9h";
-//. const KEY_DNS_RP: &'static str = "n3za9djpr3bbjkfw7xp5ynb5dy";
-//. const KEY_DNS_SIG: &'static str = "kbq5umit1i8bmng3dmmkkwdujo";
-//. const KEY_DNS_SMIMEA: &'static str = "744jqnambfnnbmr8ww68syxncw";
-//. const KEY_DNS_SSHFP: &'static str = "631mu91517b6ugosuwdqc8yxde";
-//. const KEY_DNS_SVCB: &'static str = "rr6834nx5tnfup7rz44anpoe7r";
-//. const KEY_DNS_TA: &'static str = "o8wt8bc9g7fhzyf5fyjnx4w6or";
-//. const KEY_DNS_TKEY: &'static str = "ebygsh9ce3dk5met8e4ute9uoo";
-//. const KEY_DNS_TSIG: &'static str = "1rqocmfbnpg8dg4rp54ucggqoa";
-//. const KEY_DNS_URI: &'static str = "rskkuenpmffbbpqxfo5kkwueqy";
-//. const KEY_DNS_ZONEMD: &'static str = "yar9fu1px7f3pygrfuxjejm61a";
 #[derive(Deserialize, Serialize)]
 pub struct ResolverConfig {
     pub bind_addr: Option<SocketAddr>,
@@ -204,7 +149,7 @@ struct CoreInner {
 struct Core(Arc<CoreInner>);
 
 impl Core {
-    async fn get(&self, ident: &Identity, keys: &[&str]) -> Result<HashMap<String, Value>, loga::Error> {
+    async fn get(&self, ident: &Identity, keys: &[&str]) -> Result<HashMap<String, ResolveValue>, loga::Error> {
         //. let ident = Identity::from_str(req.uri().path().get(1..).unwrap_or(""))?;
         //. let keys = req.uri().query().unwrap_or("").split(",").collect_vec();
         // First check cache
@@ -217,11 +162,12 @@ impl Core {
                     if expiry + Duration::minutes(5) < now {
                         break 'missing;
                     }
-                    kvs.insert(k.to_string(), Value {
+                    kvs.insert(k.to_string(), ResolveValue {
                         expires: expiry,
                         data: v,
                     });
                 } else {
+                    eprintln!("DEBUG resolver cache miss {} {}", ident, k);
                     break 'missing;
                 }
             }
@@ -235,7 +181,7 @@ impl Core {
         };
 
         // Request values via publisher
-        let log = self.0.log.fork(ea!(addr = resp.addr, action = "publisher_request"));
+        let log = self.0.log.fork(ea!(url = resp.addr, action = "publisher_request"));
 
         pub struct SingleKeyVerifier {
             hash: Vec<u8>,
@@ -259,9 +205,11 @@ impl Core {
             ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
                 let cert = match x509_parser::parse_x509_certificate(&end_entity.0) {
                     Ok(c) => c.1,
-                    Err(_) => return Err(rustls::Error::InvalidCertificateEncoding),
+                    Err(_) => {
+                        return Err(rustls::Error::InvalidCertificateEncoding)
+                    },
                 };
-                if publisher_cert_hash(cert.public_key().raw) != self.hash {
+                if publisher_cert_hash(&cert) != self.hash {
                     return Err(rustls::Error::InvalidCertificateSignature);
                 }
                 return Ok(ServerCertVerified::assertion());
@@ -283,7 +231,9 @@ impl Core {
                 .await
                 .log_context(&log, "Error sending request", ea!())?;
         let status = pub_resp.status();
-        let pub_resp_bytes = pub_resp.bytes().await.log_context(&log, "Error reading response body", ea!())?.to_vec();
+        let mut pub_resp_bytes = pub_resp.bytes().await.log_context(&log, "Error reading response body", ea!())?;
+        pub_resp_bytes.truncate(128 * 1024 * keys.len());
+        let pub_resp_bytes = pub_resp_bytes.to_vec();
         if status.is_client_error() || status.is_server_error() {
             return Err(
                 log.new_err(
@@ -304,6 +254,7 @@ impl Core {
                 match &kvs {
                     publish::ResolveKeyValues::V1(kvs) => {
                         for (k, v) in &kvs.0 {
+                            eprintln!("DEBUG cache store {} {}", identity, k);
                             cache.insert((identity.clone(), k.to_owned()), (v.expires, v.data.clone())).await;
                         }
                     },
@@ -321,6 +272,7 @@ impl Core {
 }
 
 pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: Node) -> Result<(), loga::Error> {
+    let log = &log.fork(ea!(sys = "resolver"));
     let cache = Cache::builder().weigher(|_key, pair: &(DateTime<Utc>, String)| -> u32 {
         pair.1.len().try_into().unwrap_or(u32::MAX)
     }).max_capacity(config.max_cache.unwrap_or(64 * 1024 * 1024)).build();
@@ -401,11 +353,14 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
 
             async fn call(&self, req: Request) -> poem::Result<Self::Output> {
                 match aes!({
+                    let ident_src = req.uri().path().get(2..).unwrap_or("");
                     let kvs =
                         self
                             .0
                             .get(
-                                &Identity::from_str(req.uri().path().get(1..).unwrap_or(""))?,
+                                &Identity::from_str(
+                                    &ident_src,
+                                ).context("Failed to parse identity", ea!(identity = ident_src))?,
                                 &req.uri().query().unwrap_or("").split(",").collect_vec(),
                             )
                             .await?;
@@ -468,11 +423,11 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                         if request.query().name().base_name() != self1.expect_suffix {
                             return Ok(None);
                         }
-                        if request.query().name().len() != 2 {
+                        if request.query().name().num_labels() != 2 {
                             return Err(
                                 loga::Error::new(
-                                    "Wrong number of parts in request",
-                                    ea!(name = request.query().name()),
+                                    "Expected two parts in request (id., s.) but got different number",
+                                    ea!(name = request.query().name(), count = request.query().name().num_labels()),
                                 ),
                             ).err_external();
                         }
@@ -518,12 +473,69 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                         let res = self1.core.get(&ident, batch_keys).await.err_internal()?;
                         let mut answers = vec![];
                         if let Some(res) = res.get(KEY_DNS_CNAME).or_else(|| res.get(lookup_key)) {
-                            for rec in serde_json::from_str::<DnsRecordsetJson>(&res.data)
+                            match serde_json::from_str::<DnsRecordsetJson>(&res.data)
                                 .context("Failed to parse received record json", ea!())
-                                .err_external()?
-                                .0 {
-                                match rec {
-                                    DnsRecordJson::Cname(n) => {
+                                .err_external()? {
+                                DnsRecordsetJson::A(n) => {
+                                    for n in n {
+                                        let n = match Ipv4Addr::from_str(&n) {
+                                            Err(e) => {
+                                                self1
+                                                    .log
+                                                    .debug_e(
+                                                        e.into(),
+                                                        "A addr in record invalid for DNS",
+                                                        ea!(name = n),
+                                                    );
+                                                continue;
+                                            },
+                                            Ok(n) => n,
+                                        };
+                                        answers.push(
+                                            Record::from_rdata(
+                                                request.query().name().into(),
+                                                res
+                                                    .expires
+                                                    .signed_duration_since(Utc::now())
+                                                    .num_seconds()
+                                                    .try_into()
+                                                    .unwrap_or(i32::MAX as u32),
+                                                trust_dns_client::rr::RData::A(n),
+                                            ),
+                                        );
+                                    }
+                                },
+                                DnsRecordsetJson::AAAA(n) => {
+                                    for n in n {
+                                        let n = match Ipv6Addr::from_str(&n) {
+                                            Err(e) => {
+                                                self1
+                                                    .log
+                                                    .debug_e(
+                                                        e.into(),
+                                                        "AAAA addr in record invalid for DNS",
+                                                        ea!(name = n),
+                                                    );
+                                                continue;
+                                            },
+                                            Ok(n) => n,
+                                        };
+                                        answers.push(
+                                            Record::from_rdata(
+                                                request.query().name().into(),
+                                                res
+                                                    .expires
+                                                    .signed_duration_since(Utc::now())
+                                                    .num_seconds()
+                                                    .try_into()
+                                                    .unwrap_or(i32::MAX as u32),
+                                                trust_dns_client::rr::RData::AAAA(n),
+                                            ),
+                                        );
+                                    }
+                                },
+                                DnsRecordsetJson::Cname(n) => {
+                                    for n in n {
                                         let n = match Name::from_utf8(&n) {
                                             Err(e) => {
                                                 self1
@@ -549,8 +561,8 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                                 trust_dns_client::rr::RData::CNAME(n),
                                             ),
                                         );
-                                    },
-                                }
+                                    }
+                                },
                             }
                         }
                         return Ok(

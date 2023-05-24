@@ -34,17 +34,10 @@ impl<'de> Deserialize<'de> for Ed25519Identity {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de> {
-        let bytes = Vec::deserialize(deserializer)?;
         return Ok(
             Ed25519Identity(
                 VerifyingKey::from_bytes(
-                    &<[u8; ed25519_dalek::PUBLIC_KEY_LENGTH]>::try_from(
-                        bytes,
-                    ).map_err(
-                        |v| serde::de::Error::custom(
-                            format!("Expected {} bytes, got {}", ed25519_dalek::PUBLIC_KEY_LENGTH, v.len()),
-                        ),
-                    )?,
+                    &<[u8; ed25519_dalek::PUBLIC_KEY_LENGTH]>::deserialize(deserializer)?,
                 ).map_err(|e| serde::de::Error::custom(e.to_string()))?,
             ),
         );
@@ -94,18 +87,9 @@ impl<'de> Deserialize<'de> for Ed25519IdentitySecret {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de> {
-        let bytes = Vec::deserialize(deserializer)?;
         return Ok(
             Ed25519IdentitySecret(
-                SigningKey::from_bytes(
-                    &<[u8; ed25519_dalek::SECRET_KEY_LENGTH]>::try_from(
-                        bytes,
-                    ).map_err(
-                        |v| serde::de::Error::custom(
-                            format!("Expected {} bytes, got {}", ed25519_dalek::SECRET_KEY_LENGTH, v.len()),
-                        ),
-                    )?,
-                ),
+                SigningKey::from_bytes(&<[u8; ed25519_dalek::SECRET_KEY_LENGTH]>::deserialize(deserializer)?),
             ),
         );
     }

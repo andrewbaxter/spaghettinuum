@@ -449,7 +449,7 @@ impl Node {
                                     leading_zeros: leading_zeros,
                                 }),
                             };
-                            dir.send(&addr.0, &Protocol::V1(Message::Ping).to_bytes()).await;
+                            dir.send(&addr.0, Protocol::V1(Message::Ping)).await;
                             ping_timeout_write.unbounded_send(NextPingTimeout {
                                 end: Instant::now() + REQ_TIMEOUT,
                                 key: (id, req_id),
@@ -544,7 +544,8 @@ impl Node {
 
     pub async fn get(&self, key: Identity) -> Option<ValueBody> {
         let (f, c) = ManualFuture::new();
-        self.start_find(FindMode::Get(key), None, Some(c)).await;
+        let local_value = self.0.store.lock().unwrap().get(&key).map(|v| v.value.clone());
+        self.start_find(FindMode::Get(key), local_value, Some(c)).await;
         return f.await.map(|v| v.parse().unwrap());
     }
 
@@ -587,7 +588,7 @@ impl Node {
             };
             (challenge, state.req_id)
         };
-        self.send(addr, &Protocol::V1(Message::Challenge(challenge)).to_bytes()).await;
+        self.send(addr, Protocol::V1(Message::Challenge(challenge))).await;
         self.0.challenge_timeouts.unbounded_send(NextChallengeTimeout {
             end: timeout,
             key: (id, req_id),
@@ -659,11 +660,11 @@ impl Node {
             state.req_id
         };
         for d in defer {
-            self.send(&d.addr, &Protocol::V1(Message::FindRequest(FindRequest {
+            self.send(&d.addr, Protocol::V1(Message::FindRequest(FindRequest {
                 challenge: d.challenge,
                 mode: mode.clone(),
                 sender: self.0.own_id.clone(),
-            })).to_bytes()).await;
+            }))).await;
         }
         self.0.find_timeouts.unbounded_send(NextFindTimeout {
             end: timeout,
@@ -684,10 +685,10 @@ impl Node {
                             self.store(k.clone(), v.clone());
                         },
                         BestNodeEntryNode::Node(node) => {
-                            self.send(&node.address.0, &Protocol::V1(Message::Store(StoreRequest {
+                            self.send(&node.address.0, Protocol::V1(Message::Store(StoreRequest {
                                 key: k.clone(),
                                 value: v.clone(),
-                            })).to_bytes()).await;
+                            }))).await;
                         },
                     }
                 }
@@ -888,7 +889,7 @@ impl Node {
                                     break;
                                 },
                             };
-                            if signed.expires > Utc::now() {
+                            if signed.expires < Utc::now() {
                                 log.warn("Got expired value", ea!(expires = signed.expires.to_rfc3339()));
                                 break;
                             }
@@ -920,21 +921,21 @@ impl Node {
                 store.extend(lock.iter().map(|(k, v)| (k.clone(), v.value.clone())));
             }
             for (k, v) in store.into_iter() {
-                self.send(&addr, &Protocol::V1(Message::Store(StoreRequest {
+                self.send(&addr, Protocol::V1(Message::Store(StoreRequest {
                     key: k,
                     value: v,
-                })).to_bytes()).await;
+                }))).await;
             }
         }
         if let Some(s) = state {
             self.complete_state(s).await;
         }
         for d in defer_next_req {
-            self.send(&d.addr, &Protocol::V1(Message::FindRequest(FindRequest {
+            self.send(&d.addr, Protocol::V1(Message::FindRequest(FindRequest {
                 challenge: d.challenge,
                 mode: resp.body.mode.clone(),
                 sender: self.0.own_id.clone(),
-            })).to_bytes()).await;
+            }))).await;
         }
     }
 
@@ -1001,10 +1002,10 @@ impl Node {
                         challenge: &m.challenge,
                         body: &body,
                     });
-                    self.send(reply_to, &Protocol::V1(Message::FindResponse(FindResponse {
+                    self.send(reply_to, Protocol::V1(Message::FindResponse(FindResponse {
                         body: body,
                         sig: sig,
-                    })).to_bytes()).await;
+                    }))).await;
                     if self.add_good_node(m.sender.clone(), None) {
                         self.start_challenge(m.sender, reply_to).await;
                     }
@@ -1019,7 +1020,7 @@ impl Node {
                     self.store(m.key, m.value);
                 },
                 Message::Ping => {
-                    self.send(reply_to, &Protocol::V1(Message::Pung(self.0.own_id.clone())).to_bytes()).await;
+                    self.send(reply_to, Protocol::V1(Message::Pung(self.0.own_id.clone()))).await;
                 },
                 Message::Pung(k) => {
                     let state = match self.0.ping_states.lock().unwrap().entry(k.clone()) {
@@ -1029,13 +1030,13 @@ impl Node {
                     self.mark_node_unresponsive(k, state.leading_zeros, false);
                 },
                 Message::Challenge(challenge) => {
-                    self.send(reply_to, &Protocol::V1(Message::ChallengeResponse(ChallengeResponse {
+                    self.send(reply_to, Protocol::V1(Message::ChallengeResponse(ChallengeResponse {
                         sender: self.0.own_id.clone(),
                         signature: sign_challenge(&self.0.own_secret, TempChallengeSigBody {
                             challenge: &challenge,
                             body: &self.0.own_id,
                         }),
-                    })).to_bytes()).await;
+                    }))).await;
                 },
                 Message::ChallengeResponse(resp) => {
                     self.handle_challenge_resp(resp).await;
@@ -1105,8 +1106,8 @@ impl Node {
         return new_node;
     }
 
-    async fn send(&self, addr: &SocketAddr, data: &[u8]) {
+    async fn send(&self, addr: &SocketAddr, data: Protocol) {
         self.0.log.debug("Sending", ea!(addr = addr, message = data.dbg_str()));
-        self.0.socket.send_to(data, addr).await.unwrap();
+        self.0.socket.send_to(&data.to_bytes(), addr).await.unwrap();
     }
 }

@@ -1,12 +1,10 @@
 use std::{
     sync::Arc,
-    net::{
-        SocketAddr,
-    },
     collections::HashMap,
     mem::size_of,
     fs,
     io::ErrorKind,
+    net::SocketAddr,
 };
 use chrono::{
     Utc,
@@ -68,6 +66,7 @@ use serde::{
 };
 use sha2::Sha256;
 use taskmanager::TaskManager;
+use x509_parser::prelude::X509Certificate;
 use crate::{
     model::{
         identity::{
@@ -83,6 +82,7 @@ use crate::{
     node::{
         self,
         Node,
+        model::protocol::Addr,
     },
     es,
     utils::{
@@ -112,9 +112,9 @@ struct SerialTlsCert {
     priv_der: Vec<u8>,
 }
 
-pub fn publisher_cert_hash(cert: &[u8]) -> Vec<u8> {
+pub fn publisher_cert_hash(cert: &X509Certificate) -> Vec<u8> {
     let mut hash = Sha256::new();
-    hash.update(cert);
+    hash.update(cert.public_key().raw);
     return hash.finalize().to_vec();
 }
 
@@ -179,7 +179,6 @@ async fn announce(log: &Log, message: &Vec<u8>, node: &Node, ident: &Identity, s
 
 pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> Result<(), loga::Error> {
     let log = log.fork(ea!(sys = "publisher"));
-    let advertise_addr = config.advertise_addr.unwrap_or(config.bind_addr.clone());
 
     // Prepare publish server cert
     let (pub_der, priv_der) = 'got_certs : loop {
@@ -205,7 +204,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                 log.warn_e(e, "Error loading serialized publisher cert", ea!());
             },
         }
-        let cert = rcgen::generate_simple_self_signed([advertise_addr.to_string()]).unwrap();
+        let cert = rcgen::generate_simple_self_signed([config.advertise_addr.ip().to_string()]).unwrap();
         let pub_der = &(&cert).serialize_der().unwrap();
         let priv_der = &(&cert).serialize_private_key_der();
         match fs::write(&config.cert_path, &bincode::serialize(&SerialTlsCert {
@@ -227,17 +226,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
         let p = Pem::new("PRIVATE KEY".to_string(), priv_der);
         pem::encode(&p)
     };
-    let pub_hash =
-        publisher_cert_hash(
-            &x509_parser::parse_x509_certificate(&pub_der)
-                .unwrap()
-                .1
-                .public_key()
-                .subject_public_key
-                .data
-                .to_owned()
-                .to_vec(),
-        );
+    let pub_hash = publisher_cert_hash(&x509_parser::parse_x509_certificate(&pub_der).unwrap().1);
 
     // Serve
     match config.data {
@@ -263,9 +252,9 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                             let now = Utc::now();
                             for k in req.uri().query().unwrap_or("").split(",") {
                                 if let Some(v) = d.kvs.0.get(k) {
-                                    kvs.0.insert(k.to_string(), publish::v1::Value {
-                                        expires: now + Duration::minutes(v.0 as i64),
-                                        data: v.1.clone(),
+                                    kvs.0.insert(k.to_string(), publish::v1::ResolveValue {
+                                        expires: now + Duration::minutes(v.ttl as i64),
+                                        data: v.data.clone(),
                                     });
                                 }
                             }
@@ -318,14 +307,16 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                 let base = base.clone();
                 let node = node.clone();
                 let log = log.fork(ea!(sys = "periodic_announce"));
+                let advertise_addr = config.advertise_addr.clone();
                 tm.periodic(Duration::hours(4).to_std().unwrap(), move || {
                     let pub_hash = pub_hash.clone();
                     let node = node.clone();
                     let log = log.clone();
                     let base = base.clone();
+                    let advertise_addr = advertise_addr.clone();
                     return async move {
                         let message = node::model::protocol::v1::ValueBody {
-                            addr: node::model::protocol::v1::Addr(advertise_addr),
+                            addr: Addr(advertise_addr),
                             cert_hash: pub_hash,
                             expires: Utc::now() + Duration::hours(12),
                         }.to_bytes();
@@ -382,9 +373,9 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                                         publish::KeyValues::V1(mut found_kvs) => {
                                             for k in req.uri().query().unwrap_or("").split(",") {
                                                 if let Some(v) = found_kvs.0.remove(k) {
-                                                    kvs.0.insert(k.to_string(), publish::v1::Value {
-                                                        expires: now + Duration::minutes(v.0 as i64),
-                                                        data: v.1,
+                                                    kvs.0.insert(k.to_string(), publish::v1::ResolveValue {
+                                                        expires: now + Duration::minutes(v.ttl as i64),
+                                                        data: v.data,
                                                     });
                                                 }
                                             }
@@ -447,15 +438,17 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                 let db = db.clone();
                 let node = node.clone();
                 let pub_hash = pub_hash.clone();
+                let advertise_url = config.advertise_addr.clone();
                 move || {
                     let node = node.clone();
                     let pub_hash = pub_hash.clone();
                     let log = log.clone();
                     let db = db.clone();
+                    let advertise_url = advertise_url.clone();
                     return async move {
                         match aes!({
                             let message = node::model::protocol::v1::ValueBody {
-                                addr: node::model::protocol::v1::Addr(advertise_addr),
+                                addr: Addr(advertise_url),
                                 cert_hash: pub_hash,
                                 expires: Utc::now() + Duration::hours(12),
                             }.to_bytes();
@@ -490,7 +483,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                     struct Inner {
                         db: Pool,
                         log: Log,
-                        publisher_advertise_addr: SocketAddr,
+                        publisher_advertise_url: SocketAddr,
                         publisher_pub_cert_hash: Vec<u8>,
                         node: Node,
                     }
@@ -579,9 +572,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                                         }
                                         {
                                             let announce_message = node::model::protocol::v1::ValueBody {
-                                                addr: node::model::protocol::v1::Addr(
-                                                    service.publisher_advertise_addr,
-                                                ),
+                                                addr: Addr(service.publisher_advertise_url.clone()),
                                                 cert_hash: service.publisher_pub_cert_hash.clone(),
                                                 expires: Utc::now() + Duration::hours(12),
                                             }.to_bytes();
@@ -615,7 +606,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                             })).with(AddData::new(Arc::new(Inner {
                                 db: db.clone(),
                                 log: log.clone(),
-                                publisher_advertise_addr: advertise_addr.clone(),
+                                publisher_advertise_url: config.advertise_addr.clone(),
                                 publisher_pub_cert_hash: pub_hash.clone(),
                                 node: node.clone(),
                             })))),

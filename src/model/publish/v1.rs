@@ -9,14 +9,20 @@ use serde::{
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Value {
+pub struct ResolveValue {
     pub expires: DateTime<Utc>,
     pub data: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ResolveKeyValues(pub HashMap<String, Value>);
+pub struct ResolveKeyValues(pub HashMap<String, ResolveValue>);
 
-// u32 is duration in minutes
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Value {
+    /// duration in minutes
+    pub ttl: u32,
+    pub data: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct KeyValues(pub HashMap<String, (u32, String)>);
+pub struct KeyValues(pub HashMap<String, Value>);
