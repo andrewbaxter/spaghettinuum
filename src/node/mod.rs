@@ -354,10 +354,8 @@ impl Node {
                 let persist_path = persist_path.clone();
                 async move {
                     if !dir.0.dirty.swap(false, Ordering::Relaxed) {
-                        log.debug("Not dirty, skipping persisting node state", ea!());
                         return;
                     }
-                    log.debug("Dirty, persisting node state", ea!());
                     let buckets = dir.0.buckets.lock().unwrap().clone();
                     match tokio::fs::write(persist_path, &serde_json::to_vec(&Persisted {
                         own_secret: dir.0.own_secret.clone(),
