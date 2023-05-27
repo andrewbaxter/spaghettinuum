@@ -49,7 +49,7 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
             }
             if version < 0i64 {
                 txn.execute(
-                    "create table \"cache_persist\" ( \"value\" text not null , \"identity\" blob not null , \"key\" text not null , \"expires\" text not null )",
+                    "create table \"cache_persist\" ( \"value\" text , \"identity\" blob not null , \"key\" text not null , \"expires\" text not null )",
                     (),
                 )?;
             }
@@ -94,12 +94,12 @@ pub fn push(
     identity: &crate::model::identity::Identity,
     key: &str,
     expires: chrono::DateTime<chrono::Utc>,
-    value: &str,
+    value: Option<&str>,
 ) -> Result<(), GoodError> {
     db
         .execute(
             "insert into \"cache_persist\" ( \"identity\" , \"key\" , \"expires\" , \"value\" ) values ( $1 , $2 , $3 , $4 )",
-            rusqlite::params![identity.to_sql(), key, expires.to_rfc3339(), value],
+            rusqlite::params![identity.to_sql(), key, expires.to_rfc3339(), value.map(|value| value)],
         )
         .map_err(|e| GoodError(e.to_string()))?;
     Ok(())
@@ -110,7 +110,7 @@ pub struct DbRes1 {
     pub identity: crate::model::identity::Identity,
     pub key: String,
     pub expires: chrono::DateTime<chrono::Utc>,
-    pub value: String,
+    pub value: Option<String>,
 }
 
 pub fn list(db: &mut rusqlite::Connection, row: i64) -> Result<Vec<DbRes1>, GoodError> {
@@ -146,7 +146,7 @@ pub fn list(db: &mut rusqlite::Connection, row: i64) -> Result<Vec<DbRes1>, Good
                 x
             },
             value: {
-                let x: String = r.get(4usize)?;
+                let x: Option<String> = r.get(4usize)?;
                 x
             },
         });

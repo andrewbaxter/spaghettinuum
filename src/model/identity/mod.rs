@@ -1,12 +1,26 @@
 use std::fmt::Display;
 use loga::{
     ea,
+    Log,
+};
+use sha2::{
+    Sha512,
+    Digest,
 };
 use crate::{
     versioned,
 };
 
 pub mod v1;
+
+/// For gpg-card compatibility we doubly hash the messages passed in for
+/// signatures.  GPG takes a hash, passes it in as an ed25519 message, and the
+/// ed25519 sign method hashes it again.
+pub fn hash_for_ed25519(data: &[u8]) -> Vec<u8> {
+    let mut hash = Sha512::new();
+    hash.update(data);
+    return hash.finalize().to_vec();
+}
 
 versioned!(
     Identity,
@@ -57,14 +71,14 @@ impl Identity {
     }
 }
 
-pub trait IdentityMethods {
-    fn verify(&self, message: &[u8], signature: &[u8]) -> bool;
+pub trait IdentityVersionMethods {
+    fn verify(&self, log: &Log, message: &[u8], signature: &[u8]) -> bool;
 }
 
-impl IdentityMethods for Identity {
-    fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
+impl Identity {
+    pub fn verify(&self, log: &Log, message: &[u8], signature: &[u8]) -> bool {
         match self {
-            Identity::V1(v) => v.verify(message, signature),
+            Identity::V1(v) => v.verify(log, message, signature),
         }
     }
 }
@@ -76,14 +90,14 @@ versioned!(
     (V1, 1, v1::IdentitySecret)
 );
 
-pub trait IdentitySecretMethods {
-    fn sign(&self, data: &[u8]) -> Vec<u8>;
+pub trait IdentitySecretVersionMethods {
+    fn sign(&self, message: &[u8]) -> Vec<u8>;
 }
 
-impl IdentitySecretMethods for IdentitySecret {
-    fn sign(&self, data: &[u8]) -> Vec<u8> {
+impl IdentitySecretVersionMethods for IdentitySecret {
+    fn sign(&self, message: &[u8]) -> Vec<u8> {
         match self {
-            IdentitySecret::V1(v) => v.sign(data),
+            IdentitySecret::V1(v) => v.sign(message),
         }
     }
 }

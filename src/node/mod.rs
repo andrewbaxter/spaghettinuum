@@ -7,7 +7,6 @@ use crate::node::model::protocol::Protocol;
 use crate::es;
 use crate::model::identity::{
     Identity,
-    IdentityMethods,
 };
 use crate::utils::{
     BincodeSerializable,
@@ -143,7 +142,7 @@ fn hash(x: &dyn BincodeSerializable) -> DhtHash {
     return hash.finalize();
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct NodeState {
     node: NodeInfo,
     unresponsive: bool,
@@ -355,8 +354,10 @@ impl Node {
                 let persist_path = persist_path.clone();
                 async move {
                     if !dir.0.dirty.swap(false, Ordering::Relaxed) {
+                        log.debug("Not dirty, skipping persisting node state", ea!());
                         return;
                     }
+                    log.debug("Dirty, persisting node state", ea!());
                     let buckets = dir.0.buckets.lock().unwrap().clone();
                     match tokio::fs::write(persist_path, &serde_json::to_vec(&Persisted {
                         own_secret: dir.0.own_secret.clone(),
@@ -390,7 +391,7 @@ impl Node {
                             // time pushed back while this timeout was in the queue
                             return;
                         }
-                        dir.0.log.info("Find timed out", ea!(key = &e.key.0.dbg_str()));
+                        dir.0.log.debug("Find timed out", ea!(key = &e.key.0.dbg_str()));
                         state_entry.remove()
                     };
                     for o in &state.outstanding {
@@ -878,7 +879,7 @@ impl Node {
                         FindMode::Get(k) => 
                         // 1
                         loop {
-                            if !k.verify(&value.message, &value.signature) {
+                            if !k.verify(&log, &value.message, &value.signature) {
                                 log.warn("Got value with bad signature", ea!());
                                 break;
                             }
@@ -1014,7 +1015,7 @@ impl Node {
                     self.handle_find_resp(m).await;
                 },
                 Message::Store(m) => {
-                    if !m.key.verify(&m.value.message, &m.value.signature) {
+                    if !m.key.verify(&self.0.log, &m.value.message, &m.value.signature) {
                         return Err(self.0.log.new_err("Store request failed signature validation", ea!()))
                     };
                     self.store(m.key, m.value);
@@ -1046,6 +1047,7 @@ impl Node {
         Ok(())
     }
 
+    /// Add a node, or check if adding a node would be new (returns whether id is new)
     pub fn add_good_node(&self, id: NodeIdentity, node: Option<NodeInfo>) -> bool {
         let log = self.0.log.fork(ea!(activity = "add_good_node", node = id.dbg_str()));
         if id == self.0.own_id {
@@ -1063,10 +1065,18 @@ impl Node {
                 let n = &mut bucket[i];
                 if n.node.id == id {
                     if let Some(node) = node {
-                        *n = NodeState {
+                        if n.unresponsive {
+                            n.unresponsive = false;
+                        }
+                        let new_state = NodeState {
                             node: node.clone(),
                             unresponsive: false,
                         };
+                        let changed = *n == new_state;
+                        *n = new_state;
+                        if changed {
+                            self.0.dirty.store(true, Ordering::Relaxed);
+                        }
                         log.info("Updated existing node", ea!());
                     }
                     break 'logic false;
@@ -1083,6 +1093,7 @@ impl Node {
                         node: node.clone(),
                         unresponsive: false,
                     });
+                    self.0.dirty.store(true, Ordering::Relaxed);
                     log.info("Added node to empty slot", ea!());
                 }
                 break true;
@@ -1096,6 +1107,7 @@ impl Node {
                         node: node.clone(),
                         unresponsive: false,
                     });
+                    self.0.dirty.store(true, Ordering::Relaxed);
                     log.info("Replaced dead node", ea!());
                 }
                 break 'logic true;

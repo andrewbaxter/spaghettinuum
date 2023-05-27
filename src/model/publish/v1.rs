@@ -11,18 +11,22 @@ use serde::{
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResolveValue {
     pub expires: DateTime<Utc>,
-    pub data: String,
+    pub data: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResolveKeyValues(pub HashMap<String, ResolveValue>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Value {
+pub struct PublishValue {
     /// duration in minutes
     pub ttl: u32,
     pub data: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct KeyValues(pub HashMap<String, Value>);
+pub struct Publish {
+    /// duration in minutes
+    pub missing_ttl: u32,
+    pub data: HashMap<String, PublishValue>,
+}

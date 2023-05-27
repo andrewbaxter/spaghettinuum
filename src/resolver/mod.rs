@@ -63,6 +63,10 @@ use trust_dns_client::{
         Name,
         Record,
         Label,
+        rdata::{
+            MX,
+            TXT,
+        },
     },
     op::{
         Header,
@@ -94,6 +98,7 @@ use crate::{
             ResolveKeyValues,
         },
         self,
+        dns::DnsRecordsetJson,
     },
     aes,
     publisher::publisher_cert_hash,
@@ -117,14 +122,6 @@ use crate::{
 
 pub mod db;
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-#[serde(rename_all = "snake_case")]
-pub enum DnsRecordsetJson {
-    Cname(Vec<String>),
-    A(Vec<String>),
-    AAAA(Vec<String>),
-}
-
 #[derive(Deserialize, Serialize)]
 pub struct ResolverConfig {
     pub bind_addr: Option<SocketAddr>,
@@ -142,21 +139,23 @@ pub struct DnsBridgerConfig {
 struct CoreInner {
     node: Node,
     log: Log,
-    cache: Cache<(Identity, String), (DateTime<Utc>, String)>,
+    cache: Cache<(Identity, String), (DateTime<Utc>, Option<String>)>,
 }
 
 #[derive(Clone)]
 struct Core(Arc<CoreInner>);
 
 impl Core {
-    async fn get(&self, ident: &Identity, keys: &[&str]) -> Result<HashMap<String, ResolveValue>, loga::Error> {
-        //. let ident = Identity::from_str(req.uri().path().get(1..).unwrap_or(""))?;
-        //. let keys = req.uri().query().unwrap_or("").split(",").collect_vec();
+    async fn get(
+        &self,
+        ident: &Identity,
+        request_keys: &[&str],
+    ) -> Result<HashMap<String, ResolveValue>, loga::Error> {
         // First check cache
         let now = Utc::now();
         'missing : loop {
             let mut kvs = HashMap::new();
-            for k in keys {
+            for k in request_keys {
                 if let Some(found) = self.0.cache.get(&(ident.clone(), k.to_string())) {
                     let (expiry, v) = found;
                     if expiry + Duration::minutes(5) < now {
@@ -226,13 +225,13 @@ impl Core {
                 )
                 .build()
                 .unwrap()
-                .get(format!("https://{}/{}?{}", resp.addr, ident, keys.join(",")))
+                .get(format!("https://{}/{}?{}", resp.addr, ident, request_keys.join(",")))
                 .send()
                 .await
                 .log_context(&log, "Error sending request", ea!())?;
         let status = pub_resp.status();
         let mut pub_resp_bytes = pub_resp.bytes().await.log_context(&log, "Error reading response body", ea!())?;
-        pub_resp_bytes.truncate(128 * 1024 * keys.len());
+        pub_resp_bytes.truncate(128 * 1024 * request_keys.len());
         let pub_resp_bytes = pub_resp_bytes.to_vec();
         if status.is_client_error() || status.is_server_error() {
             return Err(
@@ -242,18 +241,18 @@ impl Core {
                 ),
             );
         }
-        let kvs: publish::ResolveKeyValues =
+        let resp_kvs: publish::ResolveKeyValues =
             serde_json::from_slice(&pub_resp_bytes).log_context(&log, "Couldn't parse response", ea!())?;
 
         // Store found values
         spawn({
-            let kvs = kvs.clone();
+            let resp_kvs = resp_kvs.clone();
             let cache = self.0.cache.clone();
             let identity = ident.clone();
             async move {
-                match &kvs {
-                    publish::ResolveKeyValues::V1(kvs) => {
-                        for (k, v) in &kvs.0 {
+                match &resp_kvs {
+                    publish::ResolveKeyValues::V1(resp_kvs) => {
+                        for (k, v) in &resp_kvs.0 {
                             eprintln!("DEBUG cache store {} {}", identity, k);
                             cache.insert((identity.clone(), k.to_owned()), (v.expires, v.data.clone())).await;
                         }
@@ -263,7 +262,7 @@ impl Core {
         });
 
         // Respond with found values
-        match kvs {
+        match resp_kvs {
             ResolveKeyValues::V1(kvs) => {
                 return Ok(kvs.0);
             },
@@ -273,8 +272,11 @@ impl Core {
 
 pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: Node) -> Result<(), loga::Error> {
     let log = &log.fork(ea!(sys = "resolver"));
-    let cache = Cache::builder().weigher(|_key, pair: &(DateTime<Utc>, String)| -> u32 {
-        pair.1.len().try_into().unwrap_or(u32::MAX)
+    let cache = Cache::builder().weigher(|_key, pair: &(DateTime<Utc>, Option<String>)| -> u32 {
+        match &pair.1 {
+            Some(v) => v.len().try_into().unwrap_or(u32::MAX),
+            None => 1,
+        }
     }).max_capacity(config.max_cache.unwrap_or(64 * 1024 * 1024)).build();
 
     // Seed with stored cache data
@@ -328,7 +330,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                         let db = &mut Connection::open(&p)?;
                         db::migrate(db)?;
                         for (k, v) in cache.iter() {
-                            db::push(db, &k.0, &k.1, v.0, &v.1)?;
+                            db::push(db, &k.0, &k.1, v.0, v.1.as_ref().map(|v| v.as_str()))?;
                         }
                         return Ok(());
                     }).await {
@@ -470,97 +472,150 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                 );
                             },
                         };
-                        let res = self1.core.get(&ident, batch_keys).await.err_internal()?;
+                        let mut res = self1.core.get(&ident, batch_keys).await.err_internal()?;
                         let mut answers = vec![];
-                        if let Some(res) = res.get(KEY_DNS_CNAME).or_else(|| res.get(lookup_key)) {
-                            match serde_json::from_str::<DnsRecordsetJson>(&res.data)
+                        let filter_some = |v: ResolveValue| match v.data {
+                            Some(v1) => Some((v.expires, v1)),
+                            None => None,
+                        };
+                        if let Some((expires, data)) =
+                            res
+                                .remove(KEY_DNS_CNAME)
+                                .map(filter_some)
+                                .flatten()
+                                .or_else(|| res.remove(lookup_key).map(filter_some).flatten()) {
+                            match serde_json::from_str::<DnsRecordsetJson>(&data)
                                 .context("Failed to parse received record json", ea!())
-                                .err_external()? {
-                                DnsRecordsetJson::A(n) => {
-                                    for n in n {
-                                        let n = match Ipv4Addr::from_str(&n) {
-                                            Err(e) => {
-                                                self1
-                                                    .log
-                                                    .debug_e(
-                                                        e.into(),
-                                                        "A addr in record invalid for DNS",
-                                                        ea!(name = n),
-                                                    );
-                                                continue;
-                                            },
-                                            Ok(n) => n,
-                                        };
-                                        answers.push(
-                                            Record::from_rdata(
-                                                request.query().name().into(),
-                                                res
-                                                    .expires
-                                                    .signed_duration_since(Utc::now())
-                                                    .num_seconds()
-                                                    .try_into()
-                                                    .unwrap_or(i32::MAX as u32),
-                                                trust_dns_client::rr::RData::A(n),
-                                            ),
-                                        );
-                                    }
-                                },
-                                DnsRecordsetJson::AAAA(n) => {
-                                    for n in n {
-                                        let n = match Ipv6Addr::from_str(&n) {
-                                            Err(e) => {
-                                                self1
-                                                    .log
-                                                    .debug_e(
-                                                        e.into(),
-                                                        "AAAA addr in record invalid for DNS",
-                                                        ea!(name = n),
-                                                    );
-                                                continue;
-                                            },
-                                            Ok(n) => n,
-                                        };
-                                        answers.push(
-                                            Record::from_rdata(
-                                                request.query().name().into(),
-                                                res
-                                                    .expires
-                                                    .signed_duration_since(Utc::now())
-                                                    .num_seconds()
-                                                    .try_into()
-                                                    .unwrap_or(i32::MAX as u32),
-                                                trust_dns_client::rr::RData::AAAA(n),
-                                            ),
-                                        );
-                                    }
-                                },
-                                DnsRecordsetJson::Cname(n) => {
-                                    for n in n {
-                                        let n = match Name::from_utf8(&n) {
-                                            Err(e) => {
-                                                self1
-                                                    .log
-                                                    .debug_e(
-                                                        e.into(),
-                                                        "Cname name in record invalid for DNS",
-                                                        ea!(name = n),
-                                                    );
-                                                continue;
-                                            },
-                                            Ok(n) => n,
-                                        };
-                                        answers.push(
-                                            Record::from_rdata(
-                                                request.query().name().into(),
-                                                res
-                                                    .expires
-                                                    .signed_duration_since(Utc::now())
-                                                    .num_seconds()
-                                                    .try_into()
-                                                    .unwrap_or(i32::MAX as u32),
-                                                trust_dns_client::rr::RData::CNAME(n),
-                                            ),
-                                        );
+                                .err_internal()? {
+                                DnsRecordsetJson::V1(v) => {
+                                    match v {
+                                        crate::model::dns::v1::DnsRecordsetJson::A(n) => {
+                                            for n in n {
+                                                let n = match Ipv4Addr::from_str(&n) {
+                                                    Err(e) => {
+                                                        self1
+                                                            .log
+                                                            .debug_e(
+                                                                e.into(),
+                                                                "A addr in record invalid for DNS",
+                                                                ea!(name = n),
+                                                            );
+                                                        continue;
+                                                    },
+                                                    Ok(n) => n,
+                                                };
+                                                answers.push(
+                                                    Record::from_rdata(
+                                                        request.query().name().into(),
+                                                        expires
+                                                            .signed_duration_since(Utc::now())
+                                                            .num_seconds()
+                                                            .try_into()
+                                                            .unwrap_or(i32::MAX as u32),
+                                                        trust_dns_client::rr::RData::A(n),
+                                                    ),
+                                                );
+                                            }
+                                        },
+                                        crate::model::dns::v1::DnsRecordsetJson::Aaaa(n) => {
+                                            for n in n {
+                                                let n = match Ipv6Addr::from_str(&n) {
+                                                    Err(e) => {
+                                                        self1
+                                                            .log
+                                                            .debug_e(
+                                                                e.into(),
+                                                                "AAAA addr in record invalid for DNS",
+                                                                ea!(name = n),
+                                                            );
+                                                        continue;
+                                                    },
+                                                    Ok(n) => n,
+                                                };
+                                                answers.push(
+                                                    Record::from_rdata(
+                                                        request.query().name().into(),
+                                                        expires
+                                                            .signed_duration_since(Utc::now())
+                                                            .num_seconds()
+                                                            .try_into()
+                                                            .unwrap_or(i32::MAX as u32),
+                                                        trust_dns_client::rr::RData::AAAA(n),
+                                                    ),
+                                                );
+                                            }
+                                        },
+                                        crate::model::dns::v1::DnsRecordsetJson::Cname(n) => {
+                                            for n in n {
+                                                let n = match Name::from_utf8(&n) {
+                                                    Err(e) => {
+                                                        self1
+                                                            .log
+                                                            .debug_e(
+                                                                e.into(),
+                                                                "Cname name in record invalid for DNS",
+                                                                ea!(name = n),
+                                                            );
+                                                        continue;
+                                                    },
+                                                    Ok(n) => n,
+                                                };
+                                                answers.push(
+                                                    Record::from_rdata(
+                                                        request.query().name().into(),
+                                                        expires
+                                                            .signed_duration_since(Utc::now())
+                                                            .num_seconds()
+                                                            .try_into()
+                                                            .unwrap_or(i32::MAX as u32),
+                                                        trust_dns_client::rr::RData::CNAME(n),
+                                                    ),
+                                                );
+                                            }
+                                        },
+                                        crate::model::dns::v1::DnsRecordsetJson::Txt(n) => {
+                                            for n in n {
+                                                answers.push(
+                                                    Record::from_rdata(
+                                                        request.query().name().into(),
+                                                        expires
+                                                            .signed_duration_since(Utc::now())
+                                                            .num_seconds()
+                                                            .try_into()
+                                                            .unwrap_or(i32::MAX as u32),
+                                                        trust_dns_client::rr::RData::TXT(TXT::new(vec![n])),
+                                                    ),
+                                                );
+                                            }
+                                        },
+                                        crate::model::dns::v1::DnsRecordsetJson::Mx(n) => {
+                                            for n in n {
+                                                let exchange = match Name::from_utf8(&n.1) {
+                                                    Err(e) => {
+                                                        self1
+                                                            .log
+                                                            .debug_e(
+                                                                e.into(),
+                                                                "Mx name in record invalid for DNS",
+                                                                ea!(name = n.1),
+                                                            );
+                                                        continue;
+                                                    },
+                                                    Ok(n) => n,
+                                                };
+                                                answers.push(
+                                                    Record::from_rdata(
+                                                        request.query().name().into(),
+                                                        expires
+                                                            .signed_duration_since(Utc::now())
+                                                            .num_seconds()
+                                                            .try_into()
+                                                            .unwrap_or(i32::MAX as u32),
+                                                        trust_dns_client::rr::RData::MX(MX::new(n.0, exchange)),
+                                                    ),
+                                                );
+                                            }
+                                        },
                                     }
                                 },
                             }

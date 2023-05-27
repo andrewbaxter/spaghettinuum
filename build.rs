@@ -42,7 +42,7 @@ fn main() {
         let persist_ident = persist.field(&mut latest_version, "zUS446K3I", "identity", field_ident.clone());
         let persist_key = persist.field(&mut latest_version, "zKMLG4285", "key", field_str().build());
         let persist_expires = persist.field(&mut latest_version, "z4NGKQ5LL", "expires", field_utctime_ms().build());
-        let persist_value = persist.field(&mut latest_version, "zZJ7T4VPM", "value", field_str().build());
+        let persist_value = persist.field(&mut latest_version, "zZJ7T4VPM", "value", field_str().opt().build());
         good_ormning::sqlite::generate(&root.join("src/resolver/db.rs"), vec![
             // Versions
             (0usize, latest_version)
@@ -86,17 +86,16 @@ fn main() {
                 field_bytes().custom("crate::publisher::SecretType").build(),
             );
         identities.index("zDZXPBB1L", "ident_ident", &[&ident_ident]).unique().build(&mut latest_version);
-        let publish = latest_version.table("zYLNH9GCP", "cache_persist");
+        let publish = latest_version.table("zYLNH9GCP", "publish");
         let publish_ident = publish.field(&mut latest_version, "zXQXWUVLT", "identity", field_ident.clone());
         let publish_keyvalues =
             publish.field(
                 &mut latest_version,
                 "zMC0B1T32",
                 "keyvalues",
-                field_bytes().custom("crate::model::publish::KeyValues").build(),
+                field_bytes().custom("crate::model::publish::Publish").build(),
             );
-        publish.index("zZ15A1Y6P", "publish_ident", &[&publish_ident]);
-        let publish_sets = vec![set_field(&publish_ident), set_field(&publish_keyvalues)];
+        publish.index("zZ15A1Y6P", "publish_ident", &[&publish_ident]).unique().build(&mut latest_version);
         good_ormning::sqlite::generate(&root.join("src/publisher/db.rs"), vec![
             // Versions
             (0usize, latest_version)
@@ -131,8 +130,8 @@ fn main() {
                 .order(Expr::Field(ident_ident.clone()), Order::Asc)
                 .limit(50)
                 .build_query("list_idents_after", QueryResCount::Many),
-            new_insert(&publish, publish_sets.clone())
-                .on_conflict(InsertConflict::DoUpdate(publish_sets))
+            new_insert(&publish, vec![set_field(&publish_ident), set_field(&publish_keyvalues)])
+                .on_conflict(InsertConflict::DoUpdate(vec![set_field(&publish_keyvalues)]))
                 .build_query("set_keyvalues", QueryResCount::None),
             new_select(&publish)
                 .return_fields(&[&publish_keyvalues])

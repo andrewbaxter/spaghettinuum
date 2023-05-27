@@ -1,7 +1,6 @@
 use std::{
     sync::Arc,
     collections::HashMap,
-    mem::size_of,
     fs,
     io::ErrorKind,
     net::SocketAddr,
@@ -18,7 +17,6 @@ use pem::Pem;
 use sha2::{
     Digest,
 };
-use ed25519_dalek::ed25519::ComponentBytes;
 use loga::{
     Log,
     ea,
@@ -71,7 +69,7 @@ use crate::{
     model::{
         identity::{
             Identity,
-            IdentitySecretMethods,
+            IdentitySecretVersionMethods,
         },
         publish::{
             ResolveKeyValues,
@@ -86,14 +84,19 @@ use crate::{
     },
     es,
     utils::{
-        hash_for_ed25519,
         VisErr,
         ResultVisErr,
-        card,
+        card::{
+            self,
+            extract_gpg_ed25519_sig,
+        },
     },
     aes2,
     publisher::model::{
-        config::IdentityData,
+        config::{
+            IdentityData,
+            SecretTypeCard,
+        },
         protocol::admin::RegisterIdentityRequest,
     },
 };
@@ -126,38 +129,31 @@ async fn announce(log: &Log, message: &Vec<u8>, node: &Node, ident: &Identity, s
                 signature: secret.sign(message.as_ref()),
             }
         },
-        SecretType::Card(fingerprint) => {
+        SecretType::Card(card_desc) => {
             match es!({
-                let mut card: Card<Open> = PcscBackend::open_by_ident(&fingerprint, None)?.into();
+                let mut card: Card<Open> = PcscBackend::open_by_ident(&card_desc.pcsc_id, None)?.into();
                 let mut transaction = card.transaction()?;
+                transaction
+                    .verify_user_for_signing(card_desc.pin.as_bytes())
+                    .log_context(log, "Error unlocking card with pin", ea!(card = card_desc.pcsc_id))?;
                 let mut user = transaction.signing_card().unwrap();
                 let signer_panic =
-                    || panic!("Card {} needs human interaction, automatic republishing won't work", fingerprint);
+                    || panic!(
+                        "Card {} needs human interaction, automatic republishing won't work",
+                        card_desc.pcsc_id
+                    );
                 let mut signer = user.signer(&signer_panic)?;
                 match signer.public() {
                     sequoia_openpgp::packet::Key::V4(k) => match k.mpis() {
                         sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { .. } => {
-                            let gpg_signature =
-                                signer
-                                    .sign(HashAlgorithm::SHA512, &hash_for_ed25519(&message).finalize().to_vec())
-                                    .map_err(|e| loga::Error::new("Card signature failed", ea!(err = e)))?;
-                            let sig = match gpg_signature {
-                                sequoia_openpgp::crypto::mpi::Signature::EdDSA { r, s } => ed25519_dalek
-                                ::Signature
-                                ::from_components(
-                                    r.value_padded(size_of::<ComponentBytes>()).unwrap().to_vec().try_into().unwrap(),
-                                    s
-                                        .value_padded(size_of::<ComponentBytes>())
-                                        .unwrap()
-                                        .to_vec()
-                                        .try_into()
-                                        .unwrap(),
-                                ),
-                                _ => panic!("signature type doesn't match key type"),
-                            };
+                            let hash = crate::model::identity::hash_for_ed25519(&message);
                             return Ok(node::model::protocol::v1::Value {
                                 message: message.clone(),
-                                signature: sig.to_vec(),
+                                signature: extract_gpg_ed25519_sig(
+                                    &signer
+                                        .sign(HashAlgorithm::SHA512, &hash)
+                                        .map_err(|e| loga::Error::new("Card signature failed", ea!(err = e)))?,
+                                ).to_vec(),
                             });
                         },
                         _ => { },
@@ -168,7 +164,11 @@ async fn announce(log: &Log, message: &Vec<u8>, node: &Node, ident: &Identity, s
             }) {
                 Ok(v) => v,
                 Err(e) => {
-                    log.warn_e(e, "Failed to sign publisher advertisement for card secret", ea!(card = fingerprint));
+                    log.warn_e(
+                        e,
+                        "Failed to sign publisher advertisement for card secret",
+                        ea!(card = card_desc.pcsc_id),
+                    );
                     return;
                 },
             }
@@ -251,10 +251,15 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                         if let Some(d) = self.0.data.get(&ident) {
                             let now = Utc::now();
                             for k in req.uri().query().unwrap_or("").split(",") {
-                                if let Some(v) = d.kvs.0.get(k) {
+                                if let Some(v) = d.kvs.data.get(k) {
                                     kvs.0.insert(k.to_string(), publish::v1::ResolveValue {
                                         expires: now + Duration::minutes(v.ttl as i64),
-                                        data: v.data.clone(),
+                                        data: Some(v.data.clone()),
+                                    });
+                                } else {
+                                    kvs.0.insert(k.to_string(), publish::v1::ResolveValue {
+                                        expires: now + Duration::minutes(d.kvs.missing_ttl as i64),
+                                        data: None,
                                     });
                                 }
                             }
@@ -370,12 +375,17 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                                 }).await.err_internal()?.err_internal()? {
                                     let now = Utc::now();
                                     match found_kvs {
-                                        publish::KeyValues::V1(mut found_kvs) => {
+                                        publish::Publish::V1(mut found) => {
                                             for k in req.uri().query().unwrap_or("").split(",") {
-                                                if let Some(v) = found_kvs.0.remove(k) {
+                                                if let Some(v) = found.data.remove(k) {
                                                     kvs.0.insert(k.to_string(), publish::v1::ResolveValue {
                                                         expires: now + Duration::minutes(v.ttl as i64),
-                                                        data: v.data,
+                                                        data: Some(v.data),
+                                                    });
+                                                } else {
+                                                    kvs.0.insert(k.to_string(), publish::v1::ResolveValue {
+                                                        expires: now + Duration::minutes(found.missing_ttl as i64),
+                                                        data: None,
                                                     });
                                                 }
                                             }
@@ -505,13 +515,16 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                                             RegisterIdentityRequest::Card(c) => {
                                                 let identity =
                                                     card::get_card(
-                                                        &c.gpg_id,
+                                                        &c.pcsc_id,
                                                         |card| card::card_to_ident(card),
                                                     )?.ok_or_else(
                                                         || loga::Error::new("Card key type not supported", ea!()),
                                                     )?;
                                                 service.0.db.get().await?.interact(move |db| {
-                                                    db::add_ident(db, &identity, &SecretType::Card(c.gpg_id))
+                                                    db::add_ident(db, &identity, &SecretType::Card(SecretTypeCard {
+                                                        pcsc_id: c.pcsc_id,
+                                                        pin: c.pin,
+                                                    }))
                                                 }).await??;
                                             },
                                         }
@@ -556,7 +569,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                                 async fn ep(
                                     service: Data<&Arc<Inner>>,
                                     Path(identity): Path<String>,
-                                    body: Json<crate::model::publish::v1::KeyValues>,
+                                    body: Json<crate::model::publish::v1::Publish>,
                                 ) -> Response {
                                     match aes!({
                                         let identity = Identity::from_str(&identity)?;
@@ -566,7 +579,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                                                 db::set_keyvalues(
                                                     db,
                                                     &identity,
-                                                    &crate::model::publish::KeyValues::V1(body.0),
+                                                    &crate::model::publish::Publish::V1(body.0),
                                                 )
                                             }).await??;
                                         }

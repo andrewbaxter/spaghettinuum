@@ -76,7 +76,7 @@ struct SerialIpv6 {
     port: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Addr(pub SocketAddr);
 
 impl Display for Addr {
@@ -134,7 +134,7 @@ impl<'a> Deserialize<'a> for Addr {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct NodeInfo {
     pub id: NodeIdentity,
     pub address: Addr,

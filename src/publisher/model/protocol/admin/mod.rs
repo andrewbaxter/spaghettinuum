@@ -15,7 +15,8 @@ pub struct RegisterIdentityRequestLocal {
 
 #[derive(Serialize, Deserialize)]
 pub struct RegisteryIdentityRequestCard {
-    pub gpg_id: String,
+    pub pcsc_id: String,
+    pub pin: String,
 }
 
 #[derive(Serialize, Deserialize)]

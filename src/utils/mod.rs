@@ -17,23 +17,14 @@ use manual_future::{
     ManualFutureCompleter,
 };
 use serde::Serialize;
-use sha2::{
-    Sha512,
-    Digest,
-};
 
 pub mod card;
 pub mod standard;
+pub mod misctests;
 
 pub trait BincodeSerializable {
     fn serialize(&self) -> Box<[u8]>;
     fn serialize_into(&self, w: &mut dyn Write);
-}
-
-pub fn hash_for_ed25519(data: &[u8]) -> Sha512 {
-    let mut hash = Sha512::new();
-    hash.update(data);
-    return hash;
 }
 
 impl<T: Serialize> BincodeSerializable for T {

@@ -2,7 +2,9 @@ use core::fmt::Debug;
 use std::fmt::Display;
 use ed25519_dalek;
 use ed25519_dalek::Signature;
+use ed25519_dalek::Signer;
 use ed25519_dalek::SigningKey;
+use ed25519_dalek::Verifier;
 use ed25519_dalek::VerifyingKey;
 use loga::ResultContext;
 use loga::ea;
@@ -11,7 +13,6 @@ use serde::{
     Deserialize,
     Serialize,
 };
-use crate::utils::hash_for_ed25519;
 use super::NodeIdentityMethods;
 use super::NodeSecretMethods;
 
@@ -64,8 +65,7 @@ impl Ed25519NodeIdentity {
 
 impl NodeIdentityMethods for Ed25519NodeIdentity {
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), loga::Error> {
-        let hash = hash_for_ed25519(message);
-        self.0.verify_prehashed(hash, None, &Signature::from_slice(signature)?)?;
+        self.0.verify(message, &Signature::from_slice(signature)?)?;
         Ok(())
     }
 }
@@ -105,8 +105,7 @@ impl<'de> Deserialize<'de> for Ed25519NodeSecret {
 
 impl NodeSecretMethods for Ed25519NodeSecret {
     fn sign(&self, message: &[u8]) -> Box<[u8]> {
-        let hash = hash_for_ed25519(message);
-        return self.0.sign_prehashed(hash, None).unwrap().to_bytes().to_vec().into_boxed_slice();
+        return self.0.sign(message).to_bytes().to_vec().into_boxed_slice();
     }
 }
 

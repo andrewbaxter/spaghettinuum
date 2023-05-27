@@ -49,9 +49,10 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
             }
             if version < 0i64 {
                 txn.execute(
-                    "create table \"cache_persist\" ( \"identity\" blob not null , \"keyvalues\" blob not null )",
+                    "create table \"publish\" ( \"identity\" blob not null , \"keyvalues\" blob not null )",
                     (),
                 )?;
+                txn.execute("create unique index \"publish_ident\" on \"publish\" ( \"identity\" )", ())?;
                 txn.execute(
                     "create table \"identities\" ( \"secret\" blob not null , \"identity\" blob not null )",
                     (),
@@ -197,11 +198,11 @@ pub fn list_idents_after(
 pub fn set_keyvalues(
     db: &mut rusqlite::Connection,
     identity: &crate::model::identity::Identity,
-    keyvalues: &crate::model::publish::KeyValues,
+    keyvalues: &crate::model::publish::Publish,
 ) -> Result<(), GoodError> {
     db
         .execute(
-            "insert into \"cache_persist\" ( \"identity\" , \"keyvalues\" ) values ( $1 , $2 ) on conflict do update set \"identity\" = $1 , \"keyvalues\" = $2",
+            "insert into \"publish\" ( \"identity\" , \"keyvalues\" ) values ( $1 , $2 ) on conflict do update set \"keyvalues\" = $2",
             rusqlite::params![identity.to_sql(), keyvalues.to_sql()],
         )
         .map_err(|e| GoodError(e.to_string()))?;
@@ -211,17 +212,15 @@ pub fn set_keyvalues(
 pub fn get_keyvalues(
     db: &mut rusqlite::Connection,
     identity: &crate::model::identity::Identity,
-) -> Result<Option<crate::model::publish::KeyValues>, GoodError> {
+) -> Result<Option<crate::model::publish::Publish>, GoodError> {
     let mut stmt =
-        db.prepare(
-            "select \"cache_persist\" . \"keyvalues\" from \"cache_persist\" where ( \"cache_persist\" . \"identity\" = $1 )",
-        )?;
+        db.prepare("select \"publish\" . \"keyvalues\" from \"publish\" where ( \"publish\" . \"identity\" = $1 )")?;
     let mut rows = stmt.query(rusqlite::params![identity.to_sql()]).map_err(|e| GoodError(e.to_string()))?;
     let r = rows.next()?;
     if let Some(r) = r {
         return Ok(Some({
             let x: Vec<u8> = r.get(0usize)?;
-            let x = crate::model::publish::KeyValues::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+            let x = crate::model::publish::Publish::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
             x
         }));
     }
@@ -234,7 +233,7 @@ pub fn delete_keyvalues(
 ) -> Result<(), GoodError> {
     db
         .execute(
-            "delete from \"cache_persist\" where ( \"cache_persist\" . \"identity\" = $1 )",
+            "delete from \"publish\" where ( \"publish\" . \"identity\" = $1 )",
             rusqlite::params![identity.to_sql()],
         )
         .map_err(|e| GoodError(e.to_string()))?;

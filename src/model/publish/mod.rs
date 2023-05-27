@@ -13,11 +13,11 @@ pub enum ResolveKeyValues {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum KeyValues {
-    V1(v1::KeyValues),
+pub enum Publish {
+    V1(v1::Publish),
 }
 
-impl KeyValues {
+impl Publish {
     pub fn to_sql(&self) -> Vec<u8> {
         return bincode::serialize(self).unwrap();
     }

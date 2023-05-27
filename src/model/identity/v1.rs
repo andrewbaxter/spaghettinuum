@@ -1,6 +1,11 @@
 use std::{
     fmt::Display,
 };
+use loga::{
+    Log,
+    ea,
+    DebugDisplay,
+};
 use rand::rngs::OsRng;
 use serde::{
     Deserialize,
@@ -12,11 +17,13 @@ use ed25519_dalek::{
     VerifyingKey,
     Signature,
     SigningKey,
+    Signer,
+    Verifier,
 };
-use crate::utils::hash_for_ed25519;
 use super::{
-    IdentityMethods,
-    IdentitySecretMethods,
+    IdentityVersionMethods,
+    IdentitySecretVersionMethods,
+    hash_for_ed25519,
 };
 
 #[derive(Eq, PartialEq, Clone)]
@@ -57,13 +64,25 @@ impl Debug for Ed25519Identity {
 }
 
 impl Ed25519Identity {
-    pub fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
-        let hash = hash_for_ed25519(message);
+    pub fn verify(&self, log: &Log, message: &[u8], signature: &[u8]) -> bool {
         let sig_obj = match Signature::from_slice(signature) {
             Ok(s) => s,
-            Err(_) => return false,
+            Err(e) => {
+                log.debug_e(e.into(), "Failed to parse signature", ea!(signature = signature.dbg_str()));
+                return false;
+            },
         };
-        return self.0.verify_prehashed(hash, None, &sig_obj).is_ok();
+        return match self.0.verify(&hash_for_ed25519(message), &sig_obj) {
+            Ok(_) => true,
+            Err(e) => {
+                log.debug_e(
+                    e.into(),
+                    "Failed to verify signature",
+                    ea!(message = message.dbg_str(), signature = signature.dbg_str()),
+                );
+                return false;
+            },
+        };
     }
 
     pub fn new() -> (Self, Ed25519IdentitySecret) {
@@ -95,10 +114,9 @@ impl<'de> Deserialize<'de> for Ed25519IdentitySecret {
     }
 }
 
-impl IdentitySecretMethods for Ed25519IdentitySecret {
-    fn sign(&self, data: &[u8]) -> Vec<u8> {
-        let hash = hash_for_ed25519(data);
-        return self.0.sign_prehashed(hash, None).unwrap().to_bytes().to_vec();
+impl IdentitySecretVersionMethods for Ed25519IdentitySecret {
+    fn sign(&self, message: &[u8]) -> Vec<u8> {
+        return self.0.sign(&hash_for_ed25519(message)).to_bytes().to_vec();
     }
 }
 
@@ -114,10 +132,10 @@ impl Display for Identity {
     }
 }
 
-impl IdentityMethods for Identity {
-    fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
+impl IdentityVersionMethods for Identity {
+    fn verify(&self, log: &Log, message: &[u8], signature: &[u8]) -> bool {
         match self {
-            Identity::Ed25519(i) => i.verify(message, signature),
+            Identity::Ed25519(i) => i.verify(log, message, signature),
         }
     }
 }
@@ -151,10 +169,10 @@ impl IdentitySecret {
     }
 }
 
-impl IdentitySecretMethods for IdentitySecret {
-    fn sign(&self, data: &[u8]) -> Vec<u8> {
+impl IdentitySecretVersionMethods for IdentitySecret {
+    fn sign(&self, message: &[u8]) -> Vec<u8> {
         match self {
-            IdentitySecret::Ed25519(i) => i.sign(data),
+            IdentitySecret::Ed25519(i) => i.sign(message),
         }
     }
 }

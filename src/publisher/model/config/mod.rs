@@ -16,10 +16,16 @@ use crate::model::{
 };
 
 #[derive(Deserialize, Serialize)]
+pub struct SecretTypeCard {
+    pub pcsc_id: String,
+    pub pin: String,
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretType {
     Local(IdentitySecret),
-    Card(String),
+    Card(SecretTypeCard),
 }
 
 impl SecretType {
@@ -35,7 +41,7 @@ impl SecretType {
 #[derive(Deserialize, Serialize)]
 pub struct IdentityData {
     pub secret: SecretType,
-    pub kvs: model::publish::v1::KeyValues,
+    pub kvs: model::publish::v1::Publish,
 }
 
 #[derive(Deserialize, Serialize)]
