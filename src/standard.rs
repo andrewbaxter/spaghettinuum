@@ -39,7 +39,7 @@ pub const COMMON_KEYS_DNS: &[&'static str] =
         KEY_DNS_DS,
         KEY_DNS_CDNSKEY,
     ];
-//. Unsupported
+// Not yet supported
 //. pub const KEY_DNS_AFSDB: &'static str = "3dmm7eocsjbnmy1jokcban5bre";
 //. pub const KEY_DNS_APL: &'static str = "74yih9nx63gd5e5ea9u77bswjc";
 //. pub const KEY_DNS_CAA: &'static str = "mkt18be4ebyzjd9ushujkdgd3w";

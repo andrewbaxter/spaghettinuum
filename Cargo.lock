@@ -3106,6 +3106,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.6",
  "stretto",
+ "structre",
  "taskmanager",
  "tokio",
  "trust-dns-client",

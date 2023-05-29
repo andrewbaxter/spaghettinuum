@@ -4,3 +4,4 @@ pub mod model;
 pub mod resolver;
 pub mod publisher;
 pub mod dnsbridger;
+pub mod standard;

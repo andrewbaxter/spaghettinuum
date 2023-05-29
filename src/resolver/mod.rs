@@ -105,22 +105,32 @@ use crate::{
     utils::{
         ResultVisErr,
         VisErr,
-        standard::{
-            KEY_DNS_A,
-            KEY_DNS_AAAA,
-            KEY_DNS_CNAME,
-            KEY_DNS_NS,
-            KEY_DNS_PTR,
-            KEY_DNS_SOA,
-            KEY_DNS_TXT,
-            KEY_DNS_MX,
-            COMMON_KEYS_DNS,
-        },
+    },
+    standard::{
+        KEY_DNS_A,
+        KEY_DNS_AAAA,
+        KEY_DNS_CNAME,
+        KEY_DNS_NS,
+        KEY_DNS_PTR,
+        KEY_DNS_SOA,
+        KEY_DNS_TXT,
+        KEY_DNS_MX,
+        COMMON_KEYS_DNS,
     },
     aes2,
 };
 
 pub mod db;
+
+// Workaround for unqualified anyhow usage issue
+pub mod parse_path {
+    use structre::structre;
+
+    #[structre("/v1/(?P<identity>.*)")]
+    pub struct V1Path {
+        pub identity: String,
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 pub struct ResolverConfig {
@@ -355,14 +365,17 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
 
             async fn call(&self, req: Request) -> poem::Result<Self::Output> {
                 match aes!({
-                    let ident_src = req.uri().path().get(2..).unwrap_or("");
+                    let ident_src =
+                        parse_path::V1PathFromRegex::new()
+                            .parse(req.uri().path())
+                            .map_err(|e| loga::Error::from(e))?;
                     let kvs =
                         self
                             .0
                             .get(
                                 &Identity::from_str(
-                                    &ident_src,
-                                ).context("Failed to parse identity", ea!(identity = ident_src))?,
+                                    &ident_src.identity,
+                                ).context("Failed to parse identity", ea!(identity = ident_src.identity))?,
                                 &req.uri().query().unwrap_or("").split(",").collect_vec(),
                             )
                             .await?;

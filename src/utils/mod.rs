@@ -19,7 +19,6 @@ use manual_future::{
 use serde::Serialize;
 
 pub mod card;
-pub mod standard;
 pub mod misctests;
 
 pub trait BincodeSerializable {

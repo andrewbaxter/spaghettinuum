@@ -59,17 +59,17 @@ use spaghettinuum::{
     },
     utils::{
         card,
-        standard::{
-            PORT_RESOLVER,
-            PORT_PUBLISHER_API,
-            PORT_NODE,
-            PORT_PUBLISHER,
-            KEY_DNS_A,
-            KEY_DNS_CNAME,
-            KEY_DNS_AAAA,
-            KEY_DNS_MX,
-            KEY_DNS_TXT,
-        },
+    },
+    standard::{
+        PORT_RESOLVER,
+        PORT_PUBLISHER_API,
+        PORT_NODE,
+        PORT_PUBLISHER,
+        KEY_DNS_A,
+        KEY_DNS_CNAME,
+        KEY_DNS_AAAA,
+        KEY_DNS_MX,
+        KEY_DNS_TXT,
     },
     publisher::{
         self,
@@ -202,6 +202,22 @@ struct GenerateConfigArgs {
     pub dns_bridge: bool,
 }
 
+#[derive(clap::Args)]
+struct GenerateDnsDataArgs {
+    pub ttl: u32,
+    #[arg(long)]
+    pub dns_cname: Vec<String>,
+    #[arg(long)]
+    pub dns_a: Vec<String>,
+    #[arg(long)]
+    pub dns_aaaa: Vec<String>,
+    #[arg(long)]
+    pub dns_txt: Vec<String>,
+    /// In the format `PRIORITY/NAME` ex `10/mail.example.org`
+    #[arg(long)]
+    pub dns_mx: Vec<String>,
+}
+
 #[derive(Parser)]
 enum Args {
     /// Create a new local (file) identity
@@ -224,6 +240,8 @@ enum Args {
     Query(QueryArgs),
     /// Generate base server configs
     GenerateConfig(GenerateConfigArgs),
+    /// Generate data for publishing DNS records
+    GenerateDnsData(GenerateDnsDataArgs),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -468,7 +486,7 @@ async fn main() {
                         .unwrap()
                         .get(
                             format!(
-                                "{}/{}?{}",
+                                "{}/v1/{}?{}",
                                 config.server,
                                 config.identity,
                                 config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
@@ -632,6 +650,80 @@ async fn main() {
                     },
                 };
                 println!("{}", serde_json::to_string_pretty(&config).unwrap());
+            },
+            Args::GenerateDnsData(config) => {
+                println!("{}", serde_json::to_string_pretty(&model::publish::v1::Publish {
+                    missing_ttl: config.ttl,
+                    data: {
+                        let mut kvs = HashMap::new();
+                        if !config.dns_cname.is_empty() {
+                            kvs.insert(KEY_DNS_CNAME.to_string(), PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &crate::model::dns::DnsRecordsetJson::V1(
+                                        crate::model::dns::v1::DnsRecordsetJson::Cname(config.dns_cname),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_a.is_empty() {
+                            kvs.insert(KEY_DNS_A.to_string(), PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &crate::model::dns::DnsRecordsetJson::V1(
+                                        crate::model::dns::v1::DnsRecordsetJson::A(config.dns_a),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_aaaa.is_empty() {
+                            kvs.insert(KEY_DNS_AAAA.to_string(), PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &crate::model::dns::DnsRecordsetJson::V1(
+                                        crate::model::dns::v1::DnsRecordsetJson::Aaaa(config.dns_aaaa),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_txt.is_empty() {
+                            kvs.insert(KEY_DNS_TXT.to_string(), PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &crate::model::dns::DnsRecordsetJson::V1(
+                                        crate::model::dns::v1::DnsRecordsetJson::Txt(config.dns_txt),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_mx.is_empty() {
+                            let mut values = vec![];
+                            for v in config.dns_mx {
+                                let (priority, name) =
+                                    v
+                                        .split_once("/")
+                                        .ok_or_else(
+                                            || loga::Error::new(
+                                                "Incorrect mx record specification, must be like `PRIORITY/NAME`",
+                                                ea!(entry = v),
+                                            ),
+                                        )?;
+                                let priority =
+                                    u16::from_str(&priority).context("Couldn't parse priority as int", ea!())?;
+                                values.push((priority, name.to_string()));
+                            }
+                            kvs.insert(KEY_DNS_MX.to_string(), PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &crate::model::dns::DnsRecordsetJson::V1(
+                                        crate::model::dns::v1::DnsRecordsetJson::Mx(values),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        kvs
+                    },
+                }).unwrap());
             },
         }
         return Ok(());
