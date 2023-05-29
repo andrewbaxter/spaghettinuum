@@ -59,7 +59,7 @@ pub struct FindRequest {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SerialAddr {
+enum SerialAddrInner {
     V4(SerialIpv4),
     V6(SerialIpv6),
 }
@@ -77,24 +77,24 @@ struct SerialIpv6 {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Addr(pub SocketAddr);
+pub struct SerialAddr(pub SocketAddr);
 
-impl Display for Addr {
+impl Display for SerialAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         <dyn Display>::fmt(&self.0, f)
     }
 }
 
-impl Serialize for Addr {
+impl Serialize for SerialAddr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer {
         Serialize::serialize(&match self.0.ip() {
-            IpAddr::V4(ip) => SerialAddr::V4(SerialIpv4 {
+            IpAddr::V4(ip) => SerialAddrInner::V4(SerialIpv4 {
                 addr: ip.octets(),
                 port: self.0.port(),
             }),
-            IpAddr::V6(ip) => SerialAddr::V6(SerialIpv6 {
+            IpAddr::V6(ip) => SerialAddrInner::V6(SerialIpv6 {
                 addr: ip.segments(),
                 port: self.0.port(),
             }),
@@ -102,18 +102,18 @@ impl Serialize for Addr {
     }
 }
 
-impl<'a> Deserialize<'a> for Addr {
+impl<'a> Deserialize<'a> for SerialAddr {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'a> {
-        Ok(match SerialAddr::deserialize(deserializer)? {
-            SerialAddr::V4(addr) => Addr(
+        Ok(match SerialAddrInner::deserialize(deserializer)? {
+            SerialAddrInner::V4(addr) => SerialAddr(
                 SocketAddr::new(
                     IpAddr::V4(Ipv4Addr::new(addr.addr[0], addr.addr[1], addr.addr[2], addr.addr[3])),
                     addr.port,
                 ),
             ),
-            SerialAddr::V6(addr) => Addr(
+            SerialAddrInner::V6(addr) => SerialAddr(
                 SocketAddr::new(
                     IpAddr::V6(
                         Ipv6Addr::new(
@@ -137,12 +137,12 @@ impl<'a> Deserialize<'a> for Addr {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct NodeInfo {
     pub id: NodeIdentity,
-    pub address: Addr,
+    pub address: SerialAddr,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ValueBody {
-    pub addr: Addr,
+    pub addr: SerialAddr,
     pub cert_hash: Vec<u8>,
     // Max 24h
     pub expires: chrono::DateTime<chrono::Utc>,

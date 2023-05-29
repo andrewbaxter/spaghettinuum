@@ -31,7 +31,10 @@ use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{
+    HashMap,
+    HashSet,
+};
 use std::fmt::Debug;
 use std::fs;
 use std::io::{
@@ -63,7 +66,7 @@ use self::model::protocol::v1::{
     Value,
 };
 use self::model::protocol::{
-    Addr,
+    SerialAddr,
     ValueBody,
 };
 use self::model::protocol::FindMode;
@@ -189,7 +192,7 @@ pub struct NodeInner {
 #[derive(Clone)]
 pub struct Node(Arc<NodeInner>);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct OutstandingNodeEntry {
     dist: DhtHash,
     leading_zeros: usize,
@@ -214,6 +217,7 @@ struct FindState {
     timeout: Instant,
     best: Vec<BestNodeEntry>,
     outstanding: Vec<OutstandingNodeEntry>,
+    requested: HashSet<NodeIdentity>,
     // for storing value, or retrieving value
     value: Option<Value>,
     futures: Vec<ManualFutureCompleter<Option<Value>>>,
@@ -253,6 +257,9 @@ struct Persisted {
 }
 
 impl Node {
+    /// Creates and starts a new node within the task manager. Waits until the socket
+    /// is open. Bootstrapping is asynchronous; you should wait until a sufficient
+    /// number of peers are found before doing anything automatically.
     pub async fn new(
         log: &Log,
         tm: TaskManager,
@@ -311,7 +318,8 @@ impl Node {
                 (own_id, own_secret, array_init::array_init(|_| vec![]))
             }
         };
-        log.info("Starting", ea!(id = own_id));
+        let log = log.fork(ea!(ident = own_id));
+        log.info("Starting", ea!());
         let sock = {
             let log = log.fork(ea!(addr = addr));
             UdpSocket::bind(addr).await.log_context(&log, "Failed to open gnocchi UDP port", ea!())?
@@ -541,6 +549,10 @@ impl Node {
         return Ok(dir);
     }
 
+    pub fn identity(&self) -> NodeIdentity {
+        return self.0.own_id.clone();
+    }
+
     pub async fn get(&self, key: Identity) -> Option<ValueBody> {
         let (f, c) = ManualFuture::new();
         let local_value = self.0.store.lock().unwrap().get(&key).map(|v| v.value.clone());
@@ -580,7 +592,7 @@ impl Node {
                         req_id: self.0.next_req_id.fetch_add(1, Ordering::Relaxed),
                         node: NodeInfo {
                             id: id.clone(),
-                            address: Addr(addr.clone()),
+                            address: SerialAddr(addr.clone()),
                         },
                     }))
                 },
@@ -627,6 +639,7 @@ impl Node {
                         node: BestNodeEntryNode::Self_,
                     }],
                     outstanding: vec![],
+                    requested: HashSet::new(),
                     value: store,
                     futures: vec![],
                 }),
@@ -665,10 +678,22 @@ impl Node {
                 sender: self.0.own_id.clone(),
             }))).await;
         }
-        self.0.find_timeouts.unbounded_send(NextFindTimeout {
+        match self.0.find_timeouts.unbounded_send(NextFindTimeout {
             end: timeout,
             key: (mode, req_id),
-        }).unwrap();
+        }) {
+            Ok(_) => { },
+            Err(e) => {
+                let e = e.into_send_error();
+                if e.is_disconnected() {
+                    // nop
+                } else if e.is_full() {
+                    unreachable!();
+                } else {
+                    unreachable!();
+                }
+            },
+        };
     }
 
     async fn complete_state(&self, state: FindState) {
@@ -701,14 +726,15 @@ impl Node {
     }
 
     async fn handle_challenge_resp(&self, resp: ChallengeResponse) {
-        let log = self.0.log.fork(ea!(action = "challenge_response", node = resp.sender.dbg_str()));
+        let log = self.0.log.fork(ea!(action = "challenge_response", from_ident = resp.sender.dbg_str()));
 
         // Lookup request state
         let mut borrowed_states = self.0.challenge_states.lock().unwrap();
         let state_entry = match borrowed_states.entry(resp.sender.clone()) {
             Entry::Occupied(s) => s,
             Entry::Vacant(_) => {
-                log.warn("No request state matching response target", ea!());
+                // Happens normally if outgoing replaced for a better peer and then the request is
+                // resolved before resp comes back
                 return;
             },
         };
@@ -730,7 +756,17 @@ impl Node {
     }
 
     async fn handle_find_resp(&self, resp: FindResponse) {
-        let log = self.0.log.fork(ea!(action = "find_response", node = &resp.body.mode.dbg_str()));
+        let log: Log =
+            self
+                .0
+                .log
+                .fork(
+                    ea!(
+                        action = "find_response",
+                        from_ident = resp.body.sender.dbg_str(),
+                        mode = &resp.body.mode.dbg_str()
+                    ),
+                );
         let mut defer_next_req = vec![];
         let mut transfer_stored_addr: Option<SocketAddr> = None;
         let state = {
@@ -755,7 +791,7 @@ impl Node {
             let outstanding_entry = match outstanding_entry {
                 Some(e) => e,
                 None => {
-                    log.warn("No outstanding request in state for sender", ea!(sender = resp.body.sender.dbg_str()));
+                    // May have been dropped because there are better candidates
                     return;
                 },
             };
@@ -777,16 +813,18 @@ impl Node {
                     .get_closest_peers(self.0.own_id_hash, NEIGHBORHOOD)
                     .iter()
                     .any(|p| diff(&hash(&p.id), &self.0.own_id_hash).1 < sender_dist) {
+                    // Incidental work; added sender as a close peer, and sender is the closest peer
+                    // so need to replicate all state to it (i.e. it is one of N closest nodes to all
+                    // data on this node)
                     transfer_stored_addr = Some(outstanding_entry.node.address.0.clone());
                 }
             }
 
-            // Add node that responded to best list, if there's space or it's higher priority
-            // and it's not already in there 1
+            // The node responded and is legit, add it to the best node set
             loop {
                 let mut replace_best = false;
                 if state.best.len() == NEIGHBORHOOD {
-                    if state.best.last().unwrap().dist > sender_dist {
+                    if sender_dist >= state.best.last().unwrap().dist {
                         break;
                     }
                     replace_best = true;
@@ -812,45 +850,55 @@ impl Node {
             // issue with mutex guards)
             match resp.body.inner {
                 FindResponseModeBody::Nodes(nodes) => {
+                    // Send requests to each of the next hop nodes that are closer than what we've
+                    // seen + that don't already have outgoing requests...
                     for n in nodes {
-                        // Fan out to new nodes
+                        if !state.requested.insert(n.id.clone()) {
+                            // Already considered/requested this node previously - this overlaps info in
+                            // best/outstanding partially, but if we reject a response (ex: bad signature) it
+                            // will never go into the best/outstanding collections so we could request it
+                            // repeatedly. This is an explicit check on that.
+                            continue;
+                        }
                         let candidate_hash = hash(&n.id);
-                        let (leading_zeros, dist) = diff(&candidate_hash, &state.target_hash);
+                        let (leading_zeros, candidate_dist) = diff(&candidate_hash, &state.target_hash);
 
-                        // If best list is full and this node is farther away than any current nodes, skip
-                        // it
-                        if state.best.len() == NEIGHBORHOOD && dist > state.best.last().unwrap().dist {
+                        // If best list is full and found node is farther away than any current nodes,
+                        // drop it
+                        if state.best.len() == NEIGHBORHOOD && candidate_dist >= state.best.last().unwrap().dist {
                             continue;
                         }
 
-                        // If outstanding list is full and this node is farther away than any current
-                        // nodes, skip it
+                        // If outstanding list is full and found node is farther away than any current
+                        // nodes, drop it
                         let mut replace_outstanding = false;
                         if state.outstanding.len() == PARALLEL {
-                            if state.outstanding.last().unwrap().dist < dist {
+                            if candidate_dist >= state.outstanding.last().unwrap().dist {
                                 continue;
                             }
+
+                            // Not farther away, we can pop the farther one off and add the found node below
                             replace_outstanding = true;
                         }
 
-                        // If this node already in best, skip it
-                        if state.best.iter().any(|e| match &e.node {
-                            BestNodeEntryNode::Self_ => self.0.own_id == n.id,
-                            BestNodeEntryNode::Node(f) => f.id == n.id,
+                        // If found node already in best, drop (ignore) it
+                        if state.best.iter().any(|e| n.id == *match &e.node {
+                            BestNodeEntryNode::Self_ => &self.0.own_id,
+                            BestNodeEntryNode::Node(f) => &f.id,
                         }) {
                             continue;
                         }
 
-                        // If this node already in outstanding, skip it
+                        // If found node already in outstanding, drop (ignore) it
                         if state.outstanding.iter().any(|e| e.node.id == n.id) {
                             continue;
                         }
+                        let challenge = generate_challenge();
                         if replace_outstanding {
                             state.outstanding.pop();
                         }
-                        let challenge = generate_challenge();
                         state.outstanding.push(OutstandingNodeEntry {
-                            dist: dist,
+                            dist: candidate_dist,
                             challenge: challenge.clone(),
                             node: n.clone(),
                             leading_zeros: leading_zeros,
@@ -874,9 +922,7 @@ impl Node {
                         FindMode::Nodes(_) => { },
                         // bad response
                         FindMode::Put(_) => { },
-                        FindMode::Get(k) => 
-                        // 1
-                        loop {
+                        FindMode::Get(k) => loop {
                             if !k.verify(&log, &value.message, &value.signature) {
                                 log.warn("Got value with bad signature", ea!());
                                 break;
@@ -972,7 +1018,7 @@ impl Node {
     }
 
     async fn handle(&self, m: Protocol, reply_to: &SocketAddr) -> Result<(), loga::Error> {
-        let log = self.0.log.fork(ea!(addr = reply_to, message = m.dbg_str()));
+        let log = self.0.log.fork(ea!(from_addr = reply_to, message = m.dbg_str()));
         log.debug("Received", ea!());
         match m {
             Protocol::V1(v1) => match v1 {
@@ -1117,7 +1163,7 @@ impl Node {
     }
 
     async fn send(&self, addr: &SocketAddr, data: Protocol) {
-        self.0.log.debug("Sending", ea!(addr = addr, message = data.dbg_str()));
+        self.0.log.debug("Sending", ea!(to_addr = addr, message = data.dbg_str()));
         self.0.socket.send_to(&data.to_bytes(), addr).await.unwrap();
     }
 }

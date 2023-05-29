@@ -80,7 +80,7 @@ use crate::{
     node::{
         self,
         Node,
-        model::protocol::Addr,
+        model::protocol::SerialAddr,
     },
     es,
     utils::{
@@ -321,7 +321,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                     let advertise_addr = advertise_addr.clone();
                     return async move {
                         let message = node::model::protocol::v1::ValueBody {
-                            addr: Addr(advertise_addr),
+                            addr: SerialAddr(advertise_addr),
                             cert_hash: pub_hash,
                             expires: Utc::now() + Duration::hours(12),
                         }.to_bytes();
@@ -458,7 +458,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                     return async move {
                         match aes!({
                             let message = node::model::protocol::v1::ValueBody {
-                                addr: Addr(advertise_url),
+                                addr: SerialAddr(advertise_url),
                                 cert_hash: pub_hash,
                                 expires: Utc::now() + Duration::hours(12),
                             }.to_bytes();
@@ -585,7 +585,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                                         }
                                         {
                                             let announce_message = node::model::protocol::v1::ValueBody {
-                                                addr: Addr(service.publisher_advertise_url.clone()),
+                                                addr: SerialAddr(service.publisher_advertise_url.clone()),
                                                 cert_hash: service.publisher_pub_cert_hash.clone(),
                                                 expires: Utc::now() + Duration::hours(12),
                                             }.to_bytes();
