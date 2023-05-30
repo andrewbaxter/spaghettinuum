@@ -784,7 +784,7 @@ impl Node {
                     return;
                 },
             };
-            let mut state = state_entry.get_mut();
+            let state = state_entry.get_mut();
             let mut outstanding_entry: Option<OutstandingNodeEntry> = None;
             state.outstanding.retain(|e| {
                 if e.node.id == resp.body.sender {

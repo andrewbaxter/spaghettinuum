@@ -25,6 +25,7 @@ pub struct SecretTypeCard {
 #[serde(rename_all = "snake_case")]
 pub enum SecretType {
     Local(IdentitySecret),
+    #[cfg(feature = "card")]
     Card(SecretTypeCard),
 }
 

@@ -18,6 +18,7 @@ use manual_future::{
 };
 use serde::Serialize;
 
+#[cfg(feature = "card")]
 pub mod pgp;
 pub mod versioned;
 pub mod misctests;

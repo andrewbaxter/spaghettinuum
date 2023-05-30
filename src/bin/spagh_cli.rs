@@ -1,82 +1,34 @@
-use std::{
-    path::PathBuf,
-    fs,
-    net::{
-        SocketAddr,
-        SocketAddrV4,
-        Ipv4Addr,
-        IpAddr,
-        SocketAddrV6,
-    },
-    env::current_dir,
-    str::FromStr,
-    collections::HashMap,
-};
-use clap::{
-    Parser,
-    builder::{
-        PossibleValue,
-    },
-    ValueEnum,
-};
+use clap::{builder::PossibleValue, Parser, ValueEnum};
 use itertools::Itertools;
-use loga::{
-    Log,
-    ea,
-    ResultContext,
-};
-use openpgp_card_pcsc::{
-    PcscBackend,
-};
-use openpgp_card_sequoia::{
-    state::Open,
-    Card,
-};
-use poem::{
-    http::{
-        Uri,
-    },
-    async_trait,
-};
+use loga::{ea, Log, ResultContext};
+use openpgp_card_pcsc::PcscBackend;
+use openpgp_card_sequoia::{state::Open, Card};
+use poem::{async_trait, http::Uri};
 use reqwest::Response;
-use serde::{
-    Serialize,
-    Deserialize,
-};
+use serde::{Deserialize, Serialize};
 use spaghettinuum::{
     config::Config,
-    node::config::NodeConfig,
-    publisher::config::{
-        IdentityData,
-        SecretType,
-        SecretTypeCard,
-    },
     data::{
-        identity::{
-            Identity,
-            IdentitySecret,
-        },
         self,
-        publisher::{
-            v1::{
-                PublishValue,
-            },
-        },
+        identity::{Identity, IdentitySecret},
+        node::nodeidentity::NodeIdentity,
+        publisher::v1::PublishValue,
         standard::{
-            PORT_RESOLVER,
-            PORT_PUBLISHER_API,
-            PORT_NODE,
-            PORT_PUBLISHER,
-            KEY_DNS_A,
-            KEY_DNS_CNAME,
-            KEY_DNS_AAAA,
-            KEY_DNS_MX,
-            KEY_DNS_TXT,
+            KEY_DNS_A, KEY_DNS_AAAA, KEY_DNS_CNAME, KEY_DNS_MX, KEY_DNS_TXT, PORT_NODE,
+            PORT_PUBLISHER, PORT_PUBLISHER_API, PORT_RESOLVER,
         },
     },
-    utils::{
-        pgp,
-    },
+    node::config::{BootstrapConfig, NodeConfig},
+    publisher::config::{IdentityData, SecretType, SecretTypeCard},
+    utils::pgp,
+};
+use std::{
+    collections::HashMap,
+    env::current_dir,
+    fs,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    path::PathBuf,
+    str::FromStr,
 };
 
 #[derive(clap::Args)]
@@ -260,9 +212,10 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let status = resp.status();
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
-            return Err(
-                loga::Error::new("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
-            );
+            return Err(loga::Error::new(
+                "Request failed",
+                ea!(status = status, body = String::from_utf8_lossy(&body)),
+            ));
         }
         return Ok(());
     }
@@ -272,18 +225,15 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let status = resp.status();
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
-            return Err(
-                loga::Error::new("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
-            );
-        }
-        return Ok(
-            String::from_utf8(
-                body.clone(),
-            ).context(
-                "Failed to parse response as bytes",
+            return Err(loga::Error::new(
+                "Request failed",
                 ea!(status = status, body = String::from_utf8_lossy(&body)),
-            )?,
-        );
+            ));
+        }
+        return Ok(String::from_utf8(body.clone()).context(
+            "Failed to parse response as bytes",
+            ea!(status = status, body = String::from_utf8_lossy(&body)),
+        )?);
     }
 }
 
@@ -297,19 +247,32 @@ async fn main() {
                 let (ident, secret) = Identity::new();
                 {
                     let log = log.fork(ea!(path = args.path.to_string_lossy()));
-                    fs::write(args.path, &serde_json::to_string_pretty(&IdentitySecretFile {
-                        identity: ident.clone(),
-                        secret: secret,
-                    }).unwrap()).log_context(&log, "Failed to write identity secret to file", ea!())?;
+                    fs::write(
+                        args.path,
+                        &serde_json::to_string_pretty(&IdentitySecretFile {
+                            identity: ident.clone(),
+                            secret: secret,
+                        })
+                        .unwrap(),
+                    )
+                    .log_context(
+                        &log,
+                        "Failed to write identity secret to file",
+                        ea!(),
+                    )?;
                 }
                 println!("identity [{}]", ident.to_string());
-            },
+            }
             Args::RegisterLocalIdentity(config) => {
                 let log = log.fork(ea!(path = config.identity.to_string_lossy()));
-                let pair: IdentitySecretFile =
-                    serde_json::from_slice(
-                        &fs::read(&config.identity).log_context(&log, "Error opening identity file", ea!())?,
-                    ).log_context(&log, "Error parsing identity from file", ea!())?;
+                let pair: IdentitySecretFile = serde_json::from_slice(
+                    &fs::read(&config.identity).log_context(
+                        &log,
+                        "Error opening identity file",
+                        ea!(),
+                    )?,
+                )
+                .log_context(&log, "Error parsing identity from file", ea!())?;
                 reqwest::ClientBuilder::new()
                     .build()
                     .unwrap()
@@ -326,32 +289,38 @@ async fn main() {
                     .await
                     .check()
                     .await?;
-            },
+            }
             Args::ListCards => {
-                for card in PcscBackend::cards(None).log_context(log, "Failed to list smart cards", ea!())? {
+                for card in PcscBackend::cards(None).log_context(
+                    log,
+                    "Failed to list smart cards",
+                    ea!(),
+                )? {
                     let mut card: Card<Open> = card.into();
-                    let mut transaction =
-                        card.transaction().log_context(log, "Error starting transaction with card", ea!())?;
-                    let card_id =
-                        transaction
-                            .application_identifier()
-                            .log_context(log, "Error getting gpg id of card", ea!())?
-                            .ident();
+                    let mut transaction = card.transaction().log_context(
+                        log,
+                        "Error starting transaction with card",
+                        ea!(),
+                    )?;
+                    let card_id = transaction
+                        .application_identifier()
+                        .log_context(log, "Error getting gpg id of card", ea!())?
+                        .ident();
                     let identity = match pgp::card_to_ident(&mut transaction) {
                         Ok(i) => match i {
                             Some(i) => i,
                             None => {
                                 continue;
-                            },
+                            }
                         },
                         Err(e) => {
                             log.warn_e(e, "Error getting identity of card", ea!(card = card_id));
                             continue;
-                        },
+                        }
                     };
                     println!("pcsc id [{}], identity [{}]", card_id, identity);
                 }
-            },
+            }
             Args::RegisterCardIdentity(config) => {
                 reqwest::ClientBuilder::new()
                     .build()
@@ -369,7 +338,7 @@ async fn main() {
                     .await
                     .check()
                     .await?;
-            },
+            }
             Args::UnregisterIdentity(config) => {
                 reqwest::ClientBuilder::new()
                     .build()
@@ -379,19 +348,23 @@ async fn main() {
                     .await
                     .check()
                     .await?;
-            },
+            }
             Args::Publish(config) => {
                 reqwest::ClientBuilder::new()
                     .build()
                     .unwrap()
                     .post(format!("{}publish/{}", config.server, config.identity))
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .body(fs::read(&config.data).log_context(log, "Failed to open data to publish", ea!())?)
+                    .body(fs::read(&config.data).log_context(
+                        log,
+                        "Failed to open data to publish",
+                        ea!(),
+                    )?)
                     .send()
                     .await
                     .check()
                     .await?;
-            },
+            }
             Args::PublishDns(config) => {
                 reqwest::ClientBuilder::new()
                     .build()
@@ -474,82 +447,121 @@ async fn main() {
                     .await
                     .check()
                     .await?;
-            },
+            }
             Args::Query(config) => {
                 println!(
                     "{}",
                     reqwest::ClientBuilder::new()
                         .build()
                         .unwrap()
-                        .get(
-                            format!(
-                                "{}/v1/{}?{}",
-                                config.server,
-                                config.identity,
-                                config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
-                            ),
-                        )
+                        .get(format!(
+                            "{}/v1/{}?{}",
+                            config.server,
+                            config.identity,
+                            config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
+                        ),)
                         .send()
                         .await
                         .check_text()
                         .await?
                 );
-            },
+            }
             Args::GenerateConfig(config) => {
                 if config.ipv4 && config.ipv6 {
-                    return Err(log.new_err("Both --ipv4 and --ipv6 specified; only one may be specified", ea!()));
+                    return Err(log.new_err(
+                        "Both --ipv4 and --ipv6 specified; only one may be specified",
+                        ea!(),
+                    ));
                 }
                 let cwd = current_dir().unwrap();
                 let config: Config = Config {
                     node: NodeConfig {
-                        bind_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_NODE)),
+                        bind_addr: SocketAddr::V4(SocketAddrV4::new(
+                            Ipv4Addr::new(0, 0, 0, 0),
+                            PORT_NODE,
+                        )),
                         // TODO!
-                        bootstrap: vec![],
+                        bootstrap: vec![BootstrapConfig {
+                            addr: SocketAddr::V6(SocketAddrV6::new(
+                                Ipv6Addr::from({
+                                    let src =
+                                        "2a09:8280:0001:0000:0000:0000:0037:2284".replace(":", "");
+                                    let mut bytes = [0u8; 16];
+                                    assert_eq!(src.len() * 2, bytes.len());
+                                    for (i, b) in bytes.iter_mut().enumerate() {
+                                        *b =
+                                            u8::from_str_radix(&src[i * 2..i * 2 + 1], 16).unwrap();
+                                    }
+                                    bytes
+                                }),
+                                PORT_NODE,
+                                0,
+                                0,
+                            )),
+                            id: NodeIdentity::from_str(
+                                "yryyyyyyyb3jndem1w1e4f56cfhu3di3kpj5c6n8emk4bkye3ien388tj1thg",
+                            )
+                            .unwrap(),
+                        }],
                         persist_path: Some(cwd.join("node_persist.json")),
                     },
                     publisher: match config.publisher {
                         Some(c) => Some(spaghettinuum::publisher::config::Config {
-                            bind_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_PUBLISHER)),
+                            bind_addr: SocketAddr::V4(SocketAddrV4::new(
+                                Ipv4Addr::new(0, 0, 0, 0),
+                                PORT_PUBLISHER,
+                            )),
                             cert_path: cwd.join("publisher_cert.json"),
                             advertise_addr: {
                                 let log = log.fork(ea!(action = "external_ip_lookup"));
-                                let resp =
-                                    reqwest::get(if config.ipv4 {
-                                        "https://ipv4.seeip.org"
-                                    } else if config.ipv6 {
-                                        "https://ipv6.seeip.org"
-                                    } else {
-                                        "https://api.seeip.org"
-                                    })
-                                        .await
-                                        .log_context(&log, "Failed to make upstream request", ea!())?
-                                        .text()
-                                        .await
-                                        .log_context(&log, "Error while reading upstream request", ea!())?;
+                                let resp = reqwest::get(if config.ipv4 {
+                                    "https://ipv4.seeip.org"
+                                } else if config.ipv6 {
+                                    "https://ipv6.seeip.org"
+                                } else {
+                                    "https://api.seeip.org"
+                                })
+                                .await
+                                .log_context(&log, "Failed to make upstream request", ea!())?
+                                .text()
+                                .await
+                                .log_context(
+                                    &log,
+                                    "Error while reading upstream request",
+                                    ea!(),
+                                )?;
                                 const PORT: u16 = 43890;
-                                match IpAddr::from_str(
-                                    &resp,
-                                ).log_context(&log, "Unable to parse reported external ip", ea!(body = resp))? {
+                                match IpAddr::from_str(&resp).log_context(
+                                    &log,
+                                    "Unable to parse reported external ip",
+                                    ea!(body = resp),
+                                )? {
                                     IpAddr::V4(i) => SocketAddr::V4(SocketAddrV4::new(i, PORT)),
-                                    IpAddr::V6(i) => SocketAddr::V6(SocketAddrV6::new(i, PORT, 0, 0)),
+                                    IpAddr::V6(i) => {
+                                        SocketAddr::V6(SocketAddrV6::new(i, PORT, 0, 0))
+                                    }
                                 }
                             },
                             data: match c {
-                                GenerateConfigPublisherArgs::Static => spaghettinuum
-                                ::publisher
-                                ::config
-                                ::DataConfig
-                                ::Static(
-                                    {
+                                GenerateConfigPublisherArgs::Static => {
+                                    spaghettinuum::publisher::config::DataConfig::Static({
                                         let mut idents = HashMap::new();
-                                        for local in config.publisher_local_identities.iter().flatten() {
+                                        for local in
+                                            config.publisher_local_identities.iter().flatten()
+                                        {
                                             let log = log.fork(ea!(path = local.to_string_lossy()));
-                                            let local: IdentitySecretFile =
-                                                serde_json::from_slice(
-                                                    &fs::read(
-                                                        local,
-                                                    ).log_context(&log, "Error opening local identity", ea!())?,
-                                                ).log_context(&log, "Error parsing local identity", ea!())?;
+                                            let local: IdentitySecretFile = serde_json::from_slice(
+                                                &fs::read(local).log_context(
+                                                    &log,
+                                                    "Error opening local identity",
+                                                    ea!(),
+                                                )?,
+                                            )
+                                            .log_context(
+                                                &log,
+                                                "Error parsing local identity",
+                                                ea!(),
+                                            )?;
                                             idents.insert(local.identity, IdentityData {
                                                 secret: SecretType::Local(local.secret),
                                                 kvs: spaghettinuum::data::publisher::v1::Publish {
@@ -565,7 +577,9 @@ async fn main() {
                                                 },
                                             });
                                         }
-                                        for card in config.publisher_card_identities.iter().flatten() {
+                                        for card in
+                                            config.publisher_card_identities.iter().flatten()
+                                        {
                                             let (pcsc_id, pin) =
                                                 card
                                                     .split_once("/")
@@ -576,27 +590,35 @@ async fn main() {
                                                         ),
                                                     )?;
                                             let log = log.fork(ea!(card = card));
-                                            let ident =
-                                                match pgp::card_to_ident(
-                                                    &mut <Card<Open>>::from(
-                                                        PcscBackend::open_by_ident(
-                                                            card,
-                                                            None,
-                                                        ).log_context(&log, "Error opening smartcard", ea!())?,
-                                                    )
-                                                        .transaction()
-                                                        .log_context(&log, "Error starting transaction", ea!())?,
-                                                ).log_context(&log, "Error looking up key information", ea!())? {
-                                                    Some(ident) => ident,
-                                                    None => {
-                                                        return Err(
-                                                            log.new_err(
-                                                                "Card doesn't have a supported key type",
-                                                                ea!(card = card),
-                                                            ),
-                                                        );
-                                                    },
-                                                };
+                                            let ident = match pgp::card_to_ident(
+                                                &mut <Card<Open>>::from(
+                                                    PcscBackend::open_by_ident(card, None)
+                                                        .log_context(
+                                                            &log,
+                                                            "Error opening smartcard",
+                                                            ea!(),
+                                                        )?,
+                                                )
+                                                .transaction()
+                                                .log_context(
+                                                    &log,
+                                                    "Error starting transaction",
+                                                    ea!(),
+                                                )?,
+                                            )
+                                            .log_context(
+                                                &log,
+                                                "Error looking up key information",
+                                                ea!(),
+                                            )? {
+                                                Some(ident) => ident,
+                                                None => {
+                                                    return Err(log.new_err(
+                                                        "Card doesn't have a supported key type",
+                                                        ea!(card = card),
+                                                    ));
+                                                }
+                                            };
                                             idents.insert(ident, IdentityData {
                                                 secret: SecretType::Card(SecretTypeCard {
                                                     pcsc_id: pcsc_id.to_string(),
@@ -616,20 +638,19 @@ async fn main() {
                                             });
                                         }
                                         idents
-                                    },
-                                ),
-                                GenerateConfigPublisherArgs::Dynamic => spaghettinuum
-                                ::publisher
-                                ::config
-                                ::DataConfig
-                                ::Dynamic(
-                                    spaghettinuum::publisher::config::DynamicDataConfig {
-                                        db_path: cwd.join("publisher.sqlite3"),
-                                        bind_addr: SocketAddr::V4(
-                                            SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_PUBLISHER_API),
-                                        ),
-                                    },
-                                ),
+                                    })
+                                }
+                                GenerateConfigPublisherArgs::Dynamic => {
+                                    spaghettinuum::publisher::config::DataConfig::Dynamic(
+                                        spaghettinuum::publisher::config::DynamicDataConfig {
+                                            db_path: cwd.join("publisher.sqlite3"),
+                                            bind_addr: SocketAddr::V4(SocketAddrV4::new(
+                                                Ipv4Addr::new(0, 0, 0, 0),
+                                                PORT_PUBLISHER_API,
+                                            )),
+                                        },
+                                    )
+                                }
                             },
                         }),
                         None => None,
@@ -637,7 +658,10 @@ async fn main() {
                     resolver: if config.resolver || config.dns_bridge {
                         Some(spaghettinuum::resolver::config::ResolverConfig {
                             bind_addr: if config.dns_bridge {
-                                Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_RESOLVER)))
+                                Some(SocketAddr::V4(SocketAddrV4::new(
+                                    Ipv4Addr::new(0, 0, 0, 0),
+                                    PORT_RESOLVER,
+                                )))
                             } else {
                                 None
                             },
@@ -645,8 +669,14 @@ async fn main() {
                             max_cache: None,
                             dns_bridge: if config.dns_bridge {
                                 Some(spaghettinuum::resolver::config::DnsBridgerConfig {
-                                    upstream: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 53)),
-                                    bind_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 53)),
+                                    upstream: SocketAddr::V4(SocketAddrV4::new(
+                                        Ipv4Addr::new(1, 1, 1, 1),
+                                        53,
+                                    )),
+                                    bind_addr: SocketAddr::V4(SocketAddrV4::new(
+                                        Ipv4Addr::new(0, 0, 0, 0),
+                                        53,
+                                    )),
                                 })
                             } else {
                                 None
@@ -657,7 +687,7 @@ async fn main() {
                     },
                 };
                 println!("{}", serde_json::to_string_pretty(&config).unwrap());
-            },
+            }
             Args::GenerateDnsData(config) => {
                 println!("{}", serde_json::to_string_pretty(&spaghettinuum::data::publisher::v1::Publish {
                     missing_ttl: config.ttl,
@@ -731,15 +761,15 @@ async fn main() {
                         kvs
                     },
                 }).unwrap());
-            },
+            }
         }
         return Ok(());
     }
 
     match inner(&log).await {
-        Ok(_) => { },
+        Ok(_) => {}
         Err(e) => {
             loga::fatal(e);
-        },
+        }
     }
 }

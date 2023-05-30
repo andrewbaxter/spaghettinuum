@@ -203,20 +203,20 @@ The DHT is a modified Kademlia which uses public keys for node ids and requires 
 
 # Why
 
-## Anarchism
+## Why not DNS
+
+Anarchy
 
 Just kidding. The real reasons for disliking DNS are:
 
-- Paying large amounts of money to middlemen
+- Paying large amounts of money to rent seeking middlemen
 - Pay up or lose everything you've ever built
-- Global competition over an artificially limited resource (short catchy names)
+- Global competition over an artificially limited resource
 - Poor DNS registrar security/tech casting your domain names into the void
 - Increasing ability for corporations to arrange takeovers
 - IANA granting tiny fiefdoms to despots
 
 More and more things rely on DNS: Getting SSL certificates, email, Matrix, that new Twitter replacement. For all the reasons above, the faster we have an alternative the better.
-
-With a decentralized approach _you can still enjoy all of this_ if you want by relying on a 3rd party for hosting, in case you like that sort of stuff.
 
 ## Gibberish names
 

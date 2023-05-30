@@ -14,6 +14,7 @@ pub struct RegisterIdentityRequestLocal {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg(feature = "card")]
 pub struct RegisteryIdentityRequestCard {
     pub pcsc_id: String,
     pub pin: String,
@@ -23,5 +24,6 @@ pub struct RegisteryIdentityRequestCard {
 #[serde(rename_all = "snake_case")]
 pub enum RegisterIdentityRequest {
     Local(RegisterIdentityRequestLocal),
+    #[cfg(feature = "card")]
     Card(RegisteryIdentityRequestCard),
 }

@@ -23,10 +23,17 @@ use loga::{
     ea,
     ResultContext,
 };
+#[cfg(feature = "card")]
 use openpgp_card_pcsc::PcscBackend;
+#[cfg(feature = "card")]
 use openpgp_card_sequoia::{
     Card,
     state::Open,
+};
+#[cfg(feature = "card")]
+use sequoia_openpgp::{
+    types::HashAlgorithm,
+    crypto::Signer,
 };
 use poem::{
     Server,
@@ -54,10 +61,6 @@ use poem::{
         Path,
     },
     handler,
-};
-use sequoia_openpgp::{
-    types::HashAlgorithm,
-    crypto::Signer,
 };
 use serde::{
     Deserialize,
@@ -88,12 +91,13 @@ use crate::{
     utils::{
         VisErr,
         ResultVisErr,
-        pgp::{
-            self,
-            extract_pgp_ed25519_sig,
-        },
     },
     aes2,
+};
+#[cfg(feature = "card")]
+use crate::utils::pgp::{
+    self,
+    extract_pgp_ed25519_sig,
 };
 use crate::publisher::config::{
     SecretType,
@@ -102,8 +106,9 @@ use crate::publisher::config::{
 };
 use self::config::{
     IdentityData,
-    SecretTypeCard,
 };
+#[cfg(feature = "card")]
+use self::config::SecretTypeCard;
 
 pub mod config;
 mod db;
@@ -128,6 +133,7 @@ async fn announce(log: &Log, message: &Vec<u8>, node: &Node, ident: &Identity, s
                 signature: secret.sign(message.as_ref()),
             }
         },
+        #[cfg(feature = "card")]
         SecretType::Card(card_desc) => {
             match es!({
                 let mut card: Card<Open> = PcscBackend::open_by_ident(&card_desc.pcsc_id, None)?.into();
@@ -474,6 +480,7 @@ impl DynamicPublisher {
 
     /// Enable publishing with identity by storing identity information required for
     /// publishing. You must subsequently call `publish` to publish something.
+    #[cfg(feature = "card")]
     pub async fn register_card_identity(&self, pcsc_id: String, pin: String) -> Result<Identity, loga::Error> {
         let identity =
             pgp::get_card(
@@ -649,8 +656,6 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                         log: Log,
                     }
 
-                    struct Outer(Arc<Inner>);
-
                     match tm1
                         .if_alive(
                             Server::new(TcpListener::bind(base.bind_addr)).run(Route::new().at("/identity", post({
@@ -661,6 +666,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                                             RegisterIdentityRequest::Local(l) => {
                                                 service.core.register_local_identity(l.identity, l.secret).await?;
                                             },
+                                            #[cfg(feature = "card")]
                                             RegisterIdentityRequest::Card(c) => {
                                                 service.core.register_card_identity(c.pcsc_id, c.pin).await?;
                                             },

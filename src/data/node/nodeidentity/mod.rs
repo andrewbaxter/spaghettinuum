@@ -1,7 +1,7 @@
+use loga::ea;
+
+use crate::versioned;
 use std::fmt::Display;
-use crate::{
-    versioned,
-};
 
 pub mod v1;
 
@@ -45,6 +45,14 @@ impl NodeIdentity {
             NodeIdentity::V1(v1::NodeIdentity::Ed25519(ident)),
             NodeSecret::V1(v1::NodeSecret::Ed25519(secret)),
         );
+    }
+
+    pub fn from_str(text: &str) -> Result<Self, loga::Error> {
+        Ok(Self::from_bytes(
+            &zbase32::decode_full_bytes_str(text).map_err(|e| {
+                loga::Error::new("Unable to decode node identity zbase32", ea!(text = e))
+            })?,
+        )?)
     }
 }
 
