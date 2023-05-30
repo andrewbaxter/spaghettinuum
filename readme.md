@@ -40,7 +40,7 @@ spagh_cli query https://spaghetinnuum.isandrew.com:43891 yryyyyyyyyei1n3eqbew6ys
 or using `curl`:
 
 ```
-curl http://spaghetinnuum.isandrew.com:43891/yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r?key1,key2,...
+curl https://spaghetinnuum.isandrew.com:43891/yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r?key1,key2,...
 ```
 
 ## Querying the DNS bridge
@@ -193,7 +193,7 @@ This API is specific to this publisher implementation.
 To do a lookup, first
 
 1. You send a request to the resolver
-2. The resolver queries the DHT to find the address of the authoritative publisher for the identity. This is like a DNS server of authority - it says who is allowed to dictate records for a name.
+2. The resolver queries the DHT to find the address of the authoritative publisher for the identity. This is like a DNS name server record - it says who is allowed to dictate records for a name.
 3. Once the resolver gets the publisher, it opens a TLS connection to the publisher and asks for the keys.
 4. It sends you the results
 

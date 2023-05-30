@@ -2857,7 +2857,7 @@ dependencies = [
 
 [[package]]
 name = "spaghettinuum"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "array-init",
  "bincode",

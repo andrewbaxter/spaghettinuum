@@ -1,13 +1,24 @@
 use clap::Parser;
 use itertools::Itertools;
-use loga::{ea, Log, ResultContext};
+use loga::{
+    ea,
+    Log,
+    ResultContext,
+};
 use spaghettinuum::{
     config::Config,
-    data::node::protocol::{NodeInfo, SerialAddr},
+    data::node::protocol::{
+        NodeInfo,
+        SerialAddr,
+    },
     node::Node,
-    publisher, resolver,
+    publisher,
+    resolver,
 };
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+};
 
 #[derive(Parser)]
 struct Args {
@@ -27,49 +38,39 @@ async fn main() {
         });
         let config = if let Some(p) = args.config {
             let log = log.fork(ea!(path = p.to_string_lossy()));
-            serde_json::from_slice::<Config>(&fs::read(p).log_context(
-                &log,
-                "Reading config",
-                ea!(),
-            )?)
-            .log_context(&log, "Parsing config", ea!())?
+            serde_json::from_slice::<Config>(
+                &fs::read(p).log_context(&log, "Reading config", ea!())?,
+            ).log_context(&log, "Parsing config", ea!())?
         } else if let Some(c) = match std::env::var(spaghettinuum::data::standard::ENV_CONFIG) {
             Ok(c) => Some(c),
             Err(e) => match e {
                 std::env::VarError::NotPresent => None,
                 std::env::VarError::NotUnicode(_) => {
-                    return Err(loga::Error::new(
-                        "Error parsing env var as unicode",
-                        ea!(env = spaghettinuum::data::standard::ENV_CONFIG),
-                    ))
-                }
+                    return Err(
+                        loga::Error::new(
+                            "Error parsing env var as unicode",
+                            ea!(env = spaghettinuum::data::standard::ENV_CONFIG),
+                        ),
+                    )
+                },
             },
         } {
             let log = log.fork(ea!(source = "env"));
             serde_json::from_str::<Config>(&c).log_context(&log, "Parsing config", ea!())?
         } else {
-            return Err(log.new_err(
-                "No config passed on command line, and no config set in env var",
-                ea!(env = spaghettinuum::data::standard::ENV_CONFIG),
-            ));
+            return Err(
+                log.new_err(
+                    "No config passed on command line, and no config set in env var",
+                    ea!(env = spaghettinuum::data::standard::ENV_CONFIG),
+                ),
+            );
         };
         let tm = taskmanager::TaskManager::new();
-        let node = Node::new(
-            log,
-            tm.clone(),
-            config.node.bind_addr,
-            &config
-                .node
-                .bootstrap
-                .into_iter()
-                .map(|e| NodeInfo {
-                    id: e.id,
-                    address: SerialAddr(e.addr),
-                })
-                .collect_vec(),
-            config.node.persist_path,
-        )
-        .await?;
+        let node =
+            Node::new(log, tm.clone(), config.node.bind_addr, &config.node.bootstrap.into_iter().map(|e| NodeInfo {
+                id: e.id,
+                address: SerialAddr(e.addr),
+            }).collect_vec(), config.node.persist_path).await?;
         if let Some(publisher) = config.publisher {
             publisher::start(&tm, log, publisher, node.clone()).await?;
         }
@@ -81,9 +82,9 @@ async fn main() {
     }
 
     match inner().await {
-        Ok(_) => {}
+        Ok(_) => { },
         Err(e) => {
             loga::fatal(e);
-        }
+        },
     }
 }
