@@ -1728,7 +1728,9 @@ dependencies = [
 
 [[package]]
 name = "loga"
-version = "0.1.2"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c983528e92d6eefc58d63c4b27622f04c0a02f2b7727c8af8842d58e55b4586"
 dependencies = [
  "chrono",
  "console",
@@ -3282,7 +3284,9 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "taskmanager"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e619e6a141293448daccceca6c50e30c5aedca9b9f6284820dcaa911edc9db"
 dependencies = [
  "futures",
  "loga",
