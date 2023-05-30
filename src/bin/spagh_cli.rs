@@ -44,42 +44,39 @@ use serde::{
     Deserialize,
 };
 use spaghettinuum::{
-    model::{
+    config::Config,
+    node::config::NodeConfig,
+    publisher::config::{
+        IdentityData,
+        SecretType,
+        SecretTypeCard,
+    },
+    data::{
         identity::{
             Identity,
             IdentitySecret,
         },
-        config::{
-            Config,
-        },
         self,
-        publish::v1::{
-            PublishValue,
+        publisher::{
+            v1::{
+                PublishValue,
+            },
+        },
+        standard::{
+            PORT_RESOLVER,
+            PORT_PUBLISHER_API,
+            PORT_NODE,
+            PORT_PUBLISHER,
+            KEY_DNS_A,
+            KEY_DNS_CNAME,
+            KEY_DNS_AAAA,
+            KEY_DNS_MX,
+            KEY_DNS_TXT,
         },
     },
     utils::{
-        card,
+        pgp,
     },
-    standard::{
-        PORT_RESOLVER,
-        PORT_PUBLISHER_API,
-        PORT_NODE,
-        PORT_PUBLISHER,
-        KEY_DNS_A,
-        KEY_DNS_CNAME,
-        KEY_DNS_AAAA,
-        KEY_DNS_MX,
-        KEY_DNS_TXT,
-    },
-    publisher::{
-        self,
-        model::config::{
-            SecretType,
-            IdentityData,
-            SecretTypeCard,
-        },
-    },
-    resolver,
 };
 
 #[derive(clap::Args)]
@@ -318,8 +315,8 @@ async fn main() {
                     .unwrap()
                     .post(format!("{}identity", config.server))
                     .json(
-                        &publisher::model::protocol::admin::RegisterIdentityRequest::Local(
-                            publisher::model::protocol::admin::RegisterIdentityRequestLocal {
+                        &spaghettinuum::data::publisher::admin::RegisterIdentityRequest::Local(
+                            spaghettinuum::data::publisher::admin::RegisterIdentityRequestLocal {
                                 identity: pair.identity,
                                 secret: pair.secret,
                             },
@@ -340,7 +337,7 @@ async fn main() {
                             .application_identifier()
                             .log_context(log, "Error getting gpg id of card", ea!())?
                             .ident();
-                    let identity = match card::card_to_ident(&mut transaction) {
+                    let identity = match pgp::card_to_ident(&mut transaction) {
                         Ok(i) => match i {
                             Some(i) => i,
                             None => {
@@ -361,8 +358,8 @@ async fn main() {
                     .unwrap()
                     .post(format!("{}identity", config.server))
                     .json(
-                        &crate::publisher::model::protocol::admin::RegisterIdentityRequest::Card(
-                            crate::publisher::model::protocol::admin::RegisteryIdentityRequestCard {
+                        &spaghettinuum::data::publisher::admin::RegisterIdentityRequest::Card(
+                            spaghettinuum::data::publisher::admin::RegisteryIdentityRequestCard {
                                 pcsc_id: config.pcsc_id,
                                 pin: config.pin,
                             },
@@ -401,7 +398,7 @@ async fn main() {
                     .unwrap()
                     .post(format!("{}publish/{}", config.server, config.identity))
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .json(&model::publish::v1::Publish {
+                    .json(&spaghettinuum::data::publisher::v1::Publish {
                         missing_ttl: config.ttl,
                         data: {
                             let mut kvs = HashMap::new();
@@ -409,8 +406,8 @@ async fn main() {
                                 kvs.insert(KEY_DNS_CNAME.to_string(), PublishValue {
                                     ttl: config.ttl,
                                     data: serde_json::to_string(
-                                        &crate::model::dns::DnsRecordsetJson::V1(
-                                            crate::model::dns::v1::DnsRecordsetJson::Cname(config.dns_cname),
+                                        &crate::data::dns::DnsRecordsetJson::V1(
+                                            crate::data::dns::v1::DnsRecordsetJson::Cname(config.dns_cname),
                                         ),
                                     ).unwrap(),
                                 });
@@ -419,8 +416,8 @@ async fn main() {
                                 kvs.insert(KEY_DNS_A.to_string(), PublishValue {
                                     ttl: config.ttl,
                                     data: serde_json::to_string(
-                                        &crate::model::dns::DnsRecordsetJson::V1(
-                                            crate::model::dns::v1::DnsRecordsetJson::A(config.dns_a),
+                                        &crate::data::dns::DnsRecordsetJson::V1(
+                                            crate::data::dns::v1::DnsRecordsetJson::A(config.dns_a),
                                         ),
                                     ).unwrap(),
                                 });
@@ -429,8 +426,8 @@ async fn main() {
                                 kvs.insert(KEY_DNS_AAAA.to_string(), PublishValue {
                                     ttl: config.ttl,
                                     data: serde_json::to_string(
-                                        &crate::model::dns::DnsRecordsetJson::V1(
-                                            crate::model::dns::v1::DnsRecordsetJson::Aaaa(config.dns_aaaa),
+                                        &crate::data::dns::DnsRecordsetJson::V1(
+                                            crate::data::dns::v1::DnsRecordsetJson::Aaaa(config.dns_aaaa),
                                         ),
                                     ).unwrap(),
                                 });
@@ -439,8 +436,8 @@ async fn main() {
                                 kvs.insert(KEY_DNS_TXT.to_string(), PublishValue {
                                     ttl: config.ttl,
                                     data: serde_json::to_string(
-                                        &crate::model::dns::DnsRecordsetJson::V1(
-                                            crate::model::dns::v1::DnsRecordsetJson::Txt(config.dns_txt),
+                                        &crate::data::dns::DnsRecordsetJson::V1(
+                                            crate::data::dns::v1::DnsRecordsetJson::Txt(config.dns_txt),
                                         ),
                                     ).unwrap(),
                                 });
@@ -464,8 +461,8 @@ async fn main() {
                                 kvs.insert(KEY_DNS_MX.to_string(), PublishValue {
                                     ttl: config.ttl,
                                     data: serde_json::to_string(
-                                        &crate::model::dns::DnsRecordsetJson::V1(
-                                            crate::model::dns::v1::DnsRecordsetJson::Mx(values),
+                                        &crate::data::dns::DnsRecordsetJson::V1(
+                                            crate::data::dns::v1::DnsRecordsetJson::Mx(values),
                                         ),
                                     ).unwrap(),
                                 });
@@ -503,15 +500,15 @@ async fn main() {
                     return Err(log.new_err("Both --ipv4 and --ipv6 specified; only one may be specified", ea!()));
                 }
                 let cwd = current_dir().unwrap();
-                let config: Config = model::config::Config {
-                    node: model::config::NodeConfig {
+                let config: Config = Config {
+                    node: NodeConfig {
                         bind_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_NODE)),
                         // TODO!
                         bootstrap: vec![],
                         persist_path: Some(cwd.join("node_persist.json")),
                     },
                     publisher: match config.publisher {
-                        Some(c) => Some(publisher::model::config::Config {
+                        Some(c) => Some(spaghettinuum::publisher::config::Config {
                             bind_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_PUBLISHER)),
                             cert_path: cwd.join("publisher_cert.json"),
                             advertise_addr: {
@@ -538,86 +535,96 @@ async fn main() {
                                 }
                             },
                             data: match c {
-                                GenerateConfigPublisherArgs::Static => publisher::model::config::DataConfig::Static({
-                                    let mut idents = HashMap::new();
-                                    for local in config.publisher_local_identities.iter().flatten() {
-                                        let log = log.fork(ea!(path = local.to_string_lossy()));
-                                        let local: IdentitySecretFile =
-                                            serde_json::from_slice(
-                                                &fs::read(
-                                                    local,
-                                                ).log_context(&log, "Error opening local identity", ea!())?,
-                                            ).log_context(&log, "Error parsing local identity", ea!())?;
-                                        idents.insert(local.identity, IdentityData {
-                                            secret: SecretType::Local(local.secret),
-                                            kvs: model::publish::v1::Publish {
-                                                missing_ttl: 60,
-                                                data: {
-                                                    let mut kvs = HashMap::new();
-                                                    kvs.insert("somekey".to_string(), PublishValue {
-                                                        ttl: 60,
-                                                        data: "somevalue".to_string(),
-                                                    });
-                                                    kvs
+                                GenerateConfigPublisherArgs::Static => spaghettinuum
+                                ::publisher
+                                ::config
+                                ::DataConfig
+                                ::Static(
+                                    {
+                                        let mut idents = HashMap::new();
+                                        for local in config.publisher_local_identities.iter().flatten() {
+                                            let log = log.fork(ea!(path = local.to_string_lossy()));
+                                            let local: IdentitySecretFile =
+                                                serde_json::from_slice(
+                                                    &fs::read(
+                                                        local,
+                                                    ).log_context(&log, "Error opening local identity", ea!())?,
+                                                ).log_context(&log, "Error parsing local identity", ea!())?;
+                                            idents.insert(local.identity, IdentityData {
+                                                secret: SecretType::Local(local.secret),
+                                                kvs: spaghettinuum::data::publisher::v1::Publish {
+                                                    missing_ttl: 60,
+                                                    data: {
+                                                        let mut kvs = HashMap::new();
+                                                        kvs.insert("somekey".to_string(), PublishValue {
+                                                            ttl: 60,
+                                                            data: "somevalue".to_string(),
+                                                        });
+                                                        kvs
+                                                    },
                                                 },
-                                            },
-                                        });
-                                    }
-                                    for card in config.publisher_card_identities.iter().flatten() {
-                                        let (pcsc_id, pin) =
-                                            card
-                                                .split_once("/")
-                                                .ok_or_else(
-                                                    || loga::Error::new(
-                                                        "Incorrect card description; should be like `PCSCID/PIN`",
-                                                        ea!(desc = card),
-                                                    ),
-                                                )?;
-                                        let log = log.fork(ea!(card = card));
-                                        let ident =
-                                            match card::card_to_ident(
-                                                &mut <Card<Open>>::from(
-                                                    PcscBackend::open_by_ident(
-                                                        card,
-                                                        None,
-                                                    ).log_context(&log, "Error opening smartcard", ea!())?,
-                                                )
-                                                    .transaction()
-                                                    .log_context(&log, "Error starting transaction", ea!())?,
-                                            ).log_context(&log, "Error looking up key information", ea!())? {
-                                                Some(ident) => ident,
-                                                None => {
-                                                    return Err(
-                                                        log.new_err(
-                                                            "Card doesn't have a supported key type",
-                                                            ea!(card = card),
+                                            });
+                                        }
+                                        for card in config.publisher_card_identities.iter().flatten() {
+                                            let (pcsc_id, pin) =
+                                                card
+                                                    .split_once("/")
+                                                    .ok_or_else(
+                                                        || loga::Error::new(
+                                                            "Incorrect card description; should be like `PCSCID/PIN`",
+                                                            ea!(desc = card),
                                                         ),
-                                                    );
+                                                    )?;
+                                            let log = log.fork(ea!(card = card));
+                                            let ident =
+                                                match pgp::card_to_ident(
+                                                    &mut <Card<Open>>::from(
+                                                        PcscBackend::open_by_ident(
+                                                            card,
+                                                            None,
+                                                        ).log_context(&log, "Error opening smartcard", ea!())?,
+                                                    )
+                                                        .transaction()
+                                                        .log_context(&log, "Error starting transaction", ea!())?,
+                                                ).log_context(&log, "Error looking up key information", ea!())? {
+                                                    Some(ident) => ident,
+                                                    None => {
+                                                        return Err(
+                                                            log.new_err(
+                                                                "Card doesn't have a supported key type",
+                                                                ea!(card = card),
+                                                            ),
+                                                        );
+                                                    },
+                                                };
+                                            idents.insert(ident, IdentityData {
+                                                secret: SecretType::Card(SecretTypeCard {
+                                                    pcsc_id: pcsc_id.to_string(),
+                                                    pin: pin.to_string(),
+                                                }),
+                                                kvs: spaghettinuum::data::publisher::v1::Publish {
+                                                    missing_ttl: 60,
+                                                    data: {
+                                                        let mut kvs = HashMap::new();
+                                                        kvs.insert("somekey".to_string(), PublishValue {
+                                                            ttl: 60,
+                                                            data: "somevalue".to_string(),
+                                                        });
+                                                        kvs
+                                                    },
                                                 },
-                                            };
-                                        idents.insert(ident, IdentityData {
-                                            secret: SecretType::Card(SecretTypeCard {
-                                                pcsc_id: pcsc_id.to_string(),
-                                                pin: pin.to_string(),
-                                            }),
-                                            kvs: model::publish::v1::Publish {
-                                                missing_ttl: 60,
-                                                data: {
-                                                    let mut kvs = HashMap::new();
-                                                    kvs.insert("somekey".to_string(), PublishValue {
-                                                        ttl: 60,
-                                                        data: "somevalue".to_string(),
-                                                    });
-                                                    kvs
-                                                },
-                                            },
-                                        });
-                                    }
-                                    idents
-                                }),
-                                GenerateConfigPublisherArgs::Dynamic => publisher::model::config::DataConfig::Dynamic(
-                                    publisher::model::config::DynamicDataConfig {
-                                        db: cwd.join("publisher.sqlite3"),
+                                            });
+                                        }
+                                        idents
+                                    },
+                                ),
+                                GenerateConfigPublisherArgs::Dynamic => spaghettinuum
+                                ::publisher
+                                ::config
+                                ::DataConfig
+                                ::Dynamic(
+                                    spaghettinuum::publisher::config::DynamicDataConfig {
+                                        db_path: cwd.join("publisher.sqlite3"),
                                         bind_addr: SocketAddr::V4(
                                             SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_PUBLISHER_API),
                                         ),
@@ -628,16 +635,16 @@ async fn main() {
                         None => None,
                     },
                     resolver: if config.resolver || config.dns_bridge {
-                        Some(resolver::ResolverConfig {
+                        Some(spaghettinuum::resolver::config::ResolverConfig {
                             bind_addr: if config.dns_bridge {
                                 Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_RESOLVER)))
                             } else {
                                 None
                             },
-                            cache_path: Some(cwd.join("resolver_cache.sqlite3")),
+                            cache_persist_path: Some(cwd.join("resolver_cache.sqlite3")),
                             max_cache: None,
                             dns_bridge: if config.dns_bridge {
-                                Some(resolver::DnsBridgerConfig {
+                                Some(spaghettinuum::resolver::config::DnsBridgerConfig {
                                     upstream: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 53)),
                                     bind_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 53)),
                                 })
@@ -652,7 +659,7 @@ async fn main() {
                 println!("{}", serde_json::to_string_pretty(&config).unwrap());
             },
             Args::GenerateDnsData(config) => {
-                println!("{}", serde_json::to_string_pretty(&model::publish::v1::Publish {
+                println!("{}", serde_json::to_string_pretty(&spaghettinuum::data::publisher::v1::Publish {
                     missing_ttl: config.ttl,
                     data: {
                         let mut kvs = HashMap::new();
@@ -660,8 +667,8 @@ async fn main() {
                             kvs.insert(KEY_DNS_CNAME.to_string(), PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &crate::model::dns::DnsRecordsetJson::V1(
-                                        crate::model::dns::v1::DnsRecordsetJson::Cname(config.dns_cname),
+                                    &crate::data::dns::DnsRecordsetJson::V1(
+                                        crate::data::dns::v1::DnsRecordsetJson::Cname(config.dns_cname),
                                     ),
                                 ).unwrap(),
                             });
@@ -670,8 +677,8 @@ async fn main() {
                             kvs.insert(KEY_DNS_A.to_string(), PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &crate::model::dns::DnsRecordsetJson::V1(
-                                        crate::model::dns::v1::DnsRecordsetJson::A(config.dns_a),
+                                    &crate::data::dns::DnsRecordsetJson::V1(
+                                        crate::data::dns::v1::DnsRecordsetJson::A(config.dns_a),
                                     ),
                                 ).unwrap(),
                             });
@@ -680,8 +687,8 @@ async fn main() {
                             kvs.insert(KEY_DNS_AAAA.to_string(), PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &crate::model::dns::DnsRecordsetJson::V1(
-                                        crate::model::dns::v1::DnsRecordsetJson::Aaaa(config.dns_aaaa),
+                                    &crate::data::dns::DnsRecordsetJson::V1(
+                                        crate::data::dns::v1::DnsRecordsetJson::Aaaa(config.dns_aaaa),
                                     ),
                                 ).unwrap(),
                             });
@@ -690,8 +697,8 @@ async fn main() {
                             kvs.insert(KEY_DNS_TXT.to_string(), PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &crate::model::dns::DnsRecordsetJson::V1(
-                                        crate::model::dns::v1::DnsRecordsetJson::Txt(config.dns_txt),
+                                    &crate::data::dns::DnsRecordsetJson::V1(
+                                        crate::data::dns::v1::DnsRecordsetJson::Txt(config.dns_txt),
                                     ),
                                 ).unwrap(),
                             });
@@ -715,8 +722,8 @@ async fn main() {
                             kvs.insert(KEY_DNS_MX.to_string(), PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &crate::model::dns::DnsRecordsetJson::V1(
-                                        crate::model::dns::v1::DnsRecordsetJson::Mx(values),
+                                    &crate::data::dns::DnsRecordsetJson::V1(
+                                        crate::data::dns::v1::DnsRecordsetJson::Mx(values),
                                     ),
                                 ).unwrap(),
                             });

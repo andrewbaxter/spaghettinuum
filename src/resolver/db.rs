@@ -91,7 +91,7 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
 
 pub fn push(
     db: &mut rusqlite::Connection,
-    identity: &crate::model::identity::Identity,
+    identity: &crate::data::identity::Identity,
     key: &str,
     expires: chrono::DateTime<chrono::Utc>,
     value: Option<&str>,
@@ -107,7 +107,7 @@ pub fn push(
 
 pub struct DbRes1 {
     pub rowid: i64,
-    pub identity: crate::model::identity::Identity,
+    pub identity: crate::data::identity::Identity,
     pub key: String,
     pub expires: chrono::DateTime<chrono::Utc>,
     pub value: Option<String>,
@@ -128,7 +128,7 @@ pub fn list(db: &mut rusqlite::Connection, row: i64) -> Result<Vec<DbRes1>, Good
             },
             identity: {
                 let x: Vec<u8> = r.get(1usize)?;
-                let x = crate::model::identity::Identity::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+                let x = crate::data::identity::Identity::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
                 x
             },
             key: {

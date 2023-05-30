@@ -18,20 +18,17 @@ use sequoia_openpgp::{
     crypto::mpi::Signature,
     types::Curve,
 };
-use crate::model::{
+use crate::data::{
     identity::Identity,
-    self,
 };
 
-pub fn sequoia_pubkey_to_ident(
-    pubkey: &sequoia_openpgp::packet::Key<PublicParts, UnspecifiedRole>,
-) -> Option<Identity> {
+pub fn pgp_pubkey_to_ident(pubkey: &sequoia_openpgp::packet::Key<PublicParts, UnspecifiedRole>) -> Option<Identity> {
     return Some(Identity::V1(match pubkey.mpis() {
         sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { curve, q } => {
             match curve {
                 sequoia_openpgp::types::Curve::Ed25519 => {
-                    model::identity::v1::Identity::Ed25519(
-                        model::identity::v1::Ed25519Identity(
+                    crate::data::identity::v1::Identity::Ed25519(
+                        crate::data::identity::v1::Ed25519Identity(
                             ed25519_dalek::VerifyingKey::from_bytes(
                                 q.decode_point(&Curve::Ed25519).unwrap().0.try_into().unwrap(),
                             ).unwrap(),
@@ -56,7 +53,7 @@ pub fn card_to_ident(card: &mut Card<Transaction>) -> Result<Option<Identity>, l
             return Ok(None);
         },
     };
-    return Ok(sequoia_pubkey_to_ident(&card_pubkey));
+    return Ok(pgp_pubkey_to_ident(&card_pubkey));
 }
 
 pub fn get_card<
@@ -67,7 +64,7 @@ pub fn get_card<
     return Ok(f(&mut card)?);
 }
 
-pub fn extract_gpg_ed25519_sig(gpg_signature: &Signature) -> ed25519_dalek::Signature {
+pub fn extract_pgp_ed25519_sig(gpg_signature: &Signature) -> ed25519_dalek::Signature {
     match gpg_signature {
         sequoia_openpgp::crypto::mpi::Signature::EdDSA { r, s } => {
             let r = r.value_padded(size_of::<ComponentBytes>()).unwrap();

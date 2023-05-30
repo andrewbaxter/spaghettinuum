@@ -49,8 +49,6 @@ The public node is also running a DNS bridge, if you just want to get querying. 
 
 The DNS bridge resolves any queries to `IDENTITY.s` on the spaghetinnuum network. Any queries to legitimate TLDs will be forwarded to `1.1.1.1` or another similar public DNS provider.
 
-DNS entries use a set of reserved keys which have the DNS data in a specific JSON format.
-
 ## Self-hosting
 
 1. Do `cargo install spaghettinuum`
@@ -64,7 +62,7 @@ The `spagh` server has a number of child services:
 - A publisher, which publishes your key/value pairs, optional
 - A DNS bridge, which provides a DNS frontend for querying, optional
 
-The publisher can either be static (all keys and values are part of the config file) or dynamic (an sqlite database is set up and can be configured remotely)
+The publisher can either be static (all keys and values are part of the config file) or dynamic (an sqlite database is set up and can be configured remotely).
 
 ## Setting up identities
 
@@ -114,7 +112,11 @@ If you have a dynamic publisher
 
 ## Publishing DNS
 
-DNS can be done as above with JSON in a special format. You can use `spagh_cli generate-dns-data` to generate it. In DNS each record has specific fields, so it's not quite as simple as just being generic string pairs.
+DNS is normal published data with DNS-bridge specific keys, and a special value JSON format.
+
+You can use `spagh_cli generate-dns-data` to generate data or `spagh_cli publish-dns` to publish records directly to a dynamic publisher.
+
+If you want to modify the data, the special DNS keys are listed in <src/standard.rs>.
 
 ## Publishing a website
 
@@ -139,7 +141,7 @@ So there's no immediately usable solution.
 
 ## Reference
 
-Standard ports, keys are listed in <src/utils/standard.rs>.
+Standard ports, keys are listed in <src/standard.rs>.
 
 ## APIs
 

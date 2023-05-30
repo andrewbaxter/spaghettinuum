@@ -1,3 +1,5 @@
+pub mod admin;
+
 use serde::{
     Serialize,
     Deserialize,

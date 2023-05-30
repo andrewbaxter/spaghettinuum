@@ -1,11 +1,11 @@
-use crate::node::model::protocol::v1::{
+use crate::data::node::protocol::v1::{
     Message,
     NodeInfo,
 };
-use crate::node::model::protocol::ChallengeResponse;
-use crate::node::model::protocol::Protocol;
+use crate::data::node::protocol::ChallengeResponse;
+use crate::data::node::protocol::Protocol;
 use crate::es;
-use crate::model::identity::{
+use crate::data::identity::{
     Identity,
 };
 use crate::utils::{
@@ -40,9 +40,7 @@ use std::fs;
 use std::io::{
     ErrorKind,
 };
-use std::net::Ipv4Addr;
 use std::net::SocketAddr;
-use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::sync::atomic::{
     AtomicUsize,
@@ -54,28 +52,30 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::Instant;
-use self::model::nodeidentity::{
-    NodeIdentity,
-    NodeSecret,
-    NodeSecretMethods,
-    NodeIdentityMethods,
+use crate::data::node::{
+    nodeidentity::{
+        NodeIdentity,
+        NodeSecret,
+        NodeSecretMethods,
+        NodeIdentityMethods,
+    },
+    protocol::{
+        v1::{
+            FindRequest,
+            TempChallengeSigBody,
+            Value,
+        },
+        SerialAddr,
+        ValueBody,
+        FindMode,
+        FindResponse,
+        FindResponseBody,
+        FindResponseModeBody,
+        StoreRequest,
+    },
 };
-use self::model::protocol::v1::{
-    FindRequest,
-    TempChallengeSigBody,
-    Value,
-};
-use self::model::protocol::{
-    SerialAddr,
-    ValueBody,
-};
-use self::model::protocol::FindMode;
-use self::model::protocol::FindResponse;
-use self::model::protocol::FindResponseBody;
-use self::model::protocol::FindResponseModeBody;
-use self::model::protocol::StoreRequest;
 
-pub mod model;
+pub mod config;
 
 const HASH_SIZE: usize = 256usize;
 type DhtHash = GenericArray<u8, generic_array::typenum::U32>;
@@ -83,15 +83,6 @@ const NEIGHBORHOOD: usize = 8usize;
 const PARALLEL: usize = 3;
 const REQ_TIMEOUT: Duration = Duration::from_secs(5);
 const SUPER_FRESH_DURATION: Duration = Duration::from_secs(60 * 60);
-pub const DEFAULT_PORT: u16 = 40399;
-
-pub fn default_bind() -> SocketAddr {
-    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), DEFAULT_PORT))
-}
-
-pub fn default_bootstrap() -> Vec<(SocketAddr, NodeIdentity)> {
-    vec![]
-}
 
 fn diff<N: ArrayLength<u8>>(a: &GenericArray<u8, N>, b: &GenericArray<u8, N>) -> (usize, GenericArray<u8, N>) {
     let mut leading_zeros = 0usize;
@@ -172,7 +163,7 @@ struct NextChallengeTimeout {
     key: (NodeIdentity, usize),
 }
 
-pub struct NodeInner {
+struct NodeInner {
     log: Log,
     own_id: NodeIdentity,
     own_id_hash: DhtHash,
@@ -260,10 +251,16 @@ impl Node {
     /// Creates and starts a new node within the task manager. Waits until the socket
     /// is open. Bootstrapping is asynchronous; you should wait until a sufficient
     /// number of peers are found before doing anything automatically.
+    ///
+    /// * `bootstrap`: Nodes to connect to to join network. Ignored if restoring persisted
+    ///   data. Ignores own id if present.
+    ///
+    /// * `persist_path`: Save state to this file before shutting down to make next startup
+    ///   faster
     pub async fn new(
         log: &Log,
         tm: TaskManager,
-        addr: SocketAddr,
+        bind_addr: SocketAddr,
         bootstrap: &[NodeInfo],
         persist_path: Option<PathBuf>,
     ) -> Result<Node, loga::Error> {
@@ -321,8 +318,8 @@ impl Node {
         let log = log.fork(ea!(ident = own_id));
         log.info("Starting", ea!());
         let sock = {
-            let log = log.fork(ea!(addr = addr));
-            UdpSocket::bind(addr).await.log_context(&log, "Failed to open gnocchi UDP port", ea!())?
+            let log = log.fork(ea!(addr = bind_addr));
+            UdpSocket::bind(bind_addr).await.log_context(&log, "Failed to open gnocchi UDP port", ea!())?
         };
         let own_id_hash = hash(&own_id);
         let (find_timeout_write, find_timeout_recv) = unbounded::<NextFindTimeout>();
@@ -346,6 +343,9 @@ impl Node {
         }));
         if do_bootstrap {
             for b in bootstrap {
+                if b.id == dir.0.own_id {
+                    continue;
+                }
                 if !dir.add_good_node(b.id.clone(), Some(b.clone())) {
                     panic!("");
                 }
@@ -549,10 +549,12 @@ impl Node {
         return Ok(dir);
     }
 
+    /// Identity of node
     pub fn identity(&self) -> NodeIdentity {
         return self.0.own_id.clone();
     }
 
+    /// Look up a value in the network
     pub async fn get(&self, key: Identity) -> Option<ValueBody> {
         let (f, c) = ManualFuture::new();
         let local_value = self.0.store.lock().unwrap().get(&key).map(|v| v.value.clone());
@@ -560,6 +562,9 @@ impl Node {
         return f.await.map(|v| v.parse().unwrap());
     }
 
+    /// Store a value in the network. `value` message must be `ValueBody::to_bytes()`
+    /// and `signature` is the signature of those bytes using the corresponding
+    /// `IdentitySecret`
     pub async fn put(&self, key: Identity, value: Value) {
         self.start_find(FindMode::Put(key), Some(value), None).await;
     }
@@ -1092,7 +1097,7 @@ impl Node {
     }
 
     /// Add a node, or check if adding a node would be new (returns whether id is new)
-    pub fn add_good_node(&self, id: NodeIdentity, node: Option<NodeInfo>) -> bool {
+    fn add_good_node(&self, id: NodeIdentity, node: Option<NodeInfo>) -> bool {
         let log = self.0.log.fork(ea!(activity = "add_good_node", node = id.dbg_str()));
         if id == self.0.own_id {
             log.info("Own node id, ignoring", ea!());

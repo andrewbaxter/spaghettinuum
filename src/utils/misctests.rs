@@ -17,9 +17,9 @@ mod tests {
     };
     use crate::{
         utils::{
-            card::{
-                extract_gpg_ed25519_sig,
-                sequoia_pubkey_to_ident,
+            pgp::{
+                extract_pgp_ed25519_sig,
+                pgp_pubkey_to_ident,
             },
         },
     };
@@ -30,7 +30,7 @@ mod tests {
             Key4::generate_ecc(true, sequoia_openpgp::types::Curve::Ed25519).unwrap().into();
         let mut gpg_k = gpg_k.into_keypair().unwrap();
         let message = "hello";
-        let hash = crate::model::identity::hash_for_ed25519(message.as_bytes());
+        let hash = crate::data::identity::hash_for_ed25519(message.as_bytes());
         let gpg_sig = gpg_k.sign(sequoia_openpgp::types::HashAlgorithm::SHA512, &hash).unwrap();
         match gpg_k.public().verify(&gpg_sig, sequoia_openpgp::types::HashAlgorithm::SHA512, &hash) {
             Ok(_) => { },
@@ -38,12 +38,12 @@ mod tests {
                 panic!("gpg failed to verify: {:?}", e);
             },
         };
-        let dalek_sig = extract_gpg_ed25519_sig(&gpg_sig);
-        let ident = sequoia_pubkey_to_ident(gpg_k.public()).unwrap();
+        let dalek_sig = extract_pgp_ed25519_sig(&gpg_sig);
+        let ident = pgp_pubkey_to_ident(gpg_k.public()).unwrap();
         eprintln!("gpg pub {:?}", gpg_k.public());
         match &ident {
-            crate::model::identity::Identity::V1(v1) => match v1 {
-                crate::model::identity::v1::Identity::Ed25519(i) => eprintln!(
+            crate::data::identity::Identity::V1(v1) => match v1 {
+                crate::data::identity::v1::Identity::Ed25519(i) => eprintln!(
                     "dalek pub {:02x}",
                     i.0.as_bytes().iter().format(" ")
                 ),

@@ -7,8 +7,8 @@ use serde::{
     Serialize,
     Deserialize,
 };
-use crate::model::{
-    self,
+use crate::data::{
+    publisher,
     identity::{
         Identity,
         IdentitySecret,
@@ -41,12 +41,12 @@ impl SecretType {
 #[derive(Deserialize, Serialize)]
 pub struct IdentityData {
     pub secret: SecretType,
-    pub kvs: model::publish::v1::Publish,
+    pub kvs: publisher::v1::Publish,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct DynamicDataConfig {
-    pub db: PathBuf,
+    pub db_path: PathBuf,
     pub bind_addr: SocketAddr,
 }
 

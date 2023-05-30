@@ -10,18 +10,18 @@ use loga::{
     ResultContext,
 };
 use spaghettinuum::{
+    data::{
+        node::protocol::{
+            NodeInfo,
+            SerialAddr,
+        },
+    },
     node::{
         Node,
-        model::{
-            protocol::{
-                NodeInfo,
-                SerialAddr,
-            },
-        },
     },
     publisher,
     resolver,
-    model::config::Config,
+    config::Config,
 };
 
 #[derive(Parser)]

@@ -97,8 +97,8 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
 
 pub fn add_ident(
     db: &mut rusqlite::Connection,
-    identity: &crate::model::identity::Identity,
-    secret: &crate::publisher::SecretType,
+    identity: &crate::data::identity::Identity,
+    secret: &crate::publisher::config::SecretType,
 ) -> Result<(), GoodError> {
     db
         .execute(
@@ -111,8 +111,8 @@ pub fn add_ident(
 
 pub fn get_ident(
     db: &mut rusqlite::Connection,
-    identity: &crate::model::identity::Identity,
-) -> Result<crate::publisher::SecretType, GoodError> {
+    identity: &crate::data::identity::Identity,
+) -> Result<crate::publisher::config::SecretType, GoodError> {
     let mut stmt =
         db.prepare(
             "select \"identities\" . \"secret\" from \"identities\" where ( \"identities\" . \"identity\" = $1 )",
@@ -121,14 +121,14 @@ pub fn get_ident(
     let r = rows.next()?.ok_or_else(|| GoodError("Query expected to return one row but returned no rows".into()))?;
     Ok({
         let x: Vec<u8> = r.get(0usize)?;
-        let x = crate::publisher::SecretType::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+        let x = crate::publisher::config::SecretType::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
         x
     })
 }
 
 pub fn delete_ident(
     db: &mut rusqlite::Connection,
-    identity: &crate::model::identity::Identity,
+    identity: &crate::data::identity::Identity,
 ) -> Result<(), GoodError> {
     db
         .execute(
@@ -140,8 +140,8 @@ pub fn delete_ident(
 }
 
 pub struct DbRes1 {
-    pub identity: crate::model::identity::Identity,
-    pub secret: crate::publisher::SecretType,
+    pub identity: crate::data::identity::Identity,
+    pub secret: crate::publisher::config::SecretType,
 }
 
 pub fn list_idents_start(db: &mut rusqlite::Connection) -> Result<Vec<DbRes1>, GoodError> {
@@ -155,12 +155,12 @@ pub fn list_idents_start(db: &mut rusqlite::Connection) -> Result<Vec<DbRes1>, G
         out.push(DbRes1 {
             identity: {
                 let x: Vec<u8> = r.get(0usize)?;
-                let x = crate::model::identity::Identity::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+                let x = crate::data::identity::Identity::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
                 x
             },
             secret: {
                 let x: Vec<u8> = r.get(1usize)?;
-                let x = crate::publisher::SecretType::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+                let x = crate::publisher::config::SecretType::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
                 x
             },
         });
@@ -170,7 +170,7 @@ pub fn list_idents_start(db: &mut rusqlite::Connection) -> Result<Vec<DbRes1>, G
 
 pub fn list_idents_after(
     db: &mut rusqlite::Connection,
-    ident: &crate::model::identity::Identity,
+    ident: &crate::data::identity::Identity,
 ) -> Result<Vec<DbRes1>, GoodError> {
     let mut out = vec![];
     let mut stmt =
@@ -182,12 +182,12 @@ pub fn list_idents_after(
         out.push(DbRes1 {
             identity: {
                 let x: Vec<u8> = r.get(0usize)?;
-                let x = crate::model::identity::Identity::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+                let x = crate::data::identity::Identity::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
                 x
             },
             secret: {
                 let x: Vec<u8> = r.get(1usize)?;
-                let x = crate::publisher::SecretType::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+                let x = crate::publisher::config::SecretType::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
                 x
             },
         });
@@ -197,8 +197,8 @@ pub fn list_idents_after(
 
 pub fn set_keyvalues(
     db: &mut rusqlite::Connection,
-    identity: &crate::model::identity::Identity,
-    keyvalues: &crate::model::publish::Publish,
+    identity: &crate::data::identity::Identity,
+    keyvalues: &crate::data::publisher::Publish,
 ) -> Result<(), GoodError> {
     db
         .execute(
@@ -211,8 +211,8 @@ pub fn set_keyvalues(
 
 pub fn get_keyvalues(
     db: &mut rusqlite::Connection,
-    identity: &crate::model::identity::Identity,
-) -> Result<Option<crate::model::publish::Publish>, GoodError> {
+    identity: &crate::data::identity::Identity,
+) -> Result<Option<crate::data::publisher::Publish>, GoodError> {
     let mut stmt =
         db.prepare("select \"publish\" . \"keyvalues\" from \"publish\" where ( \"publish\" . \"identity\" = $1 )")?;
     let mut rows = stmt.query(rusqlite::params![identity.to_sql()]).map_err(|e| GoodError(e.to_string()))?;
@@ -220,7 +220,7 @@ pub fn get_keyvalues(
     if let Some(r) = r {
         return Ok(Some({
             let x: Vec<u8> = r.get(0usize)?;
-            let x = crate::model::publish::Publish::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+            let x = crate::data::publisher::Publish::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
             x
         }));
     }
@@ -229,7 +229,7 @@ pub fn get_keyvalues(
 
 pub fn delete_keyvalues(
     db: &mut rusqlite::Connection,
-    identity: &crate::model::identity::Identity,
+    identity: &crate::data::identity::Identity,
 ) -> Result<(), GoodError> {
     db
         .execute(

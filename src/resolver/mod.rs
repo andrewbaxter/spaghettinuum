@@ -4,7 +4,6 @@ use std::{
         Mutex,
     },
     net::{
-        SocketAddr,
         Ipv6Addr,
         Ipv4Addr,
     },
@@ -47,10 +46,6 @@ use rustls::{
     },
     Certificate,
 };
-use serde::{
-    Deserialize,
-    Serialize,
-};
 use taskmanager::TaskManager;
 use tokio::{
     spawn,
@@ -82,30 +77,18 @@ use trust_dns_server::{
     authority::MessageResponseBuilder,
     server::ResponseInfo,
 };
-use crate::{
-    node::{
-        Node,
+use crate::data::{
+    identity::{
+        Identity,
     },
-    model::{
-        identity::{
-            Identity,
-        },
-        publish::{
-            v1::{
-                ResolveValue,
-            },
-            self,
-            ResolveKeyValues,
+    publisher::{
+        v1::{
+            ResolveValue,
         },
         self,
-        dns::DnsRecordsetJson,
+        ResolveKeyValues,
     },
-    aes,
-    publisher::publisher_cert_hash,
-    utils::{
-        ResultVisErr,
-        VisErr,
-    },
+    dns::DnsRecordsetJson,
     standard::{
         KEY_DNS_A,
         KEY_DNS_AAAA,
@@ -117,13 +100,26 @@ use crate::{
         KEY_DNS_MX,
         COMMON_KEYS_DNS,
     },
+};
+use crate::{
+    node::{
+        Node,
+    },
+    aes,
+    publisher::publisher_cert_hash,
+    utils::{
+        ResultVisErr,
+        VisErr,
+    },
     aes2,
 };
+use self::config::ResolverConfig;
 
-pub mod db;
+pub mod config;
+mod db;
 
 // Workaround for unqualified anyhow usage issue
-pub mod parse_path {
+mod parse_path {
     use structre::structre;
 
     #[structre("/v1/(?P<identity>.*)")]
@@ -132,31 +128,104 @@ pub mod parse_path {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct ResolverConfig {
-    pub bind_addr: Option<SocketAddr>,
-    pub cache_path: Option<PathBuf>,
-    pub max_cache: Option<u64>,
-    pub dns_bridge: Option<DnsBridgerConfig>,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct DnsBridgerConfig {
-    pub upstream: SocketAddr,
-    pub bind_addr: SocketAddr,
-}
-
 struct CoreInner {
     node: Node,
     log: Log,
     cache: Cache<(Identity, String), (DateTime<Utc>, Option<String>)>,
 }
 
+/// This is the core of the resolver; it does lookups using a local node. If you
+/// don't have a local node, you can do lookups with a simple http client against a
+/// remote resolver.
 #[derive(Clone)]
-struct Core(Arc<CoreInner>);
+pub struct Core(Arc<CoreInner>);
 
 impl Core {
-    async fn get(
+    /// Start a new resolver core in the task manager.
+    ///
+    /// * `max_cache`: The maximum data to store in the cache (bytes, roughly). Defaults to
+    ///   about 64MiB.
+    ///
+    /// * `cache_path`: If a cache path is provided the cache will be persisted there when
+    ///   shutting down, and initialized from that data when starting up.
+    pub async fn new(
+        log: &Log,
+        tm: &TaskManager,
+        node: Node,
+        max_cache: Option<u64>,
+        cache_path: Option<PathBuf>,
+    ) -> Result<Core, loga::Error> {
+        let log = log.fork(ea!(subsys = "core"));
+        let cache = Cache::builder().weigher(|_key, pair: &(DateTime<Utc>, Option<String>)| -> u32 {
+            match &pair.1 {
+                Some(v) => v.len().try_into().unwrap_or(u32::MAX),
+                None => 1,
+            }
+        }).max_capacity(max_cache.unwrap_or(64 * 1024 * 1024)).build();
+
+        // Seed with stored cache data
+        if let Some(p) = &cache_path {
+            let log = log.fork(ea!(path = p.to_string_lossy()));
+            match aes!({
+                if !p.exists() {
+                    return Ok(());
+                }
+                let db = &mut Connection::open(p)?;
+                db::migrate(db)?;
+                let mut edge = Some(i64::MAX);
+                while let Some(e) = edge.take() {
+                    for row in db::list(db, e)? {
+                        edge = Some(row.rowid);
+                        cache.insert((row.identity.clone(), row.key), (row.expires, row.value)).await;
+                    }
+                }
+                return Ok(()) as Result<(), loga::Error>;
+            }).await {
+                Err(e) => {
+                    log.warn_e(e, "Error seeding cache with persisted data", ea!());
+                },
+                _ => { },
+            }
+        }
+        let core = Core(Arc::new(CoreInner {
+            node: node,
+            log: log.clone(),
+            cache: cache.clone(),
+        }));
+
+        // Bg core cleanup
+        if let Some(p) = &cache_path {
+            let p = p.clone();
+            tm.task({
+                let tm1 = tm.clone();
+                async move {
+                    match aes!({
+                        tm1.until_terminate().await;
+                        match fs::remove_file(&p) {
+                            Err(e) if e.kind() != ErrorKind::NotFound => {
+                                Err(e)?;
+                            },
+                            _ => { },
+                        };
+                        let db = &mut Connection::open(&p)?;
+                        db::migrate(db)?;
+                        for (k, v) in cache.iter() {
+                            db::push(db, &k.0, &k.1, v.0, v.1.as_ref().map(|v| v.as_str()))?;
+                        }
+                        return Ok(());
+                    }).await {
+                        Ok(_) => { },
+                        Err(e) => {
+                            log.warn_e(e, "Failed to persist cache at shutdown", ea!());
+                        },
+                    }
+                }
+            });
+        }
+        Ok(core)
+    }
+
+    pub async fn get(
         &self,
         ident: &Identity,
         request_keys: &[&str],
@@ -251,7 +320,7 @@ impl Core {
                 ),
             );
         }
-        let resp_kvs: publish::ResolveKeyValues =
+        let resp_kvs: publisher::ResolveKeyValues =
             serde_json::from_slice(&pub_resp_bytes).log_context(&log, "Couldn't parse response", ea!())?;
 
         // Store found values
@@ -261,7 +330,7 @@ impl Core {
             let identity = ident.clone();
             async move {
                 match &resp_kvs {
-                    publish::ResolveKeyValues::V1(resp_kvs) => {
+                    publisher::ResolveKeyValues::V1(resp_kvs) => {
                         for (k, v) in &resp_kvs.0 {
                             eprintln!("DEBUG cache store {} {}", identity, k);
                             cache.insert((identity.clone(), k.to_owned()), (v.expires, v.data.clone())).await;
@@ -280,80 +349,10 @@ impl Core {
     }
 }
 
+#[doc(hidden)]
 pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: Node) -> Result<(), loga::Error> {
     let log = &log.fork(ea!(sys = "resolver"));
-    let cache = Cache::builder().weigher(|_key, pair: &(DateTime<Utc>, Option<String>)| -> u32 {
-        match &pair.1 {
-            Some(v) => v.len().try_into().unwrap_or(u32::MAX),
-            None => 1,
-        }
-    }).max_capacity(config.max_cache.unwrap_or(64 * 1024 * 1024)).build();
-
-    // Seed with stored cache data
-    if let Some(p) = &config.cache_path {
-        let log = log.fork(ea!(path = p.to_string_lossy()));
-        match aes!({
-            if !p.exists() {
-                return Ok(());
-            }
-            let db = &mut Connection::open(p)?;
-            db::migrate(db)?;
-            let mut edge = Some(i64::MAX);
-            while let Some(e) = edge.take() {
-                for row in db::list(db, e)? {
-                    edge = Some(row.rowid);
-                    cache.insert((row.identity.clone(), row.key), (row.expires, row.value)).await;
-                }
-            }
-            return Ok(()) as Result<(), loga::Error>;
-        }).await {
-            Err(e) => {
-                log.warn_e(e, "Error seeding cache with persisted data", ea!());
-            },
-            _ => { },
-        }
-    }
-
-    // Launch core
-    let core = {
-        let log = log.fork(ea!(subsys = "core"));
-        let core = Core(Arc::new(CoreInner {
-            node: node,
-            log: log.clone(),
-            cache: cache.clone(),
-        }));
-
-        // Bg core cleanup
-        if let Some(p) = &config.cache_path {
-            let p = p.clone();
-            tm.task({
-                let tm1 = tm.clone();
-                async move {
-                    match aes!({
-                        tm1.until_terminate().await;
-                        match fs::remove_file(&p) {
-                            Err(e) if e.kind() != ErrorKind::NotFound => {
-                                Err(e)?;
-                            },
-                            _ => { },
-                        };
-                        let db = &mut Connection::open(&p)?;
-                        db::migrate(db)?;
-                        for (k, v) in cache.iter() {
-                            db::push(db, &k.0, &k.1, v.0, v.1.as_ref().map(|v| v.as_str()))?;
-                        }
-                        return Ok(());
-                    }).await {
-                        Ok(_) => { },
-                        Err(e) => {
-                            log.warn_e(e, "Failed to persist cache at shutdown", ea!());
-                        },
-                    }
-                }
-            });
-        }
-        core
-    };
+    let core = Core::new(log, tm, node, config.max_cache, config.cache_persist_path).await?;
 
     // Launch resolver server
     if let Some(bind_addr) = config.bind_addr {
@@ -379,7 +378,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                 &req.uri().query().unwrap_or("").split(",").collect_vec(),
                             )
                             .await?;
-                    return Ok(ResolveKeyValues::V1(model::publish::v1::ResolveKeyValues(kvs)));
+                    return Ok(ResolveKeyValues::V1(crate::data::publisher::v1::ResolveKeyValues(kvs)));
                 }).await {
                     Ok(kvs) => Ok(poem::web::Json(kvs).into_response()),
                     Err(e) => {
@@ -502,7 +501,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                 .err_internal()? {
                                 DnsRecordsetJson::V1(v) => {
                                     match v {
-                                        crate::model::dns::v1::DnsRecordsetJson::A(n) => {
+                                        crate::data::dns::v1::DnsRecordsetJson::A(n) => {
                                             for n in n {
                                                 let n = match Ipv4Addr::from_str(&n) {
                                                     Err(e) => {
@@ -530,7 +529,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                                 );
                                             }
                                         },
-                                        crate::model::dns::v1::DnsRecordsetJson::Aaaa(n) => {
+                                        crate::data::dns::v1::DnsRecordsetJson::Aaaa(n) => {
                                             for n in n {
                                                 let n = match Ipv6Addr::from_str(&n) {
                                                     Err(e) => {
@@ -558,7 +557,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                                 );
                                             }
                                         },
-                                        crate::model::dns::v1::DnsRecordsetJson::Cname(n) => {
+                                        crate::data::dns::v1::DnsRecordsetJson::Cname(n) => {
                                             for n in n {
                                                 let n = match Name::from_utf8(&n) {
                                                     Err(e) => {
@@ -586,7 +585,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                                 );
                                             }
                                         },
-                                        crate::model::dns::v1::DnsRecordsetJson::Txt(n) => {
+                                        crate::data::dns::v1::DnsRecordsetJson::Txt(n) => {
                                             for n in n {
                                                 answers.push(
                                                     Record::from_rdata(
@@ -601,7 +600,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                                 );
                                             }
                                         },
-                                        crate::model::dns::v1::DnsRecordsetJson::Mx(n) => {
+                                        crate::data::dns::v1::DnsRecordsetJson::Mx(n) => {
                                             for n in n {
                                                 let exchange = match Name::from_utf8(&n.1) {
                                                     Err(e) => {

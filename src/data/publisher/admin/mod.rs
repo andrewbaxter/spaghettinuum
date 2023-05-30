@@ -2,7 +2,7 @@ use serde::{
     Deserialize,
     Serialize,
 };
-use crate::model::identity::{
+use crate::data::identity::{
     Identity,
     IdentitySecret,
 };

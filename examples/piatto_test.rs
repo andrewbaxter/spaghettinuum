@@ -1,3 +1,23 @@
+//! Launch 1000 nodes and try putting a key on one node and getting a key on
+//! another. Test with a faulty network like
+//!
+//! ```bash
+//! set -xeu
+//! # 3 bands have default rules for classifying packets based on tos bits
+//! # 4th band is unmapped by default
+//! tc qdisc add dev lo root handle 1: prio bands 4
+//! # add a dest to band 4
+//! tc qdisc add dev lo parent 1:4 handle 2: netem delay 100ms 100ms distribution normal loss 4% 25%
+//! #tc qdisc add dev lo parent 1:4 handle 2: netem delay 100ms 20ms distribution normal loss 0.3% 25%
+//! # add a filter on prio to jump packets directly to 4th band
+//! tc filter add dev lo parent 1: protocol ip prio 1 basic match "cmp(u8 at 16 layer network eq 127) and cmp(u8 at 18 layer network gt 0)" flowid 1:4
+//! ```
+//!
+//! Clean it up with
+//!
+//! ```bash
+//! qdisc del dev lo root
+//! ```
 use std::net::{
     SocketAddr,
     SocketAddrV4,
@@ -11,22 +31,22 @@ use chrono::{
 use ipnet::IpAdd;
 use itertools::Itertools;
 use loga::Log;
-use spaghettinuum::{
+use spaghettinuum::data::{
     standard::PORT_NODE,
     node::{
-        Node,
-        model::protocol::{
+        protocol::{
             NodeInfo,
             SerialAddr,
             Value,
             ValueBody,
         },
     },
-    model::identity::{
+    identity::{
         Identity,
         IdentitySecretVersionMethods,
     },
 };
+use spaghettinuum::node::Node;
 
 #[tokio::main]
 async fn main() {

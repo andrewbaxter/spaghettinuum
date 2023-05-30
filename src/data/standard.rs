@@ -1,3 +1,4 @@
+pub const ENV_CONFIG: &'static str = "SPAGH_CONFIG";
 pub const PORT_NODE: u16 = 43889;
 pub const PORT_PUBLISHER: u16 = 43890;
 pub const PORT_PUBLISHER_API: u16 = 43892;

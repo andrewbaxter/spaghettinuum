@@ -32,7 +32,7 @@ use good_ormning::{
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let root = PathBuf::from(&env::var("CARGO_MANIFEST_DIR").unwrap());
-    let field_ident = field_bytes().custom("crate::model::identity::Identity").build();
+    let field_ident = field_bytes().custom("crate::data::identity::Identity").build();
 
     // Resolver cache
     {
@@ -83,7 +83,7 @@ fn main() {
                 &mut latest_version,
                 "zZ9J6717C",
                 "secret",
-                field_bytes().custom("crate::publisher::SecretType").build(),
+                field_bytes().custom("crate::publisher::config::SecretType").build(),
             );
         identities.index("zDZXPBB1L", "ident_ident", &[&ident_ident]).unique().build(&mut latest_version);
         let publish = latest_version.table("zYLNH9GCP", "publish");
@@ -93,7 +93,7 @@ fn main() {
                 &mut latest_version,
                 "zMC0B1T32",
                 "keyvalues",
-                field_bytes().custom("crate::model::publish::Publish").build(),
+                field_bytes().custom("crate::data::publisher::Publish").build(),
             );
         publish.index("zZ15A1Y6P", "publish_ident", &[&publish_ident]).unique().build(&mut latest_version);
         good_ormning::sqlite::generate(&root.join("src/publisher/db.rs"), vec![

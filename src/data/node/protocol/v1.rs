@@ -1,8 +1,6 @@
-use crate::{
-    model::{
-        identity::Identity,
-    },
-    node::model::nodeidentity::NodeIdentity,
+use crate::data::{
+    identity::Identity,
+    node::nodeidentity::NodeIdentity,
 };
 use serde::{
     Deserialize,
