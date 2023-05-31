@@ -5,7 +5,6 @@ pub mod identity;
 pub mod publisher;
 pub mod node;
 pub mod dns;
-#[doc(hidden)]
 pub mod utils;
 
 /// Standard values (ports, DNS keystrings, etc)

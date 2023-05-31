@@ -44,6 +44,7 @@ use spaghettinuum::{
             PORT_PUBLISHER_API,
             PORT_RESOLVER,
         },
+        utils::StrSocketAddr,
     },
     node::config::{
         BootstrapConfig,
@@ -62,11 +63,9 @@ use std::{
     fs,
     net::{
         IpAddr,
-        Ipv4Addr,
         SocketAddr,
         SocketAddrV4,
         SocketAddrV6,
-        ToSocketAddrs,
     },
     path::PathBuf,
     str::FromStr,
@@ -495,14 +494,9 @@ async fn main() {
                 let cwd = current_dir().unwrap();
                 let config: Config = Config {
                     node: NodeConfig {
-                        bind_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_NODE)),
-                        // TODO!
+                        bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_NODE)),
                         bootstrap: vec![BootstrapConfig {
-                            addr: format!("spaghettinuum.isandrew.com:{}", PORT_NODE)
-                                .to_socket_addrs()
-                                .unwrap()
-                                .next()
-                                .unwrap(),
+                            addr: StrSocketAddr::new_fake(format!("spaghettinuum.isandrew.com:{}", PORT_NODE)),
                             id: NodeIdentity::from_str(
                                 "yryyyyyyyb3jndem1w1e4f56cfhu3di3kpj5c6n8emk4bkye3ien388tj1thg",
                             ).unwrap(),
@@ -511,7 +505,7 @@ async fn main() {
                     },
                     publisher: match config.publisher {
                         Some(c) => Some(spaghettinuum::publisher::config::Config {
-                            bind_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_PUBLISHER)),
+                            bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PUBLISHER)),
                             cert_path: cwd.join("publisher_cert.json"),
                             advertise_addr: {
                                 let log = log.fork(ea!(action = "external_ip_lookup"));
@@ -622,8 +616,8 @@ async fn main() {
                                     spaghettinuum::publisher::config::DataConfig::Dynamic(
                                         spaghettinuum::publisher::config::DynamicDataConfig {
                                             db_path: cwd.join("publisher.sqlite3"),
-                                            bind_addr: SocketAddr::V4(
-                                                SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_PUBLISHER_API),
+                                            bind_addr: StrSocketAddr::new_fake(
+                                                format!("0.0.0.0:{}", PORT_PUBLISHER_API),
                                             ),
                                         },
                                     )
@@ -635,7 +629,7 @@ async fn main() {
                     resolver: if config.resolver || config.dns_bridge {
                         Some(spaghettinuum::resolver::config::ResolverConfig {
                             bind_addr: if config.dns_bridge {
-                                Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), PORT_RESOLVER)))
+                                Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_RESOLVER)))
                             } else {
                                 None
                             },
@@ -643,8 +637,8 @@ async fn main() {
                             max_cache: None,
                             dns_bridge: if config.dns_bridge {
                                 Some(spaghettinuum::resolver::config::DnsBridgerConfig {
-                                    upstream: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 53)),
-                                    bind_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 53)),
+                                    upstream: StrSocketAddr::new_fake("1.1.1.1:53".to_string()),
+                                    bind_addr: StrSocketAddr::new_fake("0.0.0.0:53".to_string()),
                                 })
                             } else {
                                 None

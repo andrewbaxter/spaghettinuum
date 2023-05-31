@@ -4,6 +4,7 @@ use crate::data::node::protocol::v1::{
 };
 use crate::data::node::protocol::ChallengeResponse;
 use crate::data::node::protocol::Protocol;
+use crate::data::utils::StrSocketAddr;
 use crate::es;
 use crate::data::identity::{
     Identity,
@@ -260,7 +261,7 @@ impl Node {
     pub async fn new(
         log: &Log,
         tm: TaskManager,
-        bind_addr: SocketAddr,
+        bind_addr: StrSocketAddr,
         bootstrap: &[NodeInfo],
         persist_path: Option<PathBuf>,
     ) -> Result<Node, loga::Error> {
@@ -319,7 +320,7 @@ impl Node {
         log.info("Starting", ea!());
         let sock = {
             let log = log.fork(ea!(addr = bind_addr));
-            UdpSocket::bind(bind_addr).await.log_context(&log, "Failed to open gnocchi UDP port", ea!())?
+            UdpSocket::bind(bind_addr.1).await.log_context(&log, "Failed to open node UDP port", ea!())?
         };
         let own_id_hash = hash(&own_id);
         let (find_timeout_write, find_timeout_recv) = unbounded::<NextFindTimeout>();

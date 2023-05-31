@@ -39,6 +39,7 @@ use loga::{
     ea,
     Log,
     ResultContext,
+    DebugDisplay,
 };
 use moka::future::Cache;
 use poem::{
@@ -341,18 +342,24 @@ impl Core {
 
 #[doc(hidden)]
 pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: Node) -> Result<(), loga::Error> {
-    let log = &log.fork(ea!(sys = "resolver"));
-    let core = Core::new(log, tm, node, config.max_cache, config.cache_persist_path).await?;
+    let log = log.fork(ea!(sys = "resolver"));
+    let core = Core::new(&log, tm, node, config.max_cache, config.cache_persist_path).await?;
 
     // Launch resolver server
     if let Some(bind_addr) = config.bind_addr {
-        struct ResolverEndpoint(Core);
+        struct Inner {
+            core: Core,
+            log: Log,
+        }
+
+        struct Outer(Arc<Inner>);
 
         #[async_trait]
-        impl Endpoint for ResolverEndpoint {
+        impl Endpoint for Outer {
             type Output = Response;
 
             async fn call(&self, req: Request) -> poem::Result<Self::Output> {
+                self.0.log.debug("Request", ea!(path = req.uri().path()));
                 if req.uri().path() == "/health" {
                     return Ok(StatusCode::OK.into_response());
                 }
@@ -364,6 +371,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                     let kvs =
                         self
                             .0
+                            .core
                             .get(
                                 &Identity::from_str(
                                     &ident_src.identity,
@@ -386,18 +394,22 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
             }
         }
 
-        let tm1 = tm.clone();
-        let core1 = core.clone();
-        tm.critical_task::<_, loga::Error>(async move {
-            match tm1
-                .if_alive(Server::new(TcpListener::bind(bind_addr)).run(get(ResolverEndpoint(core1))))
-                .await {
-                Some(r) => {
-                    r?;
-                },
-                None => { },
-            };
-            return Ok(());
+        tm.critical_task::<_, loga::Error>({
+            let tm1 = tm.clone();
+            let core1 = core.clone();
+            let log = log.fork(ea!(subsys = "endpoint"));
+            async move {
+                match tm1.if_alive(Server::new(TcpListener::bind(bind_addr.1)).run(get(Outer(Arc::new(Inner {
+                    core: core1,
+                    log: log,
+                }))))).await {
+                    Some(r) => {
+                        r?;
+                    },
+                    None => { },
+                };
+                return Ok(());
+            }
         });
     }
 
@@ -421,6 +433,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                 request: &trust_dns_server::server::Request,
                 mut response_handle: R,
             ) -> trust_dns_server::server::ResponseInfo {
+                self.0.log.debug("Received", ea!(request = request.dbg_str()));
                 let self1 = self.0.clone();
                 match aes!({
                     match aes2!({
@@ -735,7 +748,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
             let tm1 = tm.clone();
             async move {
                 let (upstream, upstream_bg) =
-                    AsyncClient::connect(UdpClientStream::<UdpSocket>::new(dns_config.upstream))
+                    AsyncClient::connect(UdpClientStream::<UdpSocket>::new(dns_config.upstream.1))
                         .await
                         .log_context(&log, "Failed to open upstream client", ea!())?;
                 spawn(upstream_bg);
@@ -746,9 +759,9 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                     expect_suffix: LowerName::new(&Name::from_labels(&[Label::from_utf8("s").unwrap()]).unwrap()),
                 })));
                 server.register_socket(
-                    UdpSocket::bind(&dns_config.bind_addr)
+                    UdpSocket::bind(&dns_config.bind_addr.1)
                         .await
-                        .log_context(&log, "Opening UDP listener failed", ea!(socket = dns_config.bind_addr))?,
+                        .log_context(&log, "Opening UDP listener failed", ea!(socket = dns_config.bind_addr.1))?,
                 );
                 match tm1.if_alive(server.block_until_done()).await {
                     Some(r) => {

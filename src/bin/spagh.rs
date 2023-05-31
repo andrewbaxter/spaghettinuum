@@ -69,7 +69,7 @@ async fn main() {
         let node =
             Node::new(log, tm.clone(), config.node.bind_addr, &config.node.bootstrap.into_iter().map(|e| NodeInfo {
                 id: e.id,
-                address: SerialAddr(e.addr),
+                address: SerialAddr(e.addr.1),
             }).collect_vec(), config.node.persist_path).await?;
         if let Some(publisher) = config.publisher {
             publisher::start(&tm, log, publisher, node.clone()).await?;

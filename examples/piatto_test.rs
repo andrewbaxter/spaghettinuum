@@ -45,6 +45,7 @@ use spaghettinuum::data::{
         Identity,
         IdentitySecretVersionMethods,
     },
+    utils::StrSocketAddr,
 };
 use spaghettinuum::node::Node;
 
@@ -61,10 +62,17 @@ async fn main() {
                 Log::new(loga::Level::Warn)
             };
             let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 1, 1).saturating_add(i), PORT_NODE));
-            let node = Node::new(log, tm.clone(), addr.clone(), &prev_node.take().map(|(addr, id)| NodeInfo {
-                address: addr,
-                id: id,
-            }).into_iter().collect_vec(), None).await?;
+            let node =
+                Node::new(
+                    log,
+                    tm.clone(),
+                    StrSocketAddr::from(addr.clone()),
+                    &prev_node.take().map(|(addr, id)| NodeInfo {
+                        address: addr,
+                        id: id,
+                    }).into_iter().collect_vec(),
+                    None,
+                ).await?;
             nodes.push(node.clone());
             prev_node = Some((SerialAddr(addr), node.identity()));
         }

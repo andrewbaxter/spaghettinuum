@@ -3,8 +3,8 @@ use std::{
     collections::HashMap,
     fs,
     io::ErrorKind,
-    net::SocketAddr,
     path::PathBuf,
+    net::SocketAddr,
 };
 use chrono::{
     Utc,
@@ -45,9 +45,9 @@ use poem::{
     get,
     listener::{
         TcpListener,
-        Listener,
         RustlsConfig,
         RustlsCertificate,
+        Listener,
     },
     IntoResponse,
     Route,
@@ -81,6 +81,7 @@ use crate::data::{
         admin::RegisterIdentityRequest,
     },
     node::protocol::SerialAddr,
+    utils::StrSocketAddr,
 };
 use crate::{
     aes,
@@ -188,7 +189,7 @@ pub async fn new_static_publisher(
     log: &Log,
     tm: &TaskManager,
     node: Node,
-    bind_addr: SocketAddr,
+    bind_addr: StrSocketAddr,
     advertise_addr: SocketAddr,
     cert_path: PathBuf,
     data: HashMap<Identity, IdentityData>,
@@ -252,7 +253,7 @@ pub async fn new_static_publisher(
                 .if_alive(
                     Server::new(
                         TcpListener::bind(
-                            bind_addr,
+                            bind_addr.1,
                         ).rustls(
                             RustlsConfig
                             ::new().fallback(RustlsCertificate::new().key(certs.priv_pem).cert(certs.pub_pem)),
@@ -380,7 +381,7 @@ impl DynamicPublisher {
         log: &Log,
         tm: &TaskManager,
         node: Node,
-        bind_addr: SocketAddr,
+        bind_addr: StrSocketAddr,
         advertise_addr: SocketAddr,
         cert_path: PathBuf,
         db_path: PathBuf,
@@ -416,7 +417,7 @@ impl DynamicPublisher {
                     .if_alive(
                         Server::new(
                             TcpListener::bind(
-                                bind_addr,
+                                bind_addr.1,
                             ).rustls(
                                 RustlsConfig
                                 ::new().fallback(RustlsCertificate::new().key(certs.priv_pem).cert(certs.pub_pem)),
@@ -534,7 +535,7 @@ impl DynamicPublisher {
         }
         {
             let announce_message = crate::data::node::protocol::v1::ValueBody {
-                addr: SerialAddr(self.0.advertise_addr.clone()),
+                addr: SerialAddr(self.0.advertise_addr),
                 cert_hash: self.0.cert_pub_hash.clone(),
                 expires: Utc::now() + Duration::hours(12),
             }.to_bytes();
@@ -658,7 +659,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
 
                     match tm1
                         .if_alive(
-                            Server::new(TcpListener::bind(base.bind_addr)).run(Route::new().at("/identity", post({
+                            Server::new(TcpListener::bind(base.bind_addr.1)).run(Route::new().at("/identity", post({
                                 #[handler]
                                 async fn ep(service: Data<&Arc<Inner>>, body: Json<RegisterIdentityRequest>) -> Response {
                                     match aes!({

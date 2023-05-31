@@ -1,7 +1,7 @@
 use std::{
     path::PathBuf,
-    net::SocketAddr,
     collections::HashMap,
+    net::SocketAddr,
 };
 use serde::{
     Serialize,
@@ -13,6 +13,7 @@ use crate::data::{
         Identity,
         IdentitySecret,
     },
+    utils::StrSocketAddr,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -48,7 +49,7 @@ pub struct IdentityData {
 #[derive(Deserialize, Serialize)]
 pub struct DynamicDataConfig {
     pub db_path: PathBuf,
-    pub bind_addr: SocketAddr,
+    pub bind_addr: StrSocketAddr,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -60,7 +61,7 @@ pub enum DataConfig {
 
 #[derive(Deserialize, Serialize)]
 pub struct Config {
-    pub bind_addr: SocketAddr,
+    pub bind_addr: StrSocketAddr,
     /// A cert will be generated and stored here if one doesn't already exist. Custom
     /// format (not pem).
     pub cert_path: PathBuf,
