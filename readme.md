@@ -14,7 +14,7 @@ Current status: Use if you dare (early development)
 
 - A dream
 - A reference implementation `spagh`, including a fully static as well as a database-backed configuration, plus an HTTP resolver, and a DNS bridge for people still using DNS
-- A command line tool `spagh_cli` for interacting with your node, managing identities, publishing data, and generating basic configs
+- A command line tool `spagh-cli` for interacting with your node, managing identities, publishing data, and generating basic configs
 - A Rust library, if you want to make queries in another program or embed a node in something
 
 Conceptually it's just a distributed two-level key-value store, like DNS
@@ -34,7 +34,7 @@ There's a public gnocchi at `https://spaghetinnuum.isandrew.com` with a resolver
 You can query using the CLI (`cargo install spaghettinuum`):
 
 ```
-spagh_cli query https://spaghetinnuum.isandrew.com:43891 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r dsf9oyfz83fatqpscp9yt8wkuw
+spagh-cli query https://spaghetinnuum.isandrew.com:43891 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r dsf9oyfz83fatqpscp9yt8wkuw
 ```
 
 or using `curl`:
@@ -52,7 +52,7 @@ The DNS bridge resolves any queries to `IDENTITY.s` on the spaghetinnuum network
 ## Self-hosting
 
 1. Do `cargo install spaghettinuum`
-2. Run `spagh_cli generate-config` to generate a config
+2. Run `spagh-cli generate-config` to generate a config
 3. Run `spagh YOURCONFIG.json` to start the server
 
 The `spagh` server has a number of child services:
@@ -71,7 +71,7 @@ There are two types of identities:
 - Local (a file on your computer)
 - Card (a PCSC/GPG smart card)
 
-To create a local identity, do `spagh_cli new-local-identity me.ident`. It will save the identity and secret in the file, and print out the identity. Anyone who has this file can publish under the identity, so be careful with it.
+To create a local identity, do `spagh-cli new-local-identity me.ident`. It will save the identity and secret in the file, and print out the identity. Anyone who has this file can publish under the identity, so be careful with it.
 
 To use a card identity, with a Yubikey straight out of the extruder
 
@@ -79,7 +79,7 @@ To use a card identity, with a Yubikey straight out of the extruder
 2. Do `cargo install openpgp-card-tools` which installs `opgpcard`
 3. Do `opgpcard list`, which should show your card with an id like `0006:123456789`
 4. Install a new private key by doing `opgpcard admin --card 0006:123456789 generate cv25519` with the default `12345678` admin PIN (at the moment, only Ed25519 is supported so to get that you must use `cv25519`). Alternatively you can use Sequoia or something to generate a key then do `opgpcard admin --card XYZ import` instead, if you want to back up your identity. By the way, Sequoia is super cool and the people who work on it are equally amazing.
-5. Do `spagh_cli list-card-identities` to confim it's detected and get the identity for the card ID (required for publishing)
+5. Do `spagh-cli list-card-identities` to confim it's detected and get the identity for the card ID (required for publishing)
 
 The card must be plugged into the server so the server can sign publications.
 
@@ -91,8 +91,8 @@ If you have a static publisher, the config generator should have put an example 
 
 If you have a dynamic publisher
 
-1. Register the identity with the server, using `spagh_cli register-*-identity` pointing it to either the identity file or the card ID and signing PIN
-2. Publish data using `spagh_cli publish` passing the identity and the JSON file containing your data in the format:
+1. Register the identity with the server, using `spagh-cli register-*-identity` pointing it to either the identity file or the card ID and signing PIN
+2. Publish data using `spagh-cli publish` passing the identity and the JSON file containing your data in the format:
 
    ```
    {
@@ -114,9 +114,9 @@ If you have a dynamic publisher
 
 DNS is normal published data with DNS-bridge specific keys, and a special value JSON format.
 
-You can use `spagh_cli generate-dns-data` to generate data or `spagh_cli publish-dns` to publish records directly to a dynamic publisher.
+You can use `spagh-cli generate-dns-data` to generate data or `spagh-cli publish-dns` to publish records directly to a dynamic publisher.
 
-If you want to modify the data, the special DNS keys are listed in <src/standard.rs>.
+If you want to modify the data, the special DNS keys are listed in <src/data/standard.rs>.
 
 ## Publishing a website
 
@@ -124,24 +124,21 @@ This is about hacking spaghettinuum into the old technologies, so you can use a 
 
 Note that spaghetinium only handles name resolution - you still need a server to publish the HTTP content, APIs, etc.
 
-### Publishing your address
+The main sticking point here is SSL. There are a couple theoretical options for getting SSL worked out on your website:
 
-This is simple - use the Publishing DNS instructions above.
-
-### Setting up SSL
-
-This is hard. There are a couple theoretical options:
-
-1. DNSSEC TLSA records - you could theoretically store a self signed cert in DNS and everything would be great. Unfortunately, anti-progress browsers (Chrome and Firefox) both rejected tickets to support TLSA records because who wants the future.
+1. DNSSEC TLSA records - you could theoretically store a self signed cert in DNS and everything would be great. Unfortunately, anti-progress browsers (Chrome and Firefox) both stonewalled tickets to support TLSA records because who wants the future.
 2. A new CA - I'm hoping to set one up, verifying signing requests based on a cert signature using the identity the cert is for. This is a slightly worse approach since everyone would need to add the new CA to their browser (I think you can limit CAs to certain domains, but it's still risky and painful - I'm no Let's Encrypt)
 3. A SSL MITM proxy - I was thinking about setting a public proxy up, but I was worried about paying for bandwidth
-4. Browser extensions(?) that resolve `.s` domains and do the cert validation themselves - I really wanted to avoid this, since Browser extensions are getting less capable (ex: manifest v3), require custom extensions for N types of browser, need to deal with hostile publishing policies, working with Javascript, so on and so forth
+4. Browser extensions(?) that resolve `.s` domains and do the cert validation themselves - I really wanted to avoid this, since browser extensions are getting less capable (ex: manifest v3), require custom extensions for N types of browser, need to deal with hostile publishing review/policies, need to work with Javascript, so on and so forth
+5. CNAME to a site hosted somewhere with a normal DNS name and SSL cert.
 
-So there's no immediately usable solution.
+For 1-4 you'd set up an `A` or `AAAA` record using `Publishing DNS` above. For 5 you'd set up a `CNAME` record the same way.
+
+TLDR: I think 5 is the only immediately usable option right now.
 
 ## Reference
 
-Standard ports, keys are listed in <src/standard.rs>.
+Standard ports, keys are listed in <src/data/standard.rs>.
 
 ## APIs
 

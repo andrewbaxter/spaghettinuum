@@ -101,3 +101,11 @@ impl IdentitySecretVersionMethods for IdentitySecret {
         }
     }
 }
+
+impl IdentitySecret {
+    pub fn identity(&self) -> Identity {
+        match self {
+            IdentitySecret::V1(s) => Identity::V1(s.identity()),
+        }
+    }
+}

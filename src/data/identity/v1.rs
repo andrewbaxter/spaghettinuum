@@ -120,6 +120,12 @@ impl IdentitySecretVersionMethods for Ed25519IdentitySecret {
     }
 }
 
+impl Ed25519IdentitySecret {
+    pub fn identity(&self) -> Ed25519Identity {
+        Ed25519Identity(self.0.verifying_key())
+    }
+}
+
 // Aggregates
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Identity {
@@ -166,6 +172,14 @@ impl IdentitySecret {
 
     pub fn to_bytes(&self) -> Vec<u8> {
         return bincode::serialize(self).unwrap();
+    }
+
+    pub fn identity(&self) -> Identity {
+        match self {
+            IdentitySecret::Ed25519(e) => {
+                Identity::Ed25519(e.identity())
+            },
+        }
     }
 }
 

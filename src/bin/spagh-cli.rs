@@ -19,10 +19,6 @@ use poem::{
     http::Uri,
 };
 use reqwest::Response;
-use serde::{
-    Deserialize,
-    Serialize,
-};
 use spaghettinuum::{
     config::Config,
     data::{
@@ -54,18 +50,20 @@ use spaghettinuum::{
         IdentityData,
         SecretType,
         SecretTypeCard,
+        AdvertiseAddrConfig,
+        AdvertiseAddrLookupConfig,
     },
-    utils::pgp,
+    utils::{
+        pgp,
+        lookup_ip,
+    },
 };
 use std::{
     collections::HashMap,
     env::current_dir,
     fs,
     net::{
-        IpAddr,
         SocketAddr,
-        SocketAddrV4,
-        SocketAddrV6,
     },
     path::PathBuf,
     str::FromStr,
@@ -74,6 +72,12 @@ use std::{
 #[derive(clap::Args)]
 struct NewLocalIdentityArgs {
     /// Store the new id and secret in a file at this path
+    pub path: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct LocalIdentityInfoArgs {
+    /// Path to local identity file
     pub path: PathBuf,
 }
 
@@ -165,17 +169,22 @@ impl ValueEnum for GenerateConfigPublisherArgs {
 
 #[derive(clap::Args)]
 struct GenerateConfigArgs {
-    /// Force ipv4 public ip for published addr
+    /// Force ipv4 public ip for publisher advertised addr
     #[arg(long)]
     pub ipv4: bool,
-    /// Force ipv6 public ip for published addr
+    /// Force ipv6 public ip for publisher advertised addr
     #[arg(long)]
     pub ipv6: bool,
-    #[arg(long)]
     /// Which type of publishing database. Static means the data to publish is part of
     /// the config, useful for terraform/service discovery. Dynamic means use an sqlite
     /// database.
+    #[arg(long)]
     pub publisher: Option<GenerateConfigPublisherArgs>,
+    /// Configure the publisher to look up the advertise addr at startup via this URL.
+    /// The URL must respond to a GET with the body containing just the IP address
+    /// string.
+    #[arg(long)]
+    pub publisher_advertise_addr_lookup: Option<String>,
     /// Cards to use for static publishing (formatted as `PCSCID/PIN`)
     #[arg(long)]
     pub publisher_card_identities: Option<Vec<String>>,
@@ -211,10 +220,12 @@ struct GenerateDnsDataArgs {
 enum Args {
     /// Create a new local (file) identity
     NewLocalIdentity(NewLocalIdentityArgs),
+    /// Show the identity for a local identity file
+    LocalIdentityInfo(LocalIdentityInfoArgs),
     /// Register a local identity on a dynamic publisher
     RegisterLocalIdentity(RegisterLocalIdentityArgs),
     /// List usable pcsc cards (configured with curve25519/ed25519 signing keys)
-    ListCards,
+    ListCardsIdentities,
     /// Register a pcsc card with a dynamic publisher (card should be connected to
     /// publisher host)
     RegisterCardIdentity(RegisterCardIdentityArgs),
@@ -231,12 +242,6 @@ enum Args {
     GenerateConfig(GenerateConfigArgs),
     /// Generate data for publishing DNS records
     GenerateDnsData(GenerateDnsDataArgs),
-}
-
-#[derive(Serialize, Deserialize)]
-struct IdentitySecretFile {
-    identity: Identity,
-    secret: IdentitySecret,
 }
 
 #[async_trait]
@@ -289,19 +294,28 @@ async fn main() {
                 let (ident, secret) = Identity::new();
                 {
                     let log = log.fork(ea!(path = args.path.to_string_lossy()));
-                    fs::write(args.path, &serde_json::to_string_pretty(&IdentitySecretFile {
-                        identity: ident.clone(),
-                        secret: secret,
-                    }).unwrap()).log_context(&log, "Failed to write identity secret to file", ea!())?;
+                    fs::write(
+                        args.path,
+                        &serde_json::to_string_pretty(&secret).unwrap(),
+                    ).log_context(&log, "Failed to write identity secret to file", ea!())?;
                 }
                 println!("identity [{}]", ident.to_string());
             },
+            Args::LocalIdentityInfo(p) => {
+                let secret: IdentitySecret =
+                    serde_json::from_slice(
+                        &fs::read(&p.path).log_context(&log, "Error opening identity secret file", ea!())?,
+                    ).log_context(&log, "Error parsing identity secret from file", ea!())?;
+                let identity = secret.identity();
+                println!("identity [{}]", identity.to_string());
+            },
             Args::RegisterLocalIdentity(config) => {
                 let log = log.fork(ea!(path = config.identity.to_string_lossy()));
-                let pair: IdentitySecretFile =
+                let secret: IdentitySecret =
                     serde_json::from_slice(
-                        &fs::read(&config.identity).log_context(&log, "Error opening identity file", ea!())?,
-                    ).log_context(&log, "Error parsing identity from file", ea!())?;
+                        &fs::read(&config.identity).log_context(&log, "Error opening identity secret file", ea!())?,
+                    ).log_context(&log, "Error parsing identity secret from file", ea!())?;
+                let identity = secret.identity();
                 reqwest::ClientBuilder::new()
                     .build()
                     .unwrap()
@@ -309,8 +323,8 @@ async fn main() {
                     .json(
                         &spaghettinuum::data::publisher::admin::RegisterIdentityRequest::Local(
                             spaghettinuum::data::publisher::admin::RegisterIdentityRequestLocal {
-                                identity: pair.identity,
-                                secret: pair.secret,
+                                identity: identity,
+                                secret: secret,
                             },
                         ),
                     )
@@ -319,7 +333,7 @@ async fn main() {
                     .check()
                     .await?;
             },
-            Args::ListCards => {
+            Args::ListCardsIdentities => {
                 for card in PcscBackend::cards(None).log_context(log, "Failed to list smart cards", ea!())? {
                     let mut card: Card<Open> = card.into();
                     let mut transaction =
@@ -507,30 +521,23 @@ async fn main() {
                         Some(c) => Some(spaghettinuum::publisher::config::Config {
                             bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PUBLISHER)),
                             cert_path: cwd.join("publisher_cert.json"),
-                            advertise_addr: {
-                                let log = log.fork(ea!(action = "external_ip_lookup"));
-                                let resp =
-                                    reqwest::get(if config.ipv4 {
-                                        "https://ipv4.seeip.org"
-                                    } else if config.ipv6 {
-                                        "https://ipv6.seeip.org"
-                                    } else {
-                                        "https://api.seeip.org"
+                            advertise_addr: match config.publisher_advertise_addr_lookup {
+                                Some(l) => {
+                                    AdvertiseAddrConfig::Lookup(AdvertiseAddrLookupConfig {
+                                        lookup: l,
+                                        port: PORT_PUBLISHER,
+                                        ipv4_only: config.ipv4,
+                                        ipv6_only: config.ipv6,
                                     })
-                                        .await
-                                        .log_context(&log, "Failed to make upstream request", ea!())?
-                                        .text()
-                                        .await
-                                        .log_context(&log, "Error while reading upstream request", ea!())?;
-                                const PORT: u16 = 43890;
-                                match IpAddr::from_str(
-                                    &resp,
-                                ).log_context(&log, "Unable to parse reported external ip", ea!(body = resp))? {
-                                    IpAddr::V4(i) => SocketAddr::V4(SocketAddrV4::new(i, PORT)),
-                                    IpAddr::V6(i) => {
-                                        SocketAddr::V6(SocketAddrV6::new(i, PORT, 0, 0))
-                                    },
-                                }
+                                },
+                                None => {
+                                    AdvertiseAddrConfig::Fixed(
+                                        SocketAddr::new(
+                                            lookup_ip("https://api.seeip.org", config.ipv4, config.ipv6).await?,
+                                            PORT_PUBLISHER,
+                                        ),
+                                    )
+                                },
                             },
                             data: match c {
                                 GenerateConfigPublisherArgs::Static => {
@@ -538,14 +545,15 @@ async fn main() {
                                         let mut idents = HashMap::new();
                                         for local in config.publisher_local_identities.iter().flatten() {
                                             let log = log.fork(ea!(path = local.to_string_lossy()));
-                                            let local: IdentitySecretFile =
+                                            let secret: IdentitySecret =
                                                 serde_json::from_slice(
                                                     &fs::read(
                                                         local,
-                                                    ).log_context(&log, "Error opening local identity", ea!())?,
-                                                ).log_context(&log, "Error parsing local identity", ea!())?;
-                                            idents.insert(local.identity, IdentityData {
-                                                secret: SecretType::Local(local.secret),
+                                                    ).log_context(&log, "Error opening local identity secret", ea!())?,
+                                                ).log_context(&log, "Error parsing local identity secret", ea!())?;
+                                            let identity = secret.identity();
+                                            idents.insert(identity, IdentityData {
+                                                secret: SecretType::Local(secret),
                                                 kvs: spaghettinuum::data::publisher::v1::Publish {
                                                     missing_ttl: 60,
                                                     data: {
@@ -569,12 +577,12 @@ async fn main() {
                                                             ea!(desc = card),
                                                         ),
                                                     )?;
-                                            let log = log.fork(ea!(card = card));
+                                            let log = log.fork(ea!(card = pcsc_id));
                                             let ident =
                                                 match pgp::card_to_ident(
                                                     &mut <Card<Open>>::from(
                                                         PcscBackend::open_by_ident(
-                                                            card,
+                                                            pcsc_id,
                                                             None,
                                                         ).log_context(&log, "Error opening smartcard", ea!())?,
                                                     )
@@ -586,7 +594,7 @@ async fn main() {
                                                         return Err(
                                                             log.new_err(
                                                                 "Card doesn't have a supported key type",
-                                                                ea!(card = card),
+                                                                ea!(card = pcsc_id),
                                                             ),
                                                         );
                                                     },

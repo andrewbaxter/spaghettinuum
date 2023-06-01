@@ -1,23 +1,26 @@
 use self::config::ResolverConfig;
-use crate::data::{
-    dns::DnsRecordsetJson,
-    identity::Identity,
-    publisher::{
-        self,
-        v1::ResolveValue,
-        ResolveKeyValues,
+use crate::{
+    data::{
+        dns::DnsRecordsetJson,
+        identity::Identity,
+        publisher::{
+            self,
+            v1::ResolveValue,
+            ResolveKeyValues,
+        },
+        standard::{
+            COMMON_KEYS_DNS,
+            KEY_DNS_A,
+            KEY_DNS_AAAA,
+            KEY_DNS_CNAME,
+            KEY_DNS_MX,
+            KEY_DNS_NS,
+            KEY_DNS_PTR,
+            KEY_DNS_SOA,
+            KEY_DNS_TXT,
+        },
     },
-    standard::{
-        COMMON_KEYS_DNS,
-        KEY_DNS_A,
-        KEY_DNS_AAAA,
-        KEY_DNS_CNAME,
-        KEY_DNS_MX,
-        KEY_DNS_NS,
-        KEY_DNS_PTR,
-        KEY_DNS_SOA,
-        KEY_DNS_TXT,
-    },
+    utils::reqwest_get,
 };
 use crate::{
     aes,
@@ -285,32 +288,25 @@ impl Core {
             }
         }
 
-        let pub_resp =
-            reqwest::ClientBuilder::new()
-                .use_preconfigured_tls(
-                    rustls::ClientConfig::builder()
-                        .with_safe_defaults()
-                        .with_custom_certificate_verifier(SingleKeyVerifier::new(resp.cert_hash))
-                        .with_no_client_auth(),
-                )
-                .build()
-                .unwrap()
-                .get(format!("https://{}/{}?{}", resp.addr, ident, request_keys.join(",")))
-                .send()
+        let pub_resp_bytes =
+            reqwest_get(
+                reqwest::ClientBuilder::new()
+                    .use_preconfigured_tls(
+                        rustls::ClientConfig::builder()
+                            .with_safe_defaults()
+                            .with_custom_certificate_verifier(SingleKeyVerifier::new(resp.cert_hash))
+                            .with_no_client_auth(),
+                    )
+                    .build()
+                    .unwrap()
+                    .get(format!("https://{}/{}?{}", resp.addr, ident, request_keys.join(",")))
+                    .send()
+                    .await
+                    .log_context(&log, "Error sending request", ea!())?,
+                128 * 1024 * request_keys.len(),
+            )
                 .await
-                .log_context(&log, "Error sending request", ea!())?;
-        let status = pub_resp.status();
-        let mut pub_resp_bytes = pub_resp.bytes().await.log_context(&log, "Error reading response body", ea!())?;
-        pub_resp_bytes.truncate(128 * 1024 * request_keys.len());
-        let pub_resp_bytes = pub_resp_bytes.to_vec();
-        if status.is_client_error() || status.is_server_error() {
-            return Err(
-                log.new_err(
-                    "Publisher responded with error code",
-                    ea!(status = status, body = String::from_utf8_lossy(&pub_resp_bytes)),
-                ),
-            );
-        }
+                .log_context(&log, "Error getting response from publisher", ea!())?;
         let resp_kvs: publisher::ResolveKeyValues =
             serde_json::from_slice(&pub_resp_bytes).log_context(&log, "Couldn't parse response", ea!())?;
 

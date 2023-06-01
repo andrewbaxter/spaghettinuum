@@ -4,7 +4,9 @@ use std::{
     fs,
     io::ErrorKind,
     path::PathBuf,
-    net::SocketAddr,
+    net::{
+        SocketAddr,
+    },
 };
 use chrono::{
     Utc,
@@ -69,19 +71,24 @@ use serde::{
 use sha2::Sha256;
 use taskmanager::TaskManager;
 use x509_parser::prelude::X509Certificate;
-use crate::data::{
-    identity::{
-        Identity,
-        IdentitySecretVersionMethods,
-        IdentitySecret,
+use crate::{
+    data::{
+        identity::{
+            Identity,
+            IdentitySecretVersionMethods,
+            IdentitySecret,
+        },
+        publisher::{
+            ResolveKeyValues,
+            self,
+            admin::RegisterIdentityRequest,
+        },
+        node::protocol::SerialAddr,
+        utils::StrSocketAddr,
     },
-    publisher::{
-        ResolveKeyValues,
-        self,
-        admin::RegisterIdentityRequest,
+    utils::{
+        lookup_ip,
     },
-    node::protocol::SerialAddr,
-    utils::StrSocketAddr,
 };
 use crate::{
     aes,
@@ -107,6 +114,7 @@ use crate::publisher::config::{
 };
 use self::config::{
     IdentityData,
+    AdvertiseAddrConfig,
 };
 #[cfg(feature = "card")]
 use self::config::SecretTypeCard;
@@ -620,6 +628,15 @@ fn get_certs(log: &Log, advertise_addr: SocketAddr, cert_path: PathBuf) -> Resul
     });
 }
 
+async fn resolve_advertise_addr(a: AdvertiseAddrConfig) -> Result<SocketAddr, loga::Error> {
+    match a {
+        AdvertiseAddrConfig::Fixed(a) => return Ok(a),
+        AdvertiseAddrConfig::Lookup(l) => {
+            return Ok(SocketAddr::new(lookup_ip(&l.lookup, l.ipv4_only, l.ipv6_only).await?, l.port));
+        },
+    }
+}
+
 #[doc(hidden)]
 pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> Result<(), loga::Error> {
     let log = log.fork(ea!(sys = "publisher"));
@@ -632,7 +649,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                 tm,
                 node,
                 config.bind_addr,
-                config.advertise_addr,
+                resolve_advertise_addr(config.advertise_addr).await?,
                 config.cert_path,
                 base,
             ).await?;
@@ -644,7 +661,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                     tm,
                     node,
                     config.bind_addr,
-                    config.advertise_addr,
+                    resolve_advertise_addr(config.advertise_addr).await?,
                     config.cert_path,
                     base.db_path,
                 ).await?;
