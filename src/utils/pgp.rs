@@ -15,35 +15,46 @@ use sequoia_openpgp::{
             UnspecifiedRole,
         },
     },
-    crypto::mpi::Signature,
+    crypto::mpi::{
+        Signature,
+        MPI,
+    },
     types::Curve,
 };
 use crate::data::{
     identity::Identity,
 };
 
-pub fn pgp_pubkey_to_ident(pubkey: &sequoia_openpgp::packet::Key<PublicParts, UnspecifiedRole>) -> Option<Identity> {
-    return Some(Identity::V1(match pubkey.mpis() {
-        sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { curve, q } => {
-            match curve {
-                sequoia_openpgp::types::Curve::Ed25519 => {
+pub fn pgp_eddsa_to_identity(curve: &Curve, q: &MPI) -> Option<Identity> {
+    match curve {
+        sequoia_openpgp::types::Curve::Ed25519 => {
+            Some(
+                Identity::V1(
                     crate::data::identity::v1::Identity::Ed25519(
                         crate::data::identity::v1::Ed25519Identity(
                             ed25519_dalek::VerifyingKey::from_bytes(
                                 q.decode_point(&Curve::Ed25519).unwrap().0.try_into().unwrap(),
                             ).unwrap(),
                         ),
-                    )
-                },
-                _ => {
-                    return None;
-                },
-            }
+                    ),
+                ),
+            )
         },
         _ => {
             return None;
         },
-    }));
+    }
+}
+
+pub fn pgp_pubkey_to_ident(pubkey: &sequoia_openpgp::packet::Key<PublicParts, UnspecifiedRole>) -> Option<Identity> {
+    return Some(match pubkey.mpis() {
+        sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { curve, q } => {
+            pgp_eddsa_to_identity(curve, q)?
+        },
+        _ => {
+            return None;
+        },
+    });
 }
 
 pub fn card_to_ident(card: &mut Card<Transaction>) -> Result<Option<Identity>, loga::Error> {

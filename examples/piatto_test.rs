@@ -24,28 +24,29 @@ use std::net::{
     Ipv4Addr,
 };
 use chrono::{
-    DateTime,
     Utc,
     Duration,
 };
 use ipnet::IpAdd;
 use itertools::Itertools;
 use loga::Log;
-use spaghettinuum::data::{
-    standard::PORT_NODE,
-    node::{
-        protocol::{
-            NodeInfo,
-            SerialAddr,
-            Value,
-            ValueBody,
+use spaghettinuum::{
+    data::{
+        standard::PORT_NODE,
+        node::{
+            protocol::{
+                NodeInfo,
+                SerialAddr,
+                ValueBody,
+            },
         },
+        identity::{
+            Identity,
+            IdentitySecretVersionMethods,
+        },
+        utils::StrSocketAddr,
     },
-    identity::{
-        Identity,
-        IdentitySecretVersionMethods,
-    },
-    utils::StrSocketAddr,
+    node::ValueArgs,
 };
 use spaghettinuum::node::Node;
 
@@ -82,9 +83,9 @@ async fn main() {
         let message = ValueBody {
             addr: SerialAddr(message_addr.clone()),
             cert_hash: vec![],
-            expires: <DateTime<Utc>>::MAX_UTC,
+            published: Utc::now(),
         }.to_bytes();
-        match tm.if_alive(nodes.get(0).unwrap().put(ident.clone(), Value {
+        match tm.if_alive(nodes.get(0).unwrap().put(ident.clone(), ValueArgs {
             signature: ident_secret.sign(&message),
             message: message,
         })).await {

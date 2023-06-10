@@ -142,8 +142,7 @@ pub struct NodeInfo {
 pub struct ValueBody {
     pub addr: SerialAddr,
     pub cert_hash: Vec<u8>,
-    // Max 24h
-    pub expires: chrono::DateTime<chrono::Utc>,
+    pub published: chrono::DateTime<chrono::Utc>,
 }
 
 impl ValueBody {
@@ -156,6 +155,8 @@ impl ValueBody {
 pub struct Value {
     pub message: Vec<u8>,
     pub signature: Vec<u8>,
+    // Max 24h
+    pub expires: chrono::DateTime<chrono::Utc>,
 }
 
 impl Value {

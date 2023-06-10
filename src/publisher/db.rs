@@ -54,10 +54,10 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
                 )?;
                 txn.execute("create unique index \"publish_ident\" on \"publish\" ( \"identity\" )", ())?;
                 txn.execute(
-                    "create table \"identities\" ( \"secret\" blob not null , \"identity\" blob not null )",
+                    "create table \"announce\" ( \"value\" blob not null , \"identity\" blob not null )",
                     (),
                 )?;
-                txn.execute("create unique index \"ident_ident\" on \"identities\" ( \"identity\" )", ())?;
+                txn.execute("create unique index \"announce_ident\" on \"announce\" ( \"identity\" )", ())?;
             }
             txn.execute("update __good_version set version = $1, lock = 0", rusqlite::params![0i64])?;
             let out: Result<bool, GoodError> = Ok(true);
@@ -95,44 +95,27 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
     }
 }
 
-pub fn add_ident(
+pub fn set_announce(
     db: &mut rusqlite::Connection,
     identity: &crate::data::identity::Identity,
-    secret: &crate::publisher::config::SecretType,
+    value: &crate::data::publisher::announcement::Announcement,
 ) -> Result<(), GoodError> {
     db
         .execute(
-            "insert into \"identities\" ( \"identity\" , \"secret\" ) values ( $1 , $2 )",
-            rusqlite::params![identity.to_sql(), secret.to_sql()],
+            "insert into \"announce\" ( \"identity\" , \"value\" ) values ( $1 , $2 ) on conflict do update set \"value\" = $2",
+            rusqlite::params![identity.to_sql(), value.to_sql()],
         )
         .map_err(|e| GoodError(e.to_string()))?;
     Ok(())
 }
 
-pub fn get_ident(
-    db: &mut rusqlite::Connection,
-    identity: &crate::data::identity::Identity,
-) -> Result<crate::publisher::config::SecretType, GoodError> {
-    let mut stmt =
-        db.prepare(
-            "select \"identities\" . \"secret\" from \"identities\" where ( \"identities\" . \"identity\" = $1 )",
-        )?;
-    let mut rows = stmt.query(rusqlite::params![identity.to_sql()]).map_err(|e| GoodError(e.to_string()))?;
-    let r = rows.next()?.ok_or_else(|| GoodError("Query expected to return one row but returned no rows".into()))?;
-    Ok({
-        let x: Vec<u8> = r.get(0usize)?;
-        let x = crate::publisher::config::SecretType::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
-        x
-    })
-}
-
-pub fn delete_ident(
+pub fn delete_announce(
     db: &mut rusqlite::Connection,
     identity: &crate::data::identity::Identity,
 ) -> Result<(), GoodError> {
     db
         .execute(
-            "delete from \"identities\" where ( \"identities\" . \"identity\" = $1 )",
+            "delete from \"announce\" where ( \"announce\" . \"identity\" = $1 )",
             rusqlite::params![identity.to_sql()],
         )
         .map_err(|e| GoodError(e.to_string()))?;
@@ -141,14 +124,14 @@ pub fn delete_ident(
 
 pub struct DbRes1 {
     pub identity: crate::data::identity::Identity,
-    pub secret: crate::publisher::config::SecretType,
+    pub value: crate::data::publisher::announcement::Announcement,
 }
 
-pub fn list_idents_start(db: &mut rusqlite::Connection) -> Result<Vec<DbRes1>, GoodError> {
+pub fn list_announce_start(db: &mut rusqlite::Connection) -> Result<Vec<DbRes1>, GoodError> {
     let mut out = vec![];
     let mut stmt =
         db.prepare(
-            "select \"identities\" . \"identity\" , \"identities\" . \"secret\" from \"identities\" order by \"identities\" . \"identity\" asc limit 50",
+            "select \"announce\" . \"identity\" , \"announce\" . \"value\" from \"announce\" order by \"announce\" . \"identity\" asc limit 50",
         )?;
     let mut rows = stmt.query(rusqlite::params![]).map_err(|e| GoodError(e.to_string()))?;
     while let Some(r) = rows.next()? {
@@ -158,9 +141,12 @@ pub fn list_idents_start(db: &mut rusqlite::Connection) -> Result<Vec<DbRes1>, G
                 let x = crate::data::identity::Identity::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
                 x
             },
-            secret: {
+            value: {
                 let x: Vec<u8> = r.get(1usize)?;
-                let x = crate::publisher::config::SecretType::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+                let x =
+                    crate::data::publisher::announcement::Announcement::from_sql(
+                        x,
+                    ).map_err(|e| GoodError(e.to_string()))?;
                 x
             },
         });
@@ -168,14 +154,14 @@ pub fn list_idents_start(db: &mut rusqlite::Connection) -> Result<Vec<DbRes1>, G
     Ok(out)
 }
 
-pub fn list_idents_after(
+pub fn list_announce_after(
     db: &mut rusqlite::Connection,
     ident: &crate::data::identity::Identity,
 ) -> Result<Vec<DbRes1>, GoodError> {
     let mut out = vec![];
     let mut stmt =
         db.prepare(
-            "select \"identities\" . \"identity\" , \"identities\" . \"secret\" from \"identities\" where ( \"identities\" . \"identity\" < $1 ) order by \"identities\" . \"identity\" asc limit 50",
+            "select \"announce\" . \"identity\" , \"announce\" . \"value\" from \"announce\" where ( \"announce\" . \"identity\" < $1 ) order by \"announce\" . \"identity\" asc limit 50",
         )?;
     let mut rows = stmt.query(rusqlite::params![ident.to_sql()]).map_err(|e| GoodError(e.to_string()))?;
     while let Some(r) = rows.next()? {
@@ -185,9 +171,12 @@ pub fn list_idents_after(
                 let x = crate::data::identity::Identity::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
                 x
             },
-            secret: {
+            value: {
                 let x: Vec<u8> = r.get(1usize)?;
-                let x = crate::publisher::config::SecretType::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+                let x =
+                    crate::data::publisher::announcement::Announcement::from_sql(
+                        x,
+                    ).map_err(|e| GoodError(e.to_string()))?;
                 x
             },
         });

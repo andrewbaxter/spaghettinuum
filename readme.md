@@ -12,12 +12,11 @@ Current status: Use if you dare (early development)
 
 # What is this
 
-- A dream
 - A reference implementation `spagh`, including a fully static as well as a database-backed configuration, plus an HTTP resolver, and a DNS bridge for people still using DNS
 - A command line tool `spagh-cli` for interacting with your node, managing identities, publishing data, and generating basic configs
-- A Rust library, if you want to make queries in another program or embed a node in something
+- A Rust library for embedding a resolver/publisher in your own software
 
-Conceptually it's just a distributed two-level key-value store, like DNS
+Conceptually Spaghettinuum is a distributed two-level key-value store, like DNS
 
 - Level 1: an identity (like a DNS name, but based on your public key)
 - Level 2: an arbitrary key (like a DNS record type, but arbitrary)
@@ -25,13 +24,21 @@ Conceptually it's just a distributed two-level key-value store, like DNS
 
 You can use it for hosting your websites (or at least, the name bit, almost, several huge caveats below) and providing public service discovery for various services that don't exist yet.
 
-# How
+# Installing
 
-## Querying
+Install it with `cargo install spaghettinuum`.
 
-There's a public gnocchi at `https://spaghetinnuum.isandrew.com` with a resolver on port `43891` if you don't want to set up your own node.
+This provides both the server `spagh` and CLI `spagh-cli`.
 
-You can query using the CLI (`cargo install spaghettinuum`):
+# Querying
+
+There's a public gnocchi at `spaghetinnuum.isandrew.com`, ip `149.248.205.99`.
+
+## Resolver
+
+It's running a resolver on port `43891`.
+
+You can query arbitrary keys using the CLI (`cargo install spaghettinuum`):
 
 ```
 spagh-cli query https://spaghetinnuum.isandrew.com:43891 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r dsf9oyfz83fatqpscp9yt8wkuw
@@ -43,13 +50,40 @@ or using `curl`:
 curl https://spaghetinnuum.isandrew.com:43891/yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r?key1,key2,...
 ```
 
-## Querying the DNS bridge
+## DNS bridge
 
-The public node is also running a DNS bridge, if you just want to get querying. You'll need to figure out its ip and add it to your network settings (it runs on port 53 as normal).
+There's a DNS bridge running on UDP port `53`.
 
-The DNS bridge resolves any queries to `IDENTITY.s` on the spaghetinnuum network. Any queries to legitimate TLDs will be forwarded to `1.1.1.1` or another similar public DNS provider.
+Try it out with `dig`:
 
-## Self-hosting
+```
+dig @149.248.205.99 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s
+```
+
+If you set your DNS resolver to `149.248.205.99` you can read my writings (WIP) in your browser at <https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s/5987>.
+
+## Resolver API
+
+To query a resolver, send an HTTP `GET` to `RESOLVER/v1/IDENTITY?KEY1,KEY2,...`.
+
+The response has this format:
+
+```json
+{
+  "v1": {
+    "key": {
+      "expires": "RFC3339 datetime...",
+      "data": "value"
+    }
+  }
+}
+```
+
+If the identity can't be resolved you'll get an empty `{"v1": {}}` response.
+
+All resolvers must have this API.
+
+# Hosting a publisher or resolver
 
 1. Do `cargo install spaghettinuum`
 2. Run `spagh-cli generate-config` to generate a config
@@ -62,9 +96,11 @@ The `spagh` server has a number of child services:
 - A publisher, which publishes your key/value pairs, optional
 - A DNS bridge, which provides a DNS frontend for querying, optional
 
-The publisher can either be static (all keys and values are part of the config file) or dynamic (an sqlite database is set up and can be configured remotely).
+# Publishing
 
 ## Setting up identities
+
+You need an identity to publish.
 
 There are two types of identities:
 
@@ -73,7 +109,7 @@ There are two types of identities:
 
 To create a local identity, do `spagh-cli new-local-identity me.ident`. It will save the identity and secret in the file, and print out the identity. Anyone who has this file can publish under the identity, so be careful with it.
 
-To use a card identity, with a Yubikey straight out of the extruder
+To use a card identity, with a Yubikey straight out of the extruder,
 
 1. Make sure `pcscd` is running and your Yubikey is plugged in
 2. Do `cargo install openpgp-card-tools` which installs `opgpcard`
@@ -85,38 +121,39 @@ The card must be plugged into the server so the server can sign publications.
 
 ## Publishing
 
-To publish you need a server with the publisher child service enabled.
+To publish you need a server with the publisher service enabled.
 
-If you have a static publisher, the config generator should have put an example key and value in your config - modify the config as you want and then run your server.
+Create a json file named `data.json` containing the data you want to publish under your identity:
 
-If you have a dynamic publisher
-
-1. Register the identity with the server, using `spagh-cli register-*-identity` pointing it to either the identity file or the card ID and signing PIN
-2. Publish data using `spagh-cli publish` passing the identity and the JSON file containing your data in the format:
-
-   ```
-   {
-    "missing_ttl": 60,
-    "data": {
-        "any key you want": {
-            "ttl": 60,
-            "data": "I love you"
-        }
+```json
+{
+  "missing_ttl": 60,
+  "data": {
+    "any key you want": {
+      "ttl": 60,
+      "data": "I love you"
     }
-   }
-   ```
+  }
+}
+```
 
-   TTLs are in minutes.
+TTLs are in minutes.
 
-   `missing_ttl` is how long keys not in `data` can be assummed to be missing.
+`missing_ttl` is how long keys not in `data` can be assummed to be missing.
+
+Then call
+
+```
+spagh-cli publish http://localhost:43892 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r data.json
+```
 
 ## Publishing DNS
 
-DNS is normal published data with DNS-bridge specific keys, and a special value JSON format.
+DNS is normal published data with DNS-bridge specific keys, with a specific value JSON format understood by the DNS bridge service.
 
-You can use `spagh-cli generate-dns-data` to generate data or `spagh-cli publish-dns` to publish records directly to a dynamic publisher.
+You can use `spagh-cli generate-dns-data` to generate data for use with `spagh-cli publish` or `spagh-cli publish-dns` to publish records directly to a dynamic publisher.
 
-If you want to modify the data, the special DNS keys are listed in <src/data/standard.rs>.
+If you want to modify the data, the recognized DNS keys are listed in <src/data/standard.rs>.
 
 ## Publishing a website
 
@@ -135,55 +172,6 @@ The main sticking point here is SSL. There are a couple theoretical options for 
 For 1-4 you'd set up an `A` or `AAAA` record using `Publishing DNS` above. For 5 you'd set up a `CNAME` record the same way.
 
 TLDR: I think 5 is the only immediately usable option right now.
-
-## Reference
-
-Standard ports, keys are listed in <src/data/standard.rs>.
-
-## APIs
-
-### Querying
-
-To query a resolver, send an HTTP `GET` to `RESOLVER/v1/IDENTITY?KEY1,KEY2,...`.
-
-The response has this format:
-
-```
-{
-    "v1": {
-        "key": {
-            "expires": "RFC3339 datetime...",
-            "data": "value"
-        }
-    }
-}
-```
-
-If the identity can't be resolved you'll get an empty `{"v1": {}}` response.
-
-All resolvers must have this API.
-
-### Publishing
-
-`POST` to `PUBLISHER/publish/IDENTITY` with the JSON content-type header and body
-
-```
-{
-    "missing_ttl": 60,
-    "data": {
-        "key": {
-            "ttl": 60,
-            "data": "value"
-        }
-    }
-}
-```
-
-TTLs are measured in minutes.
-
-The `missing_ttl` is how long resolvers can cache that missing keys are missing.
-
-This API is specific to this publisher implementation.
 
 # Architecture
 

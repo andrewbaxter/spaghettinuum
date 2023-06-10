@@ -9,11 +9,7 @@ license = "ISC"
 
 [features]
 default = ["card"]
-card = [
-    "dep:openpgp-card-pcsc",
-    "dep:openpgp-card-sequoia",
-    "dep:sequoia-openpgp",
-]
+card = ["dep:openpgp-card-pcsc", "dep:openpgp-card-sequoia", "dep:sequoia-openpgp"]
 
 [dependencies]
 chrono = { version = "0.4.19", features = ["serde"] }
@@ -68,6 +64,7 @@ trust-dns-client = "0.22.0"
 urlencoding = "2.1.2"
 ipnet = "2.7.2"
 structre = "0.0.1"
+rpassword = "7.2.0"
 
 [build-dependencies]
 good-ormning = "0.1.6"

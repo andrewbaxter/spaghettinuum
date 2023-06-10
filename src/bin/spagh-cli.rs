@@ -1,7 +1,6 @@
+use chrono::Utc;
 use clap::{
-    builder::PossibleValue,
     Parser,
-    ValueEnum,
 };
 use itertools::Itertools;
 use loga::{
@@ -19,6 +18,10 @@ use poem::{
     http::Uri,
 };
 use reqwest::Response;
+use sequoia_openpgp::{
+    types::HashAlgorithm,
+    crypto::Signer,
+};
 use spaghettinuum::{
     config::Config,
     data::{
@@ -26,9 +29,20 @@ use spaghettinuum::{
         identity::{
             Identity,
             IdentitySecret,
+            IdentitySecretVersionMethods,
         },
-        node::nodeidentity::NodeIdentity,
-        publisher::v1::PublishValue,
+        node::{
+            nodeidentity::NodeIdentity,
+            protocol::SerialAddr,
+        },
+        publisher::{
+            v1::{
+                PublishValue,
+                Publish,
+            },
+            admin::PublishRequest,
+            announcement::v1::Announcement,
+        },
         standard::{
             KEY_DNS_A,
             KEY_DNS_AAAA,
@@ -47,16 +61,18 @@ use spaghettinuum::{
         NodeConfig,
     },
     publisher::config::{
-        IdentityData,
-        SecretType,
-        SecretTypeCard,
         AdvertiseAddrConfig,
         AdvertiseAddrLookupConfig,
     },
     utils::{
-        pgp,
+        pgp::{
+            self,
+            extract_pgp_ed25519_sig,
+            pgp_eddsa_to_identity,
+        },
         lookup_ip,
     },
+    es,
 };
 use std::{
     collections::HashMap,
@@ -76,43 +92,37 @@ struct NewLocalIdentityArgs {
 }
 
 #[derive(clap::Args)]
-struct LocalIdentityInfoArgs {
+struct ShowLocalIdentityArgs {
     /// Path to local identity file
     pub path: PathBuf,
 }
 
-#[derive(clap::Args)]
-struct RegisterLocalIdentityArgs {
-    /// URL of a server with dynamic publishing set up
-    pub server: Uri,
-    /// Path to identity file (not identity id)
-    pub identity: PathBuf,
+#[derive(Clone, clap::Args)]
+struct LocalIdentityArg {
+    pub path: PathBuf,
 }
 
-#[derive(clap::Args)]
-struct RegisterCardIdentityArgs {
-    /// URL of a server with dynamic publishing set up
-    pub server: Uri,
+#[derive(Clone, clap::Args)]
+struct CardIdentityArg {
     /// Card to register, using id per pcscd (not identity id)
     pub pcsc_id: String,
     /// Card pin
     pub pin: String,
 }
 
-#[derive(clap::Args)]
-struct UnregisterIdentityArgs {
-    /// URL of a server with dynamic publishing set up
-    pub server: Uri,
-    /// Identity to unregister
-    pub identity: String,
+#[derive(Clone, clap::Subcommand)]
+enum IdentityArg {
+    Local(LocalIdentityArg),
+    Card(CardIdentityArg),
 }
 
 #[derive(clap::Args)]
 struct PublishArgs {
-    /// URL of a server with dynamic publishing set up
+    /// URL of a server with publishing set up
     pub server: Uri,
     /// Identity to publish as
-    pub identity: String,
+    #[clap(subcommand)]
+    pub identity: IdentityArg,
     /// Data to publish.  Must be a json in the structure
     /// `{KEY: {"ttl": SECONDS, "value": "DATA"}}`
     pub data: PathBuf,
@@ -120,10 +130,11 @@ struct PublishArgs {
 
 #[derive(clap::Args)]
 struct PublishDnsArgs {
-    /// URL of a server with dynamic publishing set up
+    /// URL of a server with publishing set up
     pub server: Uri,
     /// Identity to publish as
-    pub identity: String,
+    #[clap(subcommand)]
+    pub identity: IdentityArg,
     pub ttl: u32,
     #[arg(long)]
     pub dns_cname: Vec<String>,
@@ -139,6 +150,14 @@ struct PublishDnsArgs {
 }
 
 #[derive(clap::Args)]
+struct UnpublishArgs {
+    /// URL of a server with publishing set up
+    pub server: Uri,
+    #[clap(subcommand)]
+    pub identity: IdentityArg,
+}
+
+#[derive(clap::Args)]
 struct QueryArgs {
     /// URL of a server with the resolver enabled for sending requests
     pub server: Uri,
@@ -148,43 +167,26 @@ struct QueryArgs {
     pub keys: Vec<String>,
 }
 
-#[derive(Clone, clap::Subcommand)]
-enum GenerateConfigPublisherArgs {
-    Static,
-    Dynamic,
-}
-
-impl ValueEnum for GenerateConfigPublisherArgs {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Static, Self::Dynamic]
-    }
-
-    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
-        match self {
-            GenerateConfigPublisherArgs::Static => Some(PossibleValue::new("static")),
-            GenerateConfigPublisherArgs::Dynamic => Some(PossibleValue::new("dynamic")),
-        }
-    }
-}
-
 #[derive(clap::Args)]
 struct GenerateConfigArgs {
-    /// Force ipv4 public ip for publisher advertised addr
+    /// Enable the publisher, allowing you to publish data on your server
     #[arg(long)]
-    pub ipv4: bool,
-    /// Force ipv6 public ip for publisher advertised addr
+    pub publisher: bool,
+    /// Use specific address for publishing announcements, rather than automatic
+    /// detection
     #[arg(long)]
-    pub ipv6: bool,
-    /// Which type of publishing database. Static means the data to publish is part of
-    /// the config, useful for terraform/service discovery. Dynamic means use an sqlite
-    /// database.
-    #[arg(long)]
-    pub publisher: Option<GenerateConfigPublisherArgs>,
+    pub publisher_advertise_addr: Option<SocketAddr>,
     /// Configure the publisher to look up the advertise addr at startup via this URL.
     /// The URL must respond to a GET with the body containing just the IP address
     /// string.
     #[arg(long)]
     pub publisher_advertise_addr_lookup: Option<String>,
+    /// Force ipv4 public ip for publisher advertised addr detection
+    #[arg(long)]
+    pub publisher_advertise_addr_ipv4: bool,
+    /// Force ipv6 public ip for publisher advertised addr detection
+    #[arg(long)]
+    pub publisher_advertise_addr_ipv6: bool,
     /// Cards to use for static publishing (formatted as `PCSCID/PIN`)
     #[arg(long)]
     pub publisher_card_identities: Option<Vec<String>>,
@@ -201,7 +203,7 @@ struct GenerateConfigArgs {
 }
 
 #[derive(clap::Args)]
-struct GenerateDnsDataArgs {
+struct GenerateDnsKeyValuesArgs {
     pub ttl: u32,
     #[arg(long)]
     pub dns_cname: Vec<String>,
@@ -221,33 +223,28 @@ enum Args {
     /// Create a new local (file) identity
     NewLocalIdentity(NewLocalIdentityArgs),
     /// Show the identity for a local identity file
-    LocalIdentityInfo(LocalIdentityInfoArgs),
-    /// Register a local identity on a dynamic publisher
-    RegisterLocalIdentity(RegisterLocalIdentityArgs),
+    ShowLocalIdentity(ShowLocalIdentityArgs),
     /// List usable pcsc cards (configured with curve25519/ed25519 signing keys)
-    ListCardsIdentities,
-    /// Register a pcsc card with a dynamic publisher (card should be connected to
-    /// publisher host)
-    RegisterCardIdentity(RegisterCardIdentityArgs),
-    /// Unregister an identity from a dynamic publisher
-    UnregisterIdentity(UnregisterIdentityArgs),
-    /// Create or replace existing publish data for an identity on a dynamic publisher
-    /// server
+    ShowCardIdentities,
+    /// Create or replace existing publish data for an identity on a publisher server
     Publish(PublishArgs),
-    /// Generate publish data for wrapping DNS and publish it on a dynamic publisher
+    /// Generate publish data for wrapping DNS and publish it on a publisher
     PublishDns(PublishDnsArgs),
+    /// Create or replace existing publish data for an identity on a publisher server
+    Unpublish(UnpublishArgs),
     /// Query a resolver server for keys published under an identity
     Query(QueryArgs),
     /// Generate base server configs
     GenerateConfig(GenerateConfigArgs),
     /// Generate data for publishing DNS records
-    GenerateDnsData(GenerateDnsDataArgs),
+    GenerateDnsKeyValues(GenerateDnsKeyValuesArgs),
 }
 
 #[async_trait]
 trait ReqwestCheck {
     async fn check(self) -> Result<(), loga::Error>;
     async fn check_text(self) -> Result<String, loga::Error>;
+    async fn check_bytes(self) -> Result<Vec<u8>, loga::Error>;
 }
 
 #[async_trait]
@@ -282,6 +279,112 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
             )?,
         );
     }
+
+    async fn check_bytes(self) -> Result<Vec<u8>, loga::Error> {
+        let resp = self?;
+        let status = resp.status();
+        let body = resp.bytes().await?.to_vec();
+        if !status.is_success() {
+            return Err(
+                loga::Error::new("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+            );
+        }
+        return Ok(body);
+    }
+}
+
+async fn publish(
+    log: &loga::Log,
+    server: &Uri,
+    identity_arg: IdentityArg,
+    keyvalues: Publish,
+) -> Result<(), loga::Error> {
+    let c = reqwest::ClientBuilder::new().build().unwrap();
+    let info_body = c.get(format!("{}/info", server)).send().await.check_bytes().await?;
+    let info: crate::data::publisher::admin::InfoResponse =
+        serde_json::from_slice(
+            &info_body,
+        ).log_context(
+            log,
+            "Error parsing info response from publisher as json",
+            ea!(body = String::from_utf8_lossy(&info_body)),
+        )?;
+    let announce_message = crate::data::node::protocol::v1::ValueBody {
+        addr: SerialAddr(info.advertise_addr),
+        cert_hash: zbase32::decode_full_bytes_str(
+            &info.cert_pub_hash,
+        ).map_err(
+            |e| log.new_err("Couldn't parse zbase32 pub cert hash in response from publisher", ea!(text = e)),
+        )?,
+        published: Utc::now(),
+    }.to_bytes();
+    let (identity, announcement) = match identity_arg {
+        IdentityArg::Local(ident_config) => {
+            let secret: IdentitySecret =
+                serde_json::from_slice(
+                    &fs::read(&ident_config.path).log_context(&log, "Error opening identity secret file", ea!())?,
+                ).log_context(&log, "Error parsing identity secret from file", ea!())?;
+            let identity = secret.identity();
+            (identity, Announcement {
+                message: announce_message.clone(),
+                signature: secret.sign(announce_message.as_ref()),
+            })
+        },
+        IdentityArg::Card(ident_config) => {
+            let mut card: Card<Open> = PcscBackend::open_by_ident(&ident_config.pcsc_id, None)?.into();
+            let mut transaction = card.transaction()?;
+            let pin = if ident_config.pin == "-" {
+                rpassword::prompt_password(
+                    "Enter your pin to sign announcement: ",
+                ).log_context(log, "Error securely reading pin", ea!())?
+            } else {
+                ident_config.pin
+            };
+            transaction
+                .verify_user_for_signing(pin.as_bytes())
+                .log_context(log, "Error unlocking card with pin", ea!(card = ident_config.pcsc_id))?;
+            let mut user = transaction.signing_card().unwrap();
+            let signer_interact = || eprintln!("Card {} requests interaction to sign", ident_config.pcsc_id);
+            let mut signer = user.signer(&signer_interact)?;
+            match es!({
+                match signer.public() {
+                    sequoia_openpgp::packet::Key::V4(k) => match k.mpis() {
+                        sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { curve, q } => {
+                            let identity = match pgp_eddsa_to_identity(curve, q) {
+                                Some(i) => i,
+                                None => return Ok(None),
+                            };
+                            let hash = crate::data::identity::hash_for_ed25519(&announce_message);
+                            return Ok(Some((identity, Announcement {
+                                message: announce_message.clone(),
+                                signature: extract_pgp_ed25519_sig(
+                                    &signer
+                                        .sign(HashAlgorithm::SHA512, &hash)
+                                        .map_err(|e| loga::Error::new("Card signature failed", ea!(err = e)))?,
+                                ).to_vec(),
+                            })));
+                        },
+                        _ => {
+                            return Ok(None);
+                        },
+                    },
+                    _ => {
+                        return Ok(None);
+                    },
+                };
+            })? {
+                Some(r) => r,
+                None => {
+                    return Err(loga::Error::new("Unsupported key type - must be Ed25519", ea!()));
+                },
+            }
+        },
+    };
+    c.post(format!("{}publish/{}", server, identity.to_string())).json(&PublishRequest {
+        announce: announcement,
+        keyvalues: keyvalues,
+    }).send().await.check().await?;
+    return Ok(());
 }
 
 #[tokio::main]
@@ -301,7 +404,7 @@ async fn main() {
                 }
                 println!("identity [{}]", ident.to_string());
             },
-            Args::LocalIdentityInfo(p) => {
+            Args::ShowLocalIdentity(p) => {
                 let secret: IdentitySecret =
                     serde_json::from_slice(
                         &fs::read(&p.path).log_context(&log, "Error opening identity secret file", ea!())?,
@@ -309,31 +412,7 @@ async fn main() {
                 let identity = secret.identity();
                 println!("identity [{}]", identity.to_string());
             },
-            Args::RegisterLocalIdentity(config) => {
-                let log = log.fork(ea!(path = config.identity.to_string_lossy()));
-                let secret: IdentitySecret =
-                    serde_json::from_slice(
-                        &fs::read(&config.identity).log_context(&log, "Error opening identity secret file", ea!())?,
-                    ).log_context(&log, "Error parsing identity secret from file", ea!())?;
-                let identity = secret.identity();
-                reqwest::ClientBuilder::new()
-                    .build()
-                    .unwrap()
-                    .post(format!("{}identity", config.server))
-                    .json(
-                        &spaghettinuum::data::publisher::admin::RegisterIdentityRequest::Local(
-                            spaghettinuum::data::publisher::admin::RegisterIdentityRequestLocal {
-                                identity: identity,
-                                secret: secret,
-                            },
-                        ),
-                    )
-                    .send()
-                    .await
-                    .check()
-                    .await?;
-            },
-            Args::ListCardsIdentities => {
+            Args::ShowCardIdentities => {
                 for card in PcscBackend::cards(None).log_context(log, "Failed to list smart cards", ea!())? {
                     let mut card: Card<Open> = card.into();
                     let mut transaction =
@@ -358,124 +437,136 @@ async fn main() {
                     println!("pcsc id [{}], identity [{}]", card_id, identity);
                 }
             },
-            Args::RegisterCardIdentity(config) => {
-                reqwest::ClientBuilder::new()
-                    .build()
-                    .unwrap()
-                    .post(format!("{}identity", config.server))
-                    .json(
-                        &spaghettinuum::data::publisher::admin::RegisterIdentityRequest::Card(
-                            spaghettinuum::data::publisher::admin::RegisteryIdentityRequestCard {
-                                pcsc_id: config.pcsc_id,
-                                pin: config.pin,
-                            },
-                        ),
-                    )
-                    .send()
-                    .await
-                    .check()
-                    .await?;
-            },
-            Args::UnregisterIdentity(config) => {
-                reqwest::ClientBuilder::new()
-                    .build()
-                    .unwrap()
-                    .delete(format!("{}identity/{}", config.server, config.identity))
-                    .send()
-                    .await
-                    .check()
-                    .await?;
-            },
             Args::Publish(config) => {
-                reqwest::ClientBuilder::new()
-                    .build()
-                    .unwrap()
-                    .post(format!("{}publish/{}", config.server, config.identity))
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .body(fs::read(&config.data).log_context(log, "Failed to open data to publish", ea!())?)
-                    .send()
-                    .await
-                    .check()
-                    .await?;
+                publish(
+                    log,
+                    &config.server,
+                    config.identity,
+                    serde_json::from_slice(
+                        &fs::read(&config.data).log_context(log, "Failed to open data to publish", ea!())?,
+                    ).log_context(log, "Failed to parse publish data json into key values structure", ea!())?,
+                ).await?;
             },
             Args::PublishDns(config) => {
+                publish(log, &config.server, config.identity, spaghettinuum::data::publisher::v1::Publish {
+                    missing_ttl: config.ttl,
+                    data: {
+                        let mut kvs = HashMap::new();
+                        if !config.dns_cname.is_empty() {
+                            kvs.insert(KEY_DNS_CNAME.to_string(), PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &crate::data::dns::DnsRecordsetJson::V1(
+                                        crate::data::dns::v1::DnsRecordsetJson::Cname(config.dns_cname),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_a.is_empty() {
+                            kvs.insert(KEY_DNS_A.to_string(), PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &crate::data::dns::DnsRecordsetJson::V1(
+                                        crate::data::dns::v1::DnsRecordsetJson::A(config.dns_a),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_aaaa.is_empty() {
+                            kvs.insert(KEY_DNS_AAAA.to_string(), PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &crate::data::dns::DnsRecordsetJson::V1(
+                                        crate::data::dns::v1::DnsRecordsetJson::Aaaa(config.dns_aaaa),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_txt.is_empty() {
+                            kvs.insert(KEY_DNS_TXT.to_string(), PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &crate::data::dns::DnsRecordsetJson::V1(
+                                        crate::data::dns::v1::DnsRecordsetJson::Txt(config.dns_txt),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_mx.is_empty() {
+                            let mut values = vec![];
+                            for v in config.dns_mx {
+                                let (priority, name) =
+                                    v
+                                        .split_once("/")
+                                        .ok_or_else(
+                                            || loga::Error::new(
+                                                "Incorrect mx record specification, must be like `PRIORITY/NAME`",
+                                                ea!(entry = v),
+                                            ),
+                                        )?;
+                                let priority =
+                                    u16::from_str(&priority).context("Couldn't parse priority as int", ea!())?;
+                                values.push((priority, name.to_string()));
+                            }
+                            kvs.insert(KEY_DNS_MX.to_string(), PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &crate::data::dns::DnsRecordsetJson::V1(
+                                        crate::data::dns::v1::DnsRecordsetJson::Mx(values),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        kvs
+                    },
+                }).await?;
+            },
+            Args::Unpublish(config) => {
+                let identity = match config.identity {
+                    IdentityArg::Local(ident_config) => {
+                        let secret: IdentitySecret =
+                            serde_json::from_slice(
+                                &fs::read(
+                                    &ident_config.path,
+                                ).log_context(&log, "Error opening identity secret file", ea!())?,
+                            ).log_context(&log, "Error parsing identity secret from file", ea!())?;
+                        secret.identity()
+                    },
+                    IdentityArg::Card(ident_config) => {
+                        let mut card: Card<Open> = PcscBackend::open_by_ident(&ident_config.pcsc_id, None)?.into();
+                        let mut transaction = card.transaction()?;
+                        let mut user = transaction.signing_card().unwrap();
+                        let signer_interact = || panic!("Card requesting interaction despite not signing");
+                        let signer = user.signer(&signer_interact)?;
+                        match es!({
+                            match signer.public() {
+                                sequoia_openpgp::packet::Key::V4(k) => match k.mpis() {
+                                    sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { curve, q } => {
+                                        return Ok(Some(match pgp_eddsa_to_identity(curve, q) {
+                                            Some(i) => i,
+                                            None => return Ok(None),
+                                        }));
+                                    },
+                                    _ => {
+                                        return Ok(None);
+                                    },
+                                },
+                                _ => {
+                                    return Ok(None);
+                                },
+                            };
+                        })? {
+                            Some(r) => r,
+                            None => {
+                                return Err(loga::Error::new("Unsupported key type - must be Ed25519", ea!()));
+                            },
+                        }
+                    },
+                };
                 reqwest::ClientBuilder::new()
                     .build()
                     .unwrap()
-                    .post(format!("{}publish/{}", config.server, config.identity))
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .json(&spaghettinuum::data::publisher::v1::Publish {
-                        missing_ttl: config.ttl,
-                        data: {
-                            let mut kvs = HashMap::new();
-                            if !config.dns_cname.is_empty() {
-                                kvs.insert(KEY_DNS_CNAME.to_string(), PublishValue {
-                                    ttl: config.ttl,
-                                    data: serde_json::to_string(
-                                        &crate::data::dns::DnsRecordsetJson::V1(
-                                            crate::data::dns::v1::DnsRecordsetJson::Cname(config.dns_cname),
-                                        ),
-                                    ).unwrap(),
-                                });
-                            }
-                            if !config.dns_a.is_empty() {
-                                kvs.insert(KEY_DNS_A.to_string(), PublishValue {
-                                    ttl: config.ttl,
-                                    data: serde_json::to_string(
-                                        &crate::data::dns::DnsRecordsetJson::V1(
-                                            crate::data::dns::v1::DnsRecordsetJson::A(config.dns_a),
-                                        ),
-                                    ).unwrap(),
-                                });
-                            }
-                            if !config.dns_aaaa.is_empty() {
-                                kvs.insert(KEY_DNS_AAAA.to_string(), PublishValue {
-                                    ttl: config.ttl,
-                                    data: serde_json::to_string(
-                                        &crate::data::dns::DnsRecordsetJson::V1(
-                                            crate::data::dns::v1::DnsRecordsetJson::Aaaa(config.dns_aaaa),
-                                        ),
-                                    ).unwrap(),
-                                });
-                            }
-                            if !config.dns_txt.is_empty() {
-                                kvs.insert(KEY_DNS_TXT.to_string(), PublishValue {
-                                    ttl: config.ttl,
-                                    data: serde_json::to_string(
-                                        &crate::data::dns::DnsRecordsetJson::V1(
-                                            crate::data::dns::v1::DnsRecordsetJson::Txt(config.dns_txt),
-                                        ),
-                                    ).unwrap(),
-                                });
-                            }
-                            if !config.dns_mx.is_empty() {
-                                let mut values = vec![];
-                                for v in config.dns_mx {
-                                    let (priority, name) =
-                                        v
-                                            .split_once("/")
-                                            .ok_or_else(
-                                                || loga::Error::new(
-                                                    "Incorrect mx record specification, must be like `PRIORITY/NAME`",
-                                                    ea!(entry = v),
-                                                ),
-                                            )?;
-                                    let priority =
-                                        u16::from_str(&priority).context("Couldn't parse priority as int", ea!())?;
-                                    values.push((priority, name.to_string()));
-                                }
-                                kvs.insert(KEY_DNS_MX.to_string(), PublishValue {
-                                    ttl: config.ttl,
-                                    data: serde_json::to_string(
-                                        &crate::data::dns::DnsRecordsetJson::V1(
-                                            crate::data::dns::v1::DnsRecordsetJson::Mx(values),
-                                        ),
-                                    ).unwrap(),
-                                });
-                            }
-                            kvs
-                        },
-                    })
+                    .delete(format!("{}publish/{}", config.server, identity.to_string()))
                     .send()
                     .await
                     .check()
@@ -502,8 +593,12 @@ async fn main() {
                 );
             },
             Args::GenerateConfig(config) => {
-                if config.ipv4 && config.ipv6 {
-                    return Err(log.new_err("Both --ipv4 and --ipv6 specified; only one may be specified", ea!()));
+                if (config.publisher_advertise_addr.is_some() as i32) + (config.publisher_advertise_addr_ipv4 as i32) +
+                    (config.publisher_advertise_addr_ipv6 as i32) >
+                    1 {
+                    return Err(
+                        log.new_err("Only one of --advertise-addr, --ipv4 and --ipv6 may be specified", ea!()),
+                    );
                 }
                 let cwd = current_dir().unwrap();
                 let config: Config = Config {
@@ -517,122 +612,41 @@ async fn main() {
                         }],
                         persist_path: Some(cwd.join("node_persist.json")),
                     },
-                    publisher: match config.publisher {
-                        Some(c) => Some(spaghettinuum::publisher::config::Config {
+                    publisher: if config.publisher {
+                        Some(spaghettinuum::publisher::config::Config {
                             bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PUBLISHER)),
                             cert_path: cwd.join("publisher_cert.json"),
-                            advertise_addr: match config.publisher_advertise_addr_lookup {
-                                Some(l) => {
-                                    AdvertiseAddrConfig::Lookup(AdvertiseAddrLookupConfig {
-                                        lookup: l,
-                                        port: PORT_PUBLISHER,
-                                        ipv4_only: config.ipv4,
-                                        ipv6_only: config.ipv6,
-                                    })
-                                },
-                                None => {
-                                    AdvertiseAddrConfig::Fixed(
-                                        SocketAddr::new(
-                                            lookup_ip("https://api.seeip.org", config.ipv4, config.ipv6).await?,
-                                            PORT_PUBLISHER,
-                                        ),
-                                    )
-                                },
-                            },
-                            data: match c {
-                                GenerateConfigPublisherArgs::Static => {
-                                    spaghettinuum::publisher::config::DataConfig::Static({
-                                        let mut idents = HashMap::new();
-                                        for local in config.publisher_local_identities.iter().flatten() {
-                                            let log = log.fork(ea!(path = local.to_string_lossy()));
-                                            let secret: IdentitySecret =
-                                                serde_json::from_slice(
-                                                    &fs::read(
-                                                        local,
-                                                    ).log_context(&log, "Error opening local identity secret", ea!())?,
-                                                ).log_context(&log, "Error parsing local identity secret", ea!())?;
-                                            let identity = secret.identity();
-                                            idents.insert(identity, IdentityData {
-                                                secret: SecretType::Local(secret),
-                                                kvs: spaghettinuum::data::publisher::v1::Publish {
-                                                    missing_ttl: 60,
-                                                    data: {
-                                                        let mut kvs = HashMap::new();
-                                                        kvs.insert("somekey".to_string(), PublishValue {
-                                                            ttl: 60,
-                                                            data: "somevalue".to_string(),
-                                                        });
-                                                        kvs
-                                                    },
-                                                },
-                                            });
-                                        }
-                                        for card in config.publisher_card_identities.iter().flatten() {
-                                            let (pcsc_id, pin) =
-                                                card
-                                                    .split_once("/")
-                                                    .ok_or_else(
-                                                        || loga::Error::new(
-                                                            "Incorrect card description; should be like `PCSCID/PIN`",
-                                                            ea!(desc = card),
-                                                        ),
-                                                    )?;
-                                            let log = log.fork(ea!(card = pcsc_id));
-                                            let ident =
-                                                match pgp::card_to_ident(
-                                                    &mut <Card<Open>>::from(
-                                                        PcscBackend::open_by_ident(
-                                                            pcsc_id,
-                                                            None,
-                                                        ).log_context(&log, "Error opening smartcard", ea!())?,
-                                                    )
-                                                        .transaction()
-                                                        .log_context(&log, "Error starting transaction", ea!())?,
-                                                ).log_context(&log, "Error looking up key information", ea!())? {
-                                                    Some(ident) => ident,
-                                                    None => {
-                                                        return Err(
-                                                            log.new_err(
-                                                                "Card doesn't have a supported key type",
-                                                                ea!(card = pcsc_id),
-                                                            ),
-                                                        );
-                                                    },
-                                                };
-                                            idents.insert(ident, IdentityData {
-                                                secret: SecretType::Card(SecretTypeCard {
-                                                    pcsc_id: pcsc_id.to_string(),
-                                                    pin: pin.to_string(),
-                                                }),
-                                                kvs: spaghettinuum::data::publisher::v1::Publish {
-                                                    missing_ttl: 60,
-                                                    data: {
-                                                        let mut kvs = HashMap::new();
-                                                        kvs.insert("somekey".to_string(), PublishValue {
-                                                            ttl: 60,
-                                                            data: "somevalue".to_string(),
-                                                        });
-                                                        kvs
-                                                    },
-                                                },
-                                            });
-                                        }
-                                        idents
-                                    })
-                                },
-                                GenerateConfigPublisherArgs::Dynamic => {
-                                    spaghettinuum::publisher::config::DataConfig::Dynamic(
-                                        spaghettinuum::publisher::config::DynamicDataConfig {
-                                            db_path: cwd.join("publisher.sqlite3"),
-                                            bind_addr: StrSocketAddr::new_fake(
-                                                format!("0.0.0.0:{}", PORT_PUBLISHER_API),
+                            advertise_addr: if let Some(advertise_addr) = config.publisher_advertise_addr {
+                                AdvertiseAddrConfig::Fixed(advertise_addr)
+                            } else {
+                                match config.publisher_advertise_addr_lookup {
+                                    Some(l) => {
+                                        AdvertiseAddrConfig::Lookup(AdvertiseAddrLookupConfig {
+                                            lookup: l,
+                                            port: PORT_PUBLISHER,
+                                            ipv4_only: config.publisher_advertise_addr_ipv4,
+                                            ipv6_only: config.publisher_advertise_addr_ipv6,
+                                        })
+                                    },
+                                    None => {
+                                        AdvertiseAddrConfig::Fixed(
+                                            SocketAddr::new(
+                                                lookup_ip(
+                                                    "https://api.seeip.org",
+                                                    config.publisher_advertise_addr_ipv4,
+                                                    config.publisher_advertise_addr_ipv6,
+                                                ).await?,
+                                                PORT_PUBLISHER,
                                             ),
-                                        },
-                                    )
-                                },
+                                        )
+                                    },
+                                }
                             },
-                        }),
-                        None => None,
+                            db_path: cwd.join("publisher.sqlite3"),
+                            admin_bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PUBLISHER_API)),
+                        })
+                    } else {
+                        None
                     },
                     resolver: if config.resolver || config.dns_bridge {
                         Some(spaghettinuum::resolver::config::ResolverConfig {
@@ -658,7 +672,7 @@ async fn main() {
                 };
                 println!("{}", serde_json::to_string_pretty(&config).unwrap());
             },
-            Args::GenerateDnsData(config) => {
+            Args::GenerateDnsKeyValues(config) => {
                 println!("{}", serde_json::to_string_pretty(&spaghettinuum::data::publisher::v1::Publish {
                     missing_ttl: config.ttl,
                     data: {

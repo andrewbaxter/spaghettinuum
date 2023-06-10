@@ -76,16 +76,16 @@ fn main() {
     // Publisher
     {
         let mut latest_version = Version::default();
-        let identities = latest_version.table("zNMSOUSV6", "identities");
-        let ident_ident = identities.field(&mut latest_version, "zEC5LV9D2", "identity", field_ident.clone());
-        let ident_secret =
-            identities.field(
+        let announce = latest_version.table("zNMSOUSV6", "announce");
+        let announce_ident = announce.field(&mut latest_version, "zEC5LV9D2", "identity", field_ident.clone());
+        let announce_value =
+            announce.field(
                 &mut latest_version,
                 "zZ9J6717C",
-                "secret",
-                field_bytes().custom("crate::publisher::config::SecretType").build(),
+                "value",
+                field_bytes().custom("crate::data::publisher::announcement::Announcement").build(),
             );
-        identities.index("zDZXPBB1L", "ident_ident", &[&ident_ident]).unique().build(&mut latest_version);
+        announce.index("zDZXPBB1L", "announce_ident", &[&announce_ident]).unique().build(&mut latest_version);
         let publish = latest_version.table("zYLNH9GCP", "publish");
         let publish_ident = publish.field(&mut latest_version, "zXQXWUVLT", "identity", field_ident.clone());
         let publish_keyvalues =
@@ -101,35 +101,30 @@ fn main() {
             (0usize, latest_version)
         ], vec![
             // Queries
-            new_insert(
-                &identities,
-                vec![set_field(&ident_ident), set_field(&ident_secret)],
-            ).build_query("add_ident", QueryResCount::None),
-            new_select(&identities)
-                .return_fields(&[&ident_secret])
-                .where_(field_eq(&ident_ident))
-                .build_query("get_ident", QueryResCount::One),
-            new_delete(&identities)
-                .where_(field_eq(&ident_ident))
-                .build_query("delete_ident", QueryResCount::None),
-            new_select(&identities)
-                .return_fields(&[&ident_ident, &ident_secret])
-                .order(Expr::Field(ident_ident.clone()), Order::Asc)
+            new_insert(&announce, vec![set_field(&announce_ident), set_field(&announce_value)])
+                .on_conflict(InsertConflict::DoUpdate(vec![set_field(&announce_value)]))
+                .build_query("set_announce", QueryResCount::None),
+            new_delete(&announce)
+                .where_(field_eq(&announce_ident))
+                .build_query("delete_announce", QueryResCount::None),
+            new_select(&announce)
+                .return_fields(&[&announce_ident, &announce_value])
+                .order(Expr::Field(announce_ident.clone()), Order::Asc)
                 .limit(50)
-                .build_query("list_idents_start", QueryResCount::Many),
-            new_select(&identities)
-                .return_fields(&[&ident_ident, &ident_secret])
+                .build_query("list_announce_start", QueryResCount::Many),
+            new_select(&announce)
+                .return_fields(&[&announce_ident, &announce_value])
                 .where_(Expr::BinOp {
-                    left: Box::new(Expr::Field(ident_ident.clone())),
+                    left: Box::new(Expr::Field(announce_ident.clone())),
                     op: BinOp::LessThan,
                     right: Box::new(Expr::Param {
                         name: "ident".to_string(),
-                        type_: ident_ident.type_.type_.clone(),
+                        type_: announce_ident.type_.type_.clone(),
                     }),
                 })
-                .order(Expr::Field(ident_ident.clone()), Order::Asc)
+                .order(Expr::Field(announce_ident.clone()), Order::Asc)
                 .limit(50)
-                .build_query("list_idents_after", QueryResCount::Many),
+                .build_query("list_announce_after", QueryResCount::Many),
             new_insert(&publish, vec![set_field(&publish_ident), set_field(&publish_keyvalues)])
                 .on_conflict(InsertConflict::DoUpdate(vec![set_field(&publish_keyvalues)]))
                 .build_query("set_keyvalues", QueryResCount::None),

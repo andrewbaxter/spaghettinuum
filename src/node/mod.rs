@@ -12,7 +12,9 @@ use crate::data::identity::{
 use crate::utils::{
     BincodeSerializable,
 };
-use chrono::Utc;
+use chrono::{
+    Utc,
+};
 use futures::channel::mpsc::unbounded;
 use futures::channel::mpsc::UnboundedSender;
 use generic_array::ArrayLength;
@@ -248,6 +250,11 @@ struct Persisted {
     initial_buckets: Vec<Vec<NodeState>>,
 }
 
+pub struct ValueArgs {
+    pub message: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
 impl Node {
     /// Creates and starts a new node within the task manager. Waits until the socket
     /// is open. Bootstrapping is asynchronous; you should wait until a sufficient
@@ -420,8 +427,7 @@ impl Node {
                         if v.updated + SUPER_FRESH_DURATION > now {
                             return false;
                         }
-                        let signed = v.value.parse().unwrap();
-                        if signed.expires < Utc::now() {
+                        if v.value.expires < Utc::now() {
                             return false;
                         }
                         v.updated = now;
@@ -429,7 +435,7 @@ impl Node {
                         return true;
                     });
                     for (k, v) in unfresh {
-                        dir.put(k.clone(), v.value.clone()).await;
+                        dir.start_find(FindMode::Put(k.clone()), Some(v.value), None).await;
                     }
                 }
             })
@@ -566,8 +572,12 @@ impl Node {
     /// Store a value in the network. `value` message must be `ValueBody::to_bytes()`
     /// and `signature` is the signature of those bytes using the corresponding
     /// `IdentitySecret`
-    pub async fn put(&self, key: Identity, value: Value) {
-        self.start_find(FindMode::Put(key), Some(value), None).await;
+    pub async fn put(&self, key: Identity, value: ValueArgs) {
+        self.start_find(FindMode::Put(key), Some(Value {
+            message: value.message,
+            signature: value.signature,
+            expires: Utc::now() + chrono::Duration::hours(24),
+        }), None).await;
     }
 
     fn mark_node_unresponsive(&self, key: NodeIdentity, leading_zeros: usize, unresponsive: bool) {
@@ -712,7 +722,11 @@ impl Node {
                 for best in state.best {
                     match best.node {
                         BestNodeEntryNode::Self_ => {
-                            self.store(k.clone(), v.clone());
+                            self.0.log.debug("Storing", ea!(value = k.dbg_str()));
+                            self.0.store.lock().unwrap().insert(k.clone(), ValueState {
+                                value: v.clone(),
+                                updated: Instant::now(),
+                            });
                         },
                         BestNodeEntryNode::Node(node) => {
                             self.send(&node.address.0, Protocol::V1(Message::Store(StoreRequest {
@@ -933,17 +947,17 @@ impl Node {
                                 log.warn("Got value with bad signature", ea!());
                                 break;
                             }
-                            let signed = match value.parse() {
-                                Ok(s) => s,
+                            if value.expires < Utc::now() {
+                                log.warn("Got expired value", ea!(expires = value.expires.to_rfc3339()));
+                                break;
+                            }
+                            match value.parse() {
+                                Ok(_) => { },
                                 Err(e) => {
                                     log.warn_e(e, "Failed to parse body from signature", ea!());
                                     break;
                                 },
                             };
-                            if signed.expires < Utc::now() {
-                                log.warn("Got expired value", ea!(expires = signed.expires.to_rfc3339()));
-                                break;
-                            }
                             state.value = Some(value);
                             break;
                         },
@@ -1015,14 +1029,6 @@ impl Node {
         return nodes;
     }
 
-    fn store(&self, k: Identity, v: Value) {
-        self.0.log.debug("Storing", ea!(value = k.dbg_str()));
-        self.0.store.lock().unwrap().insert(k, ValueState {
-            value: v,
-            updated: Instant::now(),
-        });
-    }
-
     async fn handle(&self, m: Protocol, reply_to: &SocketAddr) -> Result<(), loga::Error> {
         let log = self.0.log.fork(ea!(from_addr = reply_to, message = m.dbg_str()));
         log.debug("Received", ea!());
@@ -1065,10 +1071,36 @@ impl Node {
                     self.handle_find_resp(m).await;
                 },
                 Message::Store(m) => {
+                    self.0.log.debug("Storing", ea!(value = m.key.dbg_str()));
                     if !m.key.verify(&self.0.log, &m.value.message, &m.value.signature) {
                         return Err(self.0.log.new_err("Store request failed signature validation", ea!()))
                     };
-                    self.store(m.key, m.value);
+                    let until_expire = m.value.expires.signed_duration_since(Utc::now());
+                    if until_expire > chrono::Duration::hours(24) || until_expire <= chrono::Duration::zero() {
+                        return Err(
+                            self.0.log.new_err("Store request failed, expired or invalid expiration", ea!()),
+                        );
+                    }
+                    let got_value =
+                        m.value.parse().log_context(&self.0.log, "Failed to parse received value", ea!())?;
+                    match self.0.store.lock().unwrap().entry(m.key) {
+                        Entry::Occupied(mut e) => {
+                            let stored_value = e.get().value.parse().unwrap();
+                            if got_value.published < stored_value.published {
+                                return Ok(());
+                            }
+                            e.insert(ValueState {
+                                value: m.value,
+                                updated: Instant::now(),
+                            });
+                        },
+                        Entry::Vacant(e) => {
+                            e.insert(ValueState {
+                                value: m.value,
+                                updated: Instant::now(),
+                            });
+                        },
+                    };
                 },
                 Message::Ping => {
                     self.send(reply_to, Protocol::V1(Message::Pung(self.0.own_id.clone()))).await;

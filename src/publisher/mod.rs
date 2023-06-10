@@ -25,18 +25,6 @@ use loga::{
     ea,
     ResultContext,
 };
-#[cfg(feature = "card")]
-use openpgp_card_pcsc::PcscBackend;
-#[cfg(feature = "card")]
-use openpgp_card_sequoia::{
-    Card,
-    state::Open,
-};
-#[cfg(feature = "card")]
-use sequoia_openpgp::{
-    types::HashAlgorithm,
-    crypto::Signer,
-};
 use poem::{
     Server,
     Endpoint,
@@ -75,20 +63,20 @@ use crate::{
     data::{
         identity::{
             Identity,
-            IdentitySecretVersionMethods,
-            IdentitySecret,
         },
         publisher::{
             ResolveKeyValues,
             self,
-            admin::RegisterIdentityRequest,
+            admin::{
+                InfoResponse,
+            },
         },
-        node::protocol::SerialAddr,
         utils::StrSocketAddr,
     },
     utils::{
         lookup_ip,
     },
+    node::ValueArgs,
 };
 use crate::{
     aes,
@@ -102,22 +90,14 @@ use crate::{
     },
     aes2,
 };
-#[cfg(feature = "card")]
-use crate::utils::pgp::{
-    self,
-    extract_pgp_ed25519_sig,
-};
 use crate::publisher::config::{
-    SecretType,
-    DataConfig,
     Config,
 };
-use self::config::{
-    IdentityData,
-    AdvertiseAddrConfig,
+use self::{
+    config::{
+        AdvertiseAddrConfig,
+    },
 };
-#[cfg(feature = "card")]
-use self::config::SecretTypeCard;
 
 pub mod config;
 mod db;
@@ -134,63 +114,6 @@ pub fn publisher_cert_hash(cert: &X509Certificate) -> Vec<u8> {
     return hash.finalize().to_vec();
 }
 
-async fn announce(log: &Log, message: &Vec<u8>, node: &Node, ident: &Identity, secret: &SecretType) {
-    let value = match secret {
-        SecretType::Local(secret) => {
-            crate::data::node::protocol::v1::Value {
-                message: message.clone(),
-                signature: secret.sign(message.as_ref()),
-            }
-        },
-        #[cfg(feature = "card")]
-        SecretType::Card(card_desc) => {
-            match es!({
-                let mut card: Card<Open> = PcscBackend::open_by_ident(&card_desc.pcsc_id, None)?.into();
-                let mut transaction = card.transaction()?;
-                transaction
-                    .verify_user_for_signing(card_desc.pin.as_bytes())
-                    .log_context(log, "Error unlocking card with pin", ea!(card = card_desc.pcsc_id))?;
-                let mut user = transaction.signing_card().unwrap();
-                let signer_panic =
-                    || panic!(
-                        "Card {} needs human interaction, automatic republishing won't work",
-                        card_desc.pcsc_id
-                    );
-                let mut signer = user.signer(&signer_panic)?;
-                match signer.public() {
-                    sequoia_openpgp::packet::Key::V4(k) => match k.mpis() {
-                        sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { .. } => {
-                            let hash = crate::data::identity::hash_for_ed25519(&message);
-                            return Ok(crate::data::node::protocol::v1::Value {
-                                message: message.clone(),
-                                signature: extract_pgp_ed25519_sig(
-                                    &signer
-                                        .sign(HashAlgorithm::SHA512, &hash)
-                                        .map_err(|e| loga::Error::new("Card signature failed", ea!(err = e)))?,
-                                ).to_vec(),
-                            });
-                        },
-                        _ => { },
-                    },
-                    _ => { },
-                };
-                return Err(loga::Error::new("Unsupported key type - must be Ed25519", ea!()));
-            }) {
-                Ok(v) => v,
-                Err(e) => {
-                    log.warn_e(
-                        e,
-                        "Failed to sign publisher advertisement for card secret",
-                        ea!(card = card_desc.pcsc_id),
-                    );
-                    return;
-                },
-            }
-        },
-    };
-    node.put(ident.clone(), value).await;
-}
-
 /// Start a static publisher in the task manager. In a static publisher, all data
 /// to publish is part of the config.
 pub async fn new_static_publisher(
@@ -200,12 +123,13 @@ pub async fn new_static_publisher(
     bind_addr: StrSocketAddr,
     advertise_addr: SocketAddr,
     cert_path: PathBuf,
-    data: HashMap<Identity, IdentityData>,
+    announcements: HashMap<Identity, crate::data::publisher::announcement::v1::Announcement>,
+    keyvalues: HashMap<Identity, crate::data::publisher::v1::Publish>,
 ) -> Result<(), loga::Error> {
     let certs = get_certs(log, advertise_addr, cert_path)?;
 
     struct Inner {
-        data: Arc<HashMap<Identity, IdentityData>>,
+        keyvalues: HashMap<Identity, crate::data::publisher::v1::Publish>,
     }
 
     struct Outer(Arc<Inner>);
@@ -221,17 +145,17 @@ pub async fn new_static_publisher(
                         req.uri().path().get(1..).unwrap_or(""),
                     ).context("Couldn't parse identity", ea!())?;
                 let mut kvs = publisher::v1::ResolveKeyValues(HashMap::new());
-                if let Some(d) = self.0.data.get(&ident) {
+                if let Some(d) = self.0.keyvalues.get(&ident) {
                     let now = Utc::now();
                     for k in req.uri().query().unwrap_or("").split(",") {
-                        if let Some(v) = d.kvs.data.get(k) {
+                        if let Some(v) = d.data.get(k) {
                             kvs.0.insert(k.to_string(), publisher::v1::ResolveValue {
                                 expires: now + Duration::minutes(v.ttl as i64),
                                 data: Some(v.data.clone()),
                             });
                         } else {
                             kvs.0.insert(k.to_string(), publisher::v1::ResolveValue {
-                                expires: now + Duration::minutes(d.kvs.missing_ttl as i64),
+                                expires: now + Duration::minutes(d.missing_ttl as i64),
                                 data: None,
                             });
                         }
@@ -251,9 +175,7 @@ pub async fn new_static_publisher(
         }
     }
 
-    let base = Arc::new(data);
     {
-        let base = base.clone();
         let log = log.fork(ea!(subsys = "server"));
         let tm1 = tm.clone();
         tm.critical_task(async move {
@@ -266,7 +188,7 @@ pub async fn new_static_publisher(
                             RustlsConfig
                             ::new().fallback(RustlsCertificate::new().key(certs.priv_pem).cert(certs.pub_pem)),
                         ),
-                    ).run(get(Outer(Arc::new(Inner { data: base.clone() })))),
+                    ).run(get(Outer(Arc::new(Inner { keyvalues: keyvalues })))),
                 )
                 .await {
                 Some(r) => {
@@ -279,24 +201,17 @@ pub async fn new_static_publisher(
         });
     }
     {
-        let base = base.clone();
+        let announcements = Arc::new(announcements);
         let node = node.clone();
-        let log = log.fork(ea!(sys = "periodic_announce"));
-        let advertise_addr = advertise_addr.clone();
         tm.periodic(Duration::hours(4).to_std().unwrap(), move || {
-            let pub_hash = certs.pub_hash.clone();
             let node = node.clone();
-            let log = log.clone();
-            let base = base.clone();
-            let advertise_addr = advertise_addr.clone();
+            let announcements = announcements.clone();
             return async move {
-                let message = crate::data::node::protocol::v1::ValueBody {
-                    addr: SerialAddr(advertise_addr),
-                    cert_hash: pub_hash,
-                    expires: Utc::now() + Duration::hours(12),
-                }.to_bytes();
-                for (ident, data) in base.as_ref() {
-                    announce(&log, &message, &node, ident, &data.secret).await;
+                for (ident, data) in announcements.as_ref() {
+                    node.put(ident.clone(), crate::node::ValueArgs {
+                        message: data.message.clone(),
+                        signature: data.signature.clone(),
+                    }).await;
                 }
             };
         });
@@ -446,33 +361,38 @@ impl DynamicPublisher {
             let log = log.fork(ea!(sys = "periodic_announce"));
             let db = db.clone();
             let node = node.clone();
-            let pub_hash = certs.pub_hash.clone();
-            let advertise_url = advertise_addr.clone();
             move || {
                 let node = node.clone();
-                let pub_hash = pub_hash.clone();
                 let log = log.clone();
                 let db = db.clone();
-                let advertise_url = advertise_url.clone();
                 return async move {
                     match aes!({
-                        let message = crate::data::node::protocol::v1::ValueBody {
-                            addr: SerialAddr(advertise_url),
-                            cert_hash: pub_hash,
-                            expires: Utc::now() + Duration::hours(12),
-                        }.to_bytes();
                         let db = db.get().await.context("Error getting db connection", ea!())?;
-                        let ident_pairs = db.interact(|db| db::list_idents_start(db)).await??;
-                        for ident_pair in &ident_pairs {
-                            announce(&log, &message, &node, &ident_pair.identity, &ident_pair.secret).await;
+
+                        // easier than lambda...
+                        macro_rules! announce{
+                            ($pair: expr) => {
+                                let value = match & $pair.value {
+                                    publisher:: announcement:: Announcement:: V1(v) => ValueArgs {
+                                        message: v.message.clone(),
+                                        signature: v.signature.clone(),
+                                    },
+                                };
+                                node.put($pair.identity.clone(), value).await;
+                            };
                         }
-                        let mut prev_ident = ident_pairs.last().map(|i| i.identity.clone());
+
+                        let announce_pairs = db.interact(|db| db::list_announce_start(db)).await??;
+                        for announce_pair in &announce_pairs {
+                            announce!(announce_pair);
+                        }
+                        let mut prev_ident = announce_pairs.last().map(|i| i.identity.clone());
                         while let Some(edge) = prev_ident {
-                            let ident_pairs = db.interact(move |db| db::list_idents_after(db, &edge)).await??;
-                            for ident_pair in &ident_pairs {
-                                announce(&log, &message, &node, &ident_pair.identity, &ident_pair.secret).await;
+                            let announce_pairs = db.interact(move |db| db::list_announce_after(db, &edge)).await??;
+                            for announce_pair in &announce_pairs {
+                                announce!(announce_pair);
                             }
-                            prev_ident = ident_pairs.last().map(|i| i.identity.clone());
+                            prev_ident = announce_pairs.last().map(|i| i.identity.clone());
                         }
                         return Ok(());
                     }).await {
@@ -487,74 +407,27 @@ impl DynamicPublisher {
         return Ok(core);
     }
 
-    /// Enable publishing with identity by storing identity information required for
-    /// publishing. You must subsequently call `publish` to publish something.
-    #[cfg(feature = "card")]
-    pub async fn register_card_identity(&self, pcsc_id: String, pin: String) -> Result<Identity, loga::Error> {
-        let identity =
-            pgp::get_card(
-                &pcsc_id,
-                |card| pgp::card_to_ident(card),
-            )?.ok_or_else(|| loga::Error::new("Card key type not supported", ea!()))?;
-        self.0.db.get().await?.interact({
-            let identity = identity.clone();
-            move |db| {
-                db::add_ident(db, &identity, &SecretType::Card(SecretTypeCard {
-                    pcsc_id: pcsc_id,
-                    pin: pin,
-                }))
-            }
-        }).await??;
-        return Ok(identity);
-    }
-
-    /// Enable publishing with identity by storing identity information required for
-    /// publishing. You must subsequently call `publish` to publish something.
-    pub async fn register_local_identity(&self, identity: Identity, secret: IdentitySecret) -> Result<(), loga::Error> {
-        self.0.db.get().await?.interact(move |db| {
-            db::add_ident(db, &identity, &SecretType::Local(secret))
-        }).await??;
-        return Ok(());
-    }
-
-    /// Disable publishing with identity, wiping info from database including published
-    /// values.  Any published data will be unavailable to resolvers.
-    pub async fn unregister_identity(&self, identity: Identity) -> Result<(), loga::Error> {
-        self.0.db.get().await?.interact(move |db| {
-            db::delete_keyvalues(db, &identity)?;
-            db::delete_ident(db, &identity)
-        }).await??;
-        return Ok(());
-    }
-
     /// Make data available to resolvers. This does two things: add it to the database,
     /// and trigger an initial announcement that this publisher is authoritative for
     /// the identity.
     pub async fn publish(
         &self,
         identity: Identity,
-        data: crate::data::publisher::v1::Publish,
+        announcement: crate::data::publisher::announcement::v1::Announcement,
+        keyvalues: crate::data::publisher::v1::Publish,
     ) -> Result<(), loga::Error> {
         {
             let identity = identity.clone();
+            let announcement = announcement.clone();
             self.0.db.get().await?.interact(move |db| {
-                db::set_keyvalues(db, &identity, &crate::data::publisher::Publish::V1(data))
+                db::set_announce(db, &identity, &publisher::announcement::Announcement::V1(announcement))?;
+                db::set_keyvalues(db, &identity, &crate::data::publisher::Publish::V1(keyvalues))
             }).await??;
         }
-        {
-            let announce_message = crate::data::node::protocol::v1::ValueBody {
-                addr: SerialAddr(self.0.advertise_addr),
-                cert_hash: self.0.cert_pub_hash.clone(),
-                expires: Utc::now() + Duration::hours(12),
-            }.to_bytes();
-            let secret = {
-                let identity = identity.clone();
-                self.0.db.get().await?.interact(move |db| {
-                    db::get_ident(db, &identity)
-                }).await??
-            };
-            announce(&self.0.log, &announce_message, &self.0.node, &identity, &secret).await;
-        }
+        self.0.node.put(identity, ValueArgs {
+            message: announcement.message,
+            signature: announcement.signature,
+        }).await;
         return Ok(());
     }
 
@@ -562,6 +435,7 @@ impl DynamicPublisher {
     /// identity.
     pub async fn unpublish(&self, identity: Identity) -> Result<(), loga::Error> {
         self.0.db.get().await?.interact(move |db| {
+            db::delete_announce(db, &identity)?;
             db::delete_keyvalues(db, &identity)
         }).await??;
         return Ok(());
@@ -642,126 +516,91 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
     let log = log.fork(ea!(sys = "publisher"));
 
     // Serve
-    match config.data {
-        DataConfig::Static(base) => {
-            new_static_publisher(
-                &log,
-                tm,
-                node,
-                config.bind_addr,
-                resolve_advertise_addr(config.advertise_addr).await?,
-                config.cert_path,
-                base,
-            ).await?;
-        },
-        DataConfig::Dynamic(base) => {
-            let core =
-                DynamicPublisher::new(
-                    &log,
-                    tm,
-                    node,
-                    config.bind_addr,
-                    resolve_advertise_addr(config.advertise_addr).await?,
-                    config.cert_path,
-                    base.db_path,
-                ).await?;
-            tm.critical_task({
-                let log = log.fork(ea!(subsys = "admin"));
-                let tm1 = tm.clone();
-                async move {
-                    struct Inner {
-                        core: DynamicPublisher,
-                        log: Log,
+    let core =
+        DynamicPublisher::new(
+            &log,
+            tm,
+            node,
+            config.bind_addr,
+            resolve_advertise_addr(config.advertise_addr).await?,
+            config.cert_path,
+            config.db_path,
+        ).await?;
+    tm.critical_task({
+        let log = log.fork(ea!(subsys = "admin"));
+        let tm1 = tm.clone();
+        async move {
+            struct Inner {
+                core: DynamicPublisher,
+                log: Log,
+            }
+
+            match tm1
+                .if_alive(Server::new(TcpListener::bind(config.admin_bind_addr.1)).run(Route::new().at("/info", get({
+                    #[handler]
+                    async fn ep(service: Data<&Arc<Inner>>) -> Response {
+                        return Json(InfoResponse {
+                            advertise_addr: service.core.0.advertise_addr,
+                            cert_pub_hash: zbase32::encode_full_bytes(&service.core.0.cert_pub_hash).to_string(),
+                        }).into_response();
                     }
 
-                    match tm1
-                        .if_alive(
-                            Server::new(TcpListener::bind(base.bind_addr.1)).run(Route::new().at("/identity", post({
-                                #[handler]
-                                async fn ep(service: Data<&Arc<Inner>>, body: Json<RegisterIdentityRequest>) -> Response {
-                                    match aes!({
-                                        match body.0 {
-                                            RegisterIdentityRequest::Local(l) => {
-                                                service.core.register_local_identity(l.identity, l.secret).await?;
-                                            },
-                                            #[cfg(feature = "card")]
-                                            RegisterIdentityRequest::Card(c) => {
-                                                service.core.register_card_identity(c.pcsc_id, c.pin).await?;
-                                            },
-                                        }
-                                        return Ok(());
-                                    }).await {
-                                        Ok(()) => {
-                                            return StatusCode::OK.into_response();
-                                        },
-                                        Err(e) => {
-                                            service.log.warn_e(e, "Error registering identity", ea!());
-                                            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                                        },
-                                    }
-                                }
-
-                                ep
-                            })).at("/identity/:identity", delete({
-                                #[handler]
-                                async fn ep(service: Data<&Arc<Inner>>, Path(identity): Path<String>) -> Response {
-                                    match aes!({
-                                        let identity = Identity::from_str(&identity)?;
-                                        service.core.unregister_identity(identity).await?;
-                                        return Ok(());
-                                    }).await {
-                                        Ok(()) => {
-                                            return StatusCode::OK.into_response();
-                                        },
-                                        Err(e) => {
-                                            service
-                                                .log
-                                                .warn_e(e, "Error deleting identity", ea!(identity = identity));
-                                            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                                        },
-                                    }
-                                }
-
-                                ep
-                            })).at("/publish/:identity", post({
-                                #[handler]
-                                async fn ep(
-                                    service: Data<&Arc<Inner>>,
-                                    Path(identity): Path<String>,
-                                    body: Json<crate::data::publisher::v1::Publish>,
-                                ) -> Response {
-                                    match aes!({
-                                        let identity = Identity::from_str(&identity)?;
-                                        service.core.publish(identity, body.0).await?;
-                                        return Ok(());
-                                    }).await {
-                                        Ok(()) => {
-                                            return StatusCode::OK.into_response();
-                                        },
-                                        Err(e) => {
-                                            service.log.warn_e(e, "Error publishing key values", ea!());
-                                            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                                        },
-                                    }
-                                }
-
-                                ep
-                            })).with(AddData::new(Arc::new(Inner {
-                                core: core,
-                                log: log.clone(),
-                            })))),
-                        )
-                        .await {
-                        Some(r) => {
-                            return r.log_context(&log, "Exited with error", ea!(addr = base.bind_addr));
-                        },
-                        None => {
+                    ep
+                })).at("/publish/:identity", delete({
+                    #[handler]
+                    async fn ep(service: Data<&Arc<Inner>>, Path(identity): Path<String>) -> Response {
+                        match aes!({
+                            let identity = Identity::from_str(&identity)?;
+                            service.core.unpublish(identity).await?;
                             return Ok(());
-                        },
+                        }).await {
+                            Ok(()) => {
+                                return StatusCode::OK.into_response();
+                            },
+                            Err(e) => {
+                                service.log.warn_e(e, "Error deleting published data", ea!(identity = identity));
+                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                            },
+                        }
                     }
-                }
-            });
-        },
-    }
+
+                    ep
+                })).at("/publish/:identity", post({
+                    #[handler]
+                    async fn ep(
+                        service: Data<&Arc<Inner>>,
+                        Path(identity): Path<String>,
+                        body: Json<crate::data::publisher::admin::PublishRequest>,
+                    ) -> Response {
+                        match aes!({
+                            let identity = Identity::from_str(&identity)?;
+                            service.core.publish(identity, body.0.announce, body.0.keyvalues).await?;
+                            return Ok(());
+                        }).await {
+                            Ok(()) => {
+                                return StatusCode::OK.into_response();
+                            },
+                            Err(e) => {
+                                service.log.warn_e(e, "Error publishing key values", ea!());
+                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                            },
+                        }
+                    }
+
+                    ep
+                })).with(AddData::new(Arc::new(Inner {
+                    core: core,
+                    log: log.clone(),
+                })))))
+                .await {
+                Some(r) => {
+                    return r.log_context(&log, "Exited with error", ea!(addr = config.admin_bind_addr));
+                },
+                None => {
+                    return Ok(());
+                },
+            }
+        }
+    });
     return Ok(());
 }
