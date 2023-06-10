@@ -1,6 +1,6 @@
 [package]
 name = "spaghettinuum"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "The future of the internet is al dente"
 readme = "readme.md"
@@ -9,7 +9,11 @@ license = "ISC"
 
 [features]
 default = ["card"]
-card = ["dep:openpgp-card-pcsc", "dep:openpgp-card-sequoia", "dep:sequoia-openpgp"]
+card = [
+    "dep:openpgp-card-pcsc",
+    "dep:openpgp-card-sequoia",
+    "dep:sequoia-openpgp",
+]
 
 [dependencies]
 chrono = { version = "0.4.19", features = ["serde"] }
