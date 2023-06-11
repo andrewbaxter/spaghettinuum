@@ -60,7 +60,7 @@ Try it out with `dig`:
 dig @149.248.205.99 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s
 ```
 
-If you set your DNS resolver to `149.248.205.99` you can read my writings (WIP) in your browser at <https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s/5987>.
+If you set your DNS resolver to `149.248.205.99` you can read my writings (WIP) in your browser at <https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s/5987> (WIP - note SSL issues working with traditional infrastructure, discussed below).
 
 ## Resolver API
 
@@ -172,14 +172,11 @@ Note that spaghetinium only handles name resolution - you still need a server to
 The main sticking point here is SSL. There are a couple theoretical options for getting SSL worked out on your website:
 
 1. DNSSEC TLSA records - you could theoretically store a self signed cert in DNS and everything would be great. Unfortunately, anti-progress browsers (Chrome and Firefox) both stonewalled tickets to support TLSA records because who wants the future.
-2. A new CA - I'm hoping to set one up, verifying signing requests based on a cert signature using the identity the cert is for. This is a slightly worse approach since everyone would need to add the new CA to their browser (I think you can limit CAs to certain domains, but it's still risky and painful - I'm no Let's Encrypt)
+2. A new CA - I'm hoping to set one up, verifying signing requests based on a cert signature using the identity the cert is for. This is a slightly worse approach since everyone would need to add the new CA to their browser (I think you can limit CAs to certain domains, but it's still risky and painful)
 3. A SSL MITM proxy - I was thinking about setting a public proxy up, but I was worried about paying for bandwidth
 4. Browser extensions(?) that resolve `.s` domains and do the cert validation themselves - I really wanted to avoid this, since browser extensions are getting less capable (ex: manifest v3), require custom extensions for N types of browser, need to deal with hostile publishing review/policies, need to work with Javascript, so on and so forth
-5. CNAME to a site hosted somewhere with a normal DNS name and SSL cert.
 
-For 1-4 you'd set up an `A` or `AAAA` record using `Publishing DNS` above. For 5 you'd set up a `CNAME` record the same way.
-
-TLDR: I think 5 is the only immediately usable option right now.
+TLDR: There's no good options available immediately.
 
 # Architecture
 
