@@ -42,7 +42,6 @@ use poem::{
     IntoResponse,
     Route,
     post,
-    delete,
     middleware::AddData,
     EndpointExt,
     web::{
@@ -546,25 +545,6 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                     }
 
                     ep
-                })).at("/publish/:identity", delete({
-                    #[handler]
-                    async fn ep(service: Data<&Arc<Inner>>, Path(identity): Path<String>) -> Response {
-                        match aes!({
-                            let identity = Identity::from_str(&identity)?;
-                            service.core.unpublish(identity).await?;
-                            return Ok(());
-                        }).await {
-                            Ok(()) => {
-                                return StatusCode::OK.into_response();
-                            },
-                            Err(e) => {
-                                service.log.warn_e(e, "Error deleting published data", ea!(identity = identity));
-                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                            },
-                        }
-                    }
-
-                    ep
                 })).at("/publish/:identity", post({
                     #[handler]
                     async fn ep(
@@ -582,6 +562,25 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                             },
                             Err(e) => {
                                 service.log.warn_e(e, "Error publishing key values", ea!());
+                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                            },
+                        }
+                    }
+
+                    ep
+                }).delete({
+                    #[handler]
+                    async fn ep(service: Data<&Arc<Inner>>, Path(identity): Path<String>) -> Response {
+                        match aes!({
+                            let identity = Identity::from_str(&identity)?;
+                            service.core.unpublish(identity).await?;
+                            return Ok(());
+                        }).await {
+                            Ok(()) => {
+                                return StatusCode::OK.into_response();
+                            },
+                            Err(e) => {
+                                service.log.warn_e(e, "Error deleting published data", ea!(identity = identity));
                                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                             },
                         }

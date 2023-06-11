@@ -98,7 +98,7 @@ The `spagh` server has a number of child services:
 
 # Publishing
 
-## Setting up identities
+## Set up an identity
 
 You need an identity to publish.
 
@@ -119,7 +119,7 @@ To use a card identity, with a Yubikey straight out of the extruder,
 
 The card must be plugged into the server so the server can sign publications.
 
-## Publishing
+## Publish your records
 
 To publish you need a server with the publisher service enabled.
 
@@ -144,8 +144,16 @@ TTLs are in minutes.
 Then call
 
 ```
-spagh-cli publish http://localhost:43892 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r data.json
+spagh-cli publish http://localhost local ./identity.json ./data.json
 ```
+
+to publish using a local identity or
+
+```
+spagh-cli publish http://localhost card 0006:12345678 - ./data.json
+```
+
+to publish using a card.
 
 ## Publishing DNS
 

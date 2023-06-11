@@ -1,4 +1,7 @@
-use clap::Parser;
+use aargvark::{
+    Aargvark,
+    AargvarkJson,
+};
 use itertools::Itertools;
 use loga::{
     ea,
@@ -15,32 +18,24 @@ use spaghettinuum::{
     publisher,
     resolver,
 };
-use std::{
-    fs,
-    path::PathBuf,
-};
 
-#[derive(Parser)]
+#[derive(Aargvark)]
 struct Args {
-    pub config: Option<PathBuf>,
-    #[arg(long)]
+    pub config: Option<AargvarkJson<Config>>,
     pub debug: bool,
 }
 
 #[tokio::main]
 async fn main() {
     async fn inner() -> Result<(), loga::Error> {
-        let args = Args::parse();
+        let args = aargvark::vark::<Args>();
         let log = &Log::new(if args.debug {
             loga::Level::Debug
         } else {
             loga::Level::Info
         });
         let config = if let Some(p) = args.config {
-            let log = log.fork(ea!(path = p.to_string_lossy()));
-            serde_json::from_slice::<Config>(
-                &fs::read(p).log_context(&log, "Reading config", ea!())?,
-            ).log_context(&log, "Parsing config", ea!())?
+            p.0
         } else if let Some(c) = match std::env::var(spaghettinuum::data::standard::ENV_CONFIG) {
             Ok(c) => Some(c),
             Err(e) => match e {
