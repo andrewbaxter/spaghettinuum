@@ -2973,7 +2973,7 @@ dependencies = [
 
 [[package]]
 name = "spaghettinuum"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aargvark",
  "array-init",
