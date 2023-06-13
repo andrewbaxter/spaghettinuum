@@ -1,4 +1,7 @@
 pub const ENV_CONFIG: &'static str = "SPAGH_CONFIG";
+pub const ENV_RESOLVER: &'static str = "SPAGH_RESOLVER";
+pub const ENV_PUBLISHER: &'static str = "SPAGH_PUBLISHER";
+pub const ENV_PUBLISHER_AUTH: &'static str = "SPAGH_PUBLISHER_TOKEN";
 pub const PORT_NODE: u16 = 43889;
 pub const PORT_PUBLISHER: u16 = 43890;
 pub const PORT_PUBLISHER_ADMIN: u16 = 43892;

@@ -17,11 +17,18 @@ use poem::{
         uri::Authority,
     },
 };
-use reqwest::Response;
+use reqwest::{
+    Response,
+    header::{
+        self,
+        AUTHORIZATION,
+    },
+};
 use sequoia_openpgp::{
     types::HashAlgorithm,
     crypto::Signer,
 };
+use serde_json::json;
 use spaghettinuum::{
     config::Config,
     data::{
@@ -52,6 +59,9 @@ use spaghettinuum::{
             PORT_PUBLISHER,
             PORT_PUBLISHER_ADMIN,
             PORT_RESOLVER,
+            ENV_PUBLISHER,
+            ENV_RESOLVER,
+            ENV_PUBLISHER_AUTH,
         },
         utils::StrSocketAddr,
     },
@@ -75,7 +85,10 @@ use spaghettinuum::{
 };
 use std::{
     collections::HashMap,
-    env::current_dir,
+    env::{
+        current_dir,
+        self,
+    },
     fs,
     net::{
         SocketAddr,
@@ -114,8 +127,9 @@ mod args {
 
     #[derive(Aargvark)]
     pub struct Publish {
-        /// URL of a server with publishing set up
-        pub server: Uri,
+        /// URL of a server with publishing set up. Defaults to the value of environment
+        /// variable `SPAGH_PUBLISHER` or else localhost with the default port.
+        pub server: Option<Uri>,
         /// Identity to publish as
         pub identity: Identity,
         /// Data to publish.  Must be json in the structure
@@ -125,8 +139,9 @@ mod args {
 
     #[derive(Aargvark)]
     pub struct PublishDns {
-        /// URL of a server with publishing set up
-        pub server: Uri,
+        /// URL of a server with publishing set up. Defaults to the value of environment
+        /// variable `SPAGH_PUBLISHER` or else localhost with the default port.
+        pub server: Option<Uri>,
         /// Identity to publish as
         pub identity: Identity,
         pub ttl: u32,
@@ -140,15 +155,32 @@ mod args {
 
     #[derive(Aargvark)]
     pub struct Unpublish {
-        /// URL of a server with publishing set up
-        pub server: Uri,
+        /// URL of a server with publishing set up. Defaults to the value of environment
+        /// variable `SPAGH_PUBLISHER` or else localhost with the default port.
+        pub server: Option<Uri>,
         pub identity: Identity,
     }
 
     #[derive(Aargvark)]
+    pub struct ListPublisherIdentities {
+        /// URL of a server with publishing set up. Defaults to the value of environment
+        /// variable `SPAGH_PUBLISHER` or else localhost with the default port.
+        pub server: Option<Uri>,
+    }
+
+    #[derive(Aargvark)]
+    pub struct ListPublisherKeyValues {
+        /// URL of a server with publishing set up. Defaults to the value of environment
+        /// variable `SPAGH_PUBLISHER` or else localhost with the default port.
+        pub server: Option<Uri>,
+        pub identity: String,
+    }
+
+    #[derive(Aargvark)]
     pub struct Query {
-        /// URL of a server with the resolver enabled for sending requests
-        pub server: Uri,
+        /// URL of a server with the resolver enabled. Defaults to the value of environment
+        /// variable `SPAGH_RESOLVER` or else localhost with the default port.
+        pub server: Option<Uri>,
         /// Identity to query
         pub identity: String,
         /// Keys published by the identity, to query
@@ -194,14 +226,18 @@ mod args {
         /// Show the identity for a local identity file
         ShowLocalIdentity(AargvarkJson<IdentitySecret>),
         /// List usable pcsc cards (configured with curve25519/ed25519 signing keys)
-        ShowCardIdentities,
+        ListCardIdentities,
         /// Create or replace existing publish data for an identity on a publisher server
         Publish(Publish),
         /// A shortcut for publishing DNS data, generating the key values for you
         PublishDns(PublishDns),
         /// Create or replace existing publish data for an identity on a publisher server
         Unpublish(Unpublish),
-        /// Query a resolver server for keys published under an identity
+        /// List identities a publisher is currently publishing
+        ListPublisherIdentities(ListPublisherIdentities),
+        /// List data a publisher is publishing for an identity
+        ListPublisherKeyValues(ListPublisherKeyValues),
+        /// Request values associated with provided identity and keys from a resolver
         Query(Query),
         /// Generate base server configs
         GenerateConfig(GenerateConfig),
@@ -263,7 +299,41 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
     }
 }
 
-fn default_publisher_url(url: Uri) -> Uri {
+fn default_url(
+    log: &loga::Log,
+    mut url: Option<Uri>,
+    env_key: &'static str,
+    default_port: u16,
+) -> Result<Uri, loga::Error> {
+    if url.is_none() {
+        match env::var(env_key) {
+            Ok(e) => {
+                url =
+                    Some(
+                        Uri::from_str(
+                            &e,
+                        ).log_context(log, "Couldn't parse environment variable", ea!(env = env_key))?,
+                    );
+            },
+            Err(e) => {
+                match e {
+                    env::VarError::NotPresent => { },
+                    env::VarError::NotUnicode(e) => {
+                        return Err(
+                            log.new_err(
+                                "Environment variable isn't valid unicode",
+                                ea!(env = env_key, value = e.to_string_lossy()),
+                            ),
+                        );
+                    },
+                }
+            },
+        }
+    }
+    let url = match url {
+        Some(u) => u,
+        None => Uri::from_static("http://localhost"),
+    };
     if url.scheme_str() == Some("http") && url.port().is_none() {
         let mut u = url.into_parts();
         u.authority =
@@ -272,23 +342,61 @@ fn default_publisher_url(url: Uri) -> Uri {
                     format!(
                         "{}:{}",
                         u.authority.map(|a| a.to_string()).unwrap_or(String::new()),
-                        PORT_PUBLISHER_ADMIN
+                        default_port
                     ).as_bytes(),
                 ).unwrap(),
             );
-        return Uri::from_parts(u).unwrap();
+        return Ok(Uri::from_parts(u).unwrap());
     } else {
-        return url;
+        return Ok(url);
     }
+}
+
+fn publisher_admin_client(log: &loga::Log) -> Result<reqwest::Client, loga::Error> {
+    let mut c = reqwest::ClientBuilder::new();
+    match env::var(ENV_PUBLISHER_AUTH) {
+        Ok(e) => {
+            let mut headers = header::HeaderMap::new();
+            headers.insert(
+                AUTHORIZATION,
+                header::HeaderValue::from_str(
+                    &format!("Bearer {}", &e),
+                ).log_context(log, "Token isn't a valid header value", ea!())?,
+            );
+            c = c.default_headers(headers);
+        },
+        Err(e) => {
+            match e {
+                env::VarError::NotPresent => { },
+                env::VarError::NotUnicode(e) => {
+                    return Err(
+                        log.new_err(
+                            "Environment variable isn't valid unicode",
+                            ea!(env = ENV_PUBLISHER_AUTH, value = e.to_string_lossy()),
+                        ),
+                    );
+                },
+            }
+        },
+    };
+    return Ok(c.build().unwrap());
+}
+
+fn default_publisher_admin_url(log: &loga::Log, url: Option<Uri>) -> Result<Uri, loga::Error> {
+    return default_url(log, url, ENV_PUBLISHER, PORT_PUBLISHER_ADMIN);
+}
+
+fn default_resolver_url(log: &loga::Log, url: Option<Uri>) -> Result<Uri, loga::Error> {
+    return default_url(log, url, ENV_RESOLVER, PORT_RESOLVER);
 }
 
 async fn publish(
     log: &loga::Log,
+    c: reqwest::Client,
     server: &Uri,
     identity_arg: args::Identity,
     keyvalues: Publish,
 ) -> Result<(), loga::Error> {
-    let c = reqwest::ClientBuilder::new().build().unwrap();
     let info_body =
         c
             .get(format!("{}info", server))
@@ -399,14 +507,19 @@ async fn main() {
                         &serde_json::to_string_pretty(&secret).unwrap(),
                     ).log_context(&log, "Failed to write identity secret to file", ea!())?;
                 }
-                println!("identity [{}]", ident.to_string());
+                println!("{}", serde_json::to_string_pretty(&json!({
+                    "identity": ident.to_string()
+                })).unwrap());
             },
             args::Args::ShowLocalIdentity(p) => {
                 let secret = p.0;
                 let identity = secret.identity();
-                println!("identity [{}]", identity.to_string());
+                println!("{}", serde_json::to_string_pretty(&json!({
+                    "identity": identity.to_string()
+                })).unwrap());
             },
-            args::Args::ShowCardIdentities => {
+            args::Args::ListCardIdentities => {
+                let mut out = vec![];
                 for card in PcscBackend::cards(None).log_context(log, "Failed to list smart cards", ea!())? {
                     let mut card: Card<Open> = card.into();
                     let mut transaction =
@@ -428,16 +541,27 @@ async fn main() {
                             continue;
                         },
                     };
-                    println!("pcsc id [{}], identity [{}]", card_id, identity);
+                    out.push(json!({
+                        "pcsc_id": card_id,
+                        "identity": identity.to_string(),
+                    }));
                 }
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
             },
             args::Args::Publish(config) => {
-                publish(log, &default_publisher_url(config.server), config.identity, config.data.0).await?;
+                publish(
+                    log,
+                    publisher_admin_client(log)?,
+                    &default_publisher_admin_url(log, config.server)?,
+                    config.identity,
+                    config.data.0,
+                ).await?;
             },
             args::Args::PublishDns(config) => {
                 publish(
                     log,
-                    &default_publisher_url(config.server),
+                    publisher_admin_client(log)?,
+                    &default_publisher_admin_url(log, config.server)?,
                     config.identity,
                     spaghettinuum::data::publisher::v1::Publish {
                         missing_ttl: config.ttl,
@@ -514,6 +638,7 @@ async fn main() {
                 ).await?;
             },
             args::Args::Unpublish(config) => {
+                let c = publisher_admin_client(log)?;
                 let identity = match config.identity {
                     args::Identity::Local(ident_config) => {
                         ident_config.0.identity()
@@ -549,14 +674,54 @@ async fn main() {
                         }
                     },
                 };
-                reqwest::ClientBuilder::new()
-                    .build()
-                    .unwrap()
-                    .delete(format!("{}publish/{}", default_publisher_url(config.server), identity.to_string()))
+                c
+                    .delete(
+                        format!(
+                            "{}publish/{}",
+                            default_publisher_admin_url(log, config.server)?,
+                            identity.to_string()
+                        ),
+                    )
                     .send()
                     .await
                     .check()
                     .await?;
+            },
+            args::Args::ListPublisherIdentities(config) => {
+                let mut out = vec![];
+                let c = publisher_admin_client(log)?;
+                let url = default_publisher_admin_url(log, config.server)?;
+                let mut res = c.get(format!("{}publish", url)).send().await.check_bytes().await?;
+                loop {
+                    let mut identities: Vec<Identity> =
+                        serde_json::from_slice(
+                            &res,
+                        ).log_context(log, "Failed to parse response from publisher admin", ea!())?;
+                    for i in &identities {
+                        out.push(json!({
+                            "identity": i.to_string()
+                        }));
+                    }
+                    let after = match identities.pop() {
+                        Some(a) => a,
+                        None => break,
+                    };
+                    res = c.get(format!("{}publish?after={}", url, after)).send().await.check_bytes().await?;
+                }
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            },
+            args::Args::ListPublisherKeyValues(config) => {
+                println!(
+                    "{}",
+                    publisher_admin_client(log)?
+                        .get(
+                            format!("{}publish/{}", default_publisher_admin_url(log, config.server)?, config.identity),
+                        )
+                        .send()
+                        .await
+                        .check_text()
+                        .await?
+                );
             },
             args::Args::Query(config) => {
                 println!(
@@ -567,7 +732,7 @@ async fn main() {
                         .get(
                             format!(
                                 "{}v1/{}?{}",
-                                default_publisher_url(config.server),
+                                default_resolver_url(log, config.server)?,
                                 config.identity,
                                 config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
                             ),

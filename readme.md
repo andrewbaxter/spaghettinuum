@@ -5,10 +5,10 @@ Spaghettinuum is an alternative to DNS based around a distributed hash table. Re
 Featuring:
 
 - DNS bridge
-- Smartcard/PCSC/GPG-card identities for extra protection if you want
+- Smartcard/PCSC/GPG-card identities, optionally, as an excuse to buy a new Yubikey 5 Nano
 - A simple RESTy API
 
-Current status: Use if you dare (early development)
+Current status: Planned features implemented, but not thoroughly tested
 
 # What is this
 
@@ -62,6 +62,8 @@ dig @149.248.205.99 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67
 
 If you set your DNS resolver to `149.248.205.99` you can read my writings (WIP) in your browser at <https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s/5987> (WIP - note SSL issues working with traditional infrastructure, discussed below).
 
+## Environment variables
+
 ## Resolver API
 
 To query a resolver, send an HTTP `GET` to `RESOLVER/v1/IDENTITY?KEY1,KEY2,...`.
@@ -87,7 +89,7 @@ All resolvers must have this API.
 
 1. Do `cargo install spaghettinuum`
 2. Run `spagh-cli generate-config` to generate a config
-3. Run `spagh YOURCONFIG.json` to start the server
+3. Run `spagh --config YOURCONFIG.json` to start the server
 
 The `spagh` server has a number of child services:
 
@@ -144,16 +146,18 @@ TTLs are in minutes.
 Then call
 
 ```
-spagh-cli publish http://localhost local ./identity.json ./data.json
+spagh-cli publish --server http://localhost local ./identity.json ./data.json
 ```
 
 to publish using a local identity or
 
 ```
-spagh-cli publish http://localhost card 0006:12345678 - ./data.json
+spagh-cli publish --server http://localhost card 0006:12345678 - ./data.json
 ```
 
 to publish using a card.
+
+If you're publishing to a server which requires authorization, you can set environment variable `SPAGH_PUBLISHER_TOKEN` which will be sent as a bearer token with the publishing requests.
 
 ## Publishing DNS
 

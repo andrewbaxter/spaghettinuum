@@ -48,6 +48,7 @@ use poem::{
         Json,
         Data,
         Path,
+        Query,
     },
     handler,
 };
@@ -69,6 +70,7 @@ use crate::{
             admin::{
                 InfoResponse,
             },
+            Publish,
         },
         utils::StrSocketAddr,
     },
@@ -439,6 +441,41 @@ impl DynamicPublisher {
         }).await??;
         return Ok(());
     }
+
+    pub async fn list_identities(&self, after: Option<Identity>) -> Result<Vec<Identity>, loga::Error> {
+        return Ok(match after {
+            None => {
+                self
+                    .0
+                    .db
+                    .get()
+                    .await?
+                    .interact(|db| db::list_announce_start(db))
+                    .await??
+                    .into_iter()
+                    .map(|p| p.identity)
+                    .collect()
+            },
+            Some(a) => {
+                self
+                    .0
+                    .db
+                    .get()
+                    .await?
+                    .interact(move |db| db::list_announce_after(db, &a))
+                    .await??
+                    .into_iter()
+                    .map(|p| p.identity)
+                    .collect()
+            },
+        });
+    }
+
+    pub async fn get_published_data(&self, identity: Identity) -> Result<Option<Publish>, loga::Error> {
+        return Ok(self.0.db.get().await?.interact(move |db| {
+            db::get_keyvalues(db, &identity)
+        }).await??);
+    }
 }
 
 struct PublisherCerts {
@@ -545,6 +582,36 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                     }
 
                     ep
+                })).at("/publish", get({
+                    #[derive(Debug, Deserialize)]
+                    struct Params {
+                        after: Option<String>,
+                    }
+
+                    #[handler]
+                    async fn ep(service: Data<&Arc<Inner>>, query: Query<Params>) -> Response {
+                        match aes!({
+                            match &query.after {
+                                Some(i) => {
+                                    let identity = Identity::from_str(i)?;
+                                    return Ok(service.core.list_identities(Some(identity)).await?);
+                                },
+                                None => {
+                                    return Ok(service.core.list_identities(None).await?);
+                                },
+                            }
+                        }).await {
+                            Ok(d) => {
+                                return Json(d).into_response();
+                            },
+                            Err(e) => {
+                                service.log.warn_e(e, "Error getting published identities", ea!());
+                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                            },
+                        }
+                    }
+
+                    ep
                 })).at("/publish/:identity", post({
                     #[handler]
                     async fn ep(
@@ -581,6 +648,24 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                             },
                             Err(e) => {
                                 service.log.warn_e(e, "Error deleting published data", ea!(identity = identity));
+                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                            },
+                        }
+                    }
+
+                    ep
+                }).get({
+                    #[handler]
+                    async fn ep(service: Data<&Arc<Inner>>, Path(identity): Path<String>) -> Response {
+                        match aes!({
+                            let identity = Identity::from_str(&identity)?;
+                            return Ok(service.core.get_published_data(identity).await?);
+                        }).await {
+                            Ok(d) => {
+                                return Json(d).into_response();
+                            },
+                            Err(e) => {
+                                service.log.warn_e(e, "Error getting published identity data", ea!());
                                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                             },
                         }
