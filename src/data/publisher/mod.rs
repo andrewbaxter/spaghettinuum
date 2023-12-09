@@ -1,4 +1,4 @@
-pub mod admin;
+pub mod public;
 pub mod announcement;
 
 use good_ormning_runtime::sqlite::GoodOrmningCustomBytes;

@@ -30,15 +30,13 @@ pub enum AdvertiseAddrConfig {
 
 #[derive(Deserialize, Serialize)]
 pub struct Config {
-    /// Port to bind for serving published data to other nodes
+    /// Port to bind for serving published data to other nodes, secured with announced
+    /// ssl cert
     pub bind_addr: StrSocketAddr,
     /// A cert will be generated and stored here if one doesn't already exist. Custom
     /// format (not pem).
     pub cert_path: PathBuf,
-    /// URL other nodes will connect to to retrieve data - should match however to
-    /// reach bind_addr externally (i.e. http/https, public instead of local ip)
+    /// URL other nodes will connect to to retrieve data - your external address.
     pub advertise_addr: AdvertiseAddrConfig,
     pub db_path: PathBuf,
-    /// Port to bind to for admin api
-    pub admin_bind_addr: StrSocketAddr,
 }

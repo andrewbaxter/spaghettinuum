@@ -25,6 +25,9 @@ use manual_future::{
     ManualFuture,
     ManualFutureCompleter,
 };
+use poem::{
+    endpoint::BoxEndpoint,
+};
 use reqwest::{
     Response,
     Url,
@@ -230,4 +233,9 @@ pub async fn lookup_ip(lookup: &str, ipv4_only: bool, ipv6_only: bool) -> Result
         ).context_with("Failed to parse response as utf8", ea!(resp = String::from_utf8_lossy(&ip)))?;
     let ip = IpAddr::from_str(&ip).context_with("Failed to parse response as socket addr", ea!(ip = ip))?;
     return Ok(ip);
+}
+
+pub struct SystemEndpoints {
+    pub public: Option<BoxEndpoint<'static, poem::Response>>,
+    pub private: Option<BoxEndpoint<'static, poem::Response>>,
 }

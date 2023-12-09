@@ -7,6 +7,11 @@ use loga::{
     ea,
     ResultContext,
 };
+use poem::{
+    Route,
+    Server,
+    listener::TcpListener,
+};
 use spaghettinuum::{
     config::Config,
     data::node::protocol::{
@@ -65,11 +70,81 @@ async fn main() {
                 id: e.id,
                 address: SerialAddr(e.addr.1),
             }).collect_vec(), config.node.persist_path).await?;
+        let mut public_endpoints = Route::new();
+        let mut private_endpoints = Route::new();
+        let mut has_public_endpoints = false;
+        let mut has_private_endpoints = false;
         if let Some(publisher) = config.publisher {
-            publisher::start(&tm, log, publisher, node.clone()).await?;
+            let endpoints = publisher::start(&tm, log, publisher, node.clone()).await?;
+            const PREFIX: &'static str = "/publish";
+            if let Some(endpoints) = endpoints.public {
+                public_endpoints = public_endpoints.nest(PREFIX, endpoints);
+                has_public_endpoints = true;
+            }
+            if let Some(endpoints) = endpoints.private {
+                private_endpoints = private_endpoints.nest(PREFIX, endpoints);
+                has_private_endpoints = true;
+            }
         }
         if let Some(resolver) = config.resolver {
-            resolver::start(&tm, log, resolver, node.clone()).await?;
+            let endpoints = resolver::start(&tm, log, resolver, node.clone()).await?;
+            const PREFIX: &'static str = "/resolve";
+            if let Some(endpoints) = endpoints.public {
+                public_endpoints = public_endpoints.nest(PREFIX, endpoints);
+                has_public_endpoints = true;
+            }
+            if let Some(endpoints) = endpoints.private {
+                private_endpoints = private_endpoints.nest(PREFIX, endpoints);
+                has_private_endpoints = true;
+            }
+        }
+        if has_public_endpoints {
+            let bind_addr =
+                config
+                    .public_http_addr
+                    .log_context(
+                        log,
+                        "Configuration defines public http endpoints, but no public http bind address present in config",
+                    )?;
+            tm.critical_task({
+                let log = log.fork(ea!(subsys = "public_http"));
+                let tm1 = tm.clone();
+                async move {
+                    match tm1.if_alive(Server::new(TcpListener::bind(&bind_addr.1)).run(public_endpoints)).await {
+                        Some(r) => {
+                            return r.log_context_with(&log, "Exited with error", ea!(addr = bind_addr));
+                        },
+                        None => {
+                            return Ok(());
+                        },
+                    }
+                }
+            });
+        }
+        if has_private_endpoints {
+            let bind_addr =
+                config
+                    .private_http_addr
+                    .log_context(
+                        log,
+                        "Configuration defines private http endpoints, but no private http bind address present in config",
+                    )?;
+            tm.critical_task({
+                let log = log.fork(ea!(subsys = "private_http"));
+                let tm1 = tm.clone();
+                async move {
+                    match tm1
+                        .if_alive(Server::new(TcpListener::bind(&bind_addr.1)).run(private_endpoints))
+                        .await {
+                        Some(r) => {
+                            return r.log_context_with(&log, "Exited with error", ea!(addr = bind_addr));
+                        },
+                        None => {
+                            return Ok(());
+                        },
+                    }
+                }
+            });
         }
         tm.join().await?;
         return Ok(());

@@ -19,10 +19,6 @@ use poem::{
 };
 use reqwest::{
     Response,
-    header::{
-        self,
-        AUTHORIZATION,
-    },
 };
 use sequoia_openpgp::{
     types::HashAlgorithm,
@@ -36,6 +32,7 @@ use spaghettinuum::{
         identity::{
             Identity,
             IdentitySecretVersionMethods,
+            IdentitySecret,
         },
         node::{
             nodeidentity::NodeIdentity,
@@ -46,7 +43,14 @@ use spaghettinuum::{
                 PublishValue,
                 Publish,
             },
-            admin::PublishRequest,
+            public::{
+                PublishRequest,
+                PublishRequestBody,
+                PublishRequestSigned,
+                UnpublishRequestBody,
+                UnpublishRequest,
+                UnpublishRequestSigned,
+            },
             announcement::v1::Announcement,
         },
         standard::{
@@ -57,11 +61,10 @@ use spaghettinuum::{
             KEY_DNS_TXT,
             PORT_NODE,
             PORT_PUBLISHER,
-            PORT_PUBLISHER_ADMIN,
-            PORT_RESOLVER,
-            ENV_PUBLISHER,
-            ENV_RESOLVER,
-            ENV_PUBLISHER_AUTH,
+            PORT_PRIV,
+            PORT_PUB,
+            ENV_PRIV_ADDR,
+            ENV_PUB_ADDR,
         },
         utils::StrSocketAddr,
     },
@@ -81,7 +84,6 @@ use spaghettinuum::{
         },
         lookup_ip,
     },
-    es,
 };
 use std::{
     collections::HashMap,
@@ -126,9 +128,25 @@ mod args {
     }
 
     #[derive(Aargvark)]
+    pub struct Register {
+        /// Private/admin URL of a server with publishing set up. Defaults to the value of
+        /// environment variable `SPAGH_PRIV` or else localhost with the default port.
+        pub server: Option<Uri>,
+        pub identity_id: String,
+    }
+
+    #[derive(Aargvark)]
+    pub struct Unregister {
+        /// Private/admin URL of a server with publishing set up. Defaults to the value of
+        /// environment variable `SPAGH_PRIV` or else localhost with the default port.
+        pub server: Option<Uri>,
+        pub identity_id: String,
+    }
+
+    #[derive(Aargvark)]
     pub struct Publish {
         /// URL of a server with publishing set up. Defaults to the value of environment
-        /// variable `SPAGH_PUBLISHER` or else localhost with the default port.
+        /// variable `SPAGH` or else localhost with the default port.
         pub server: Option<Uri>,
         /// Identity to publish as
         pub identity: Identity,
@@ -140,7 +158,7 @@ mod args {
     #[derive(Aargvark)]
     pub struct PublishDns {
         /// URL of a server with publishing set up. Defaults to the value of environment
-        /// variable `SPAGH_PUBLISHER` or else localhost with the default port.
+        /// variable `SPAGH` or else localhost with the default port.
         pub server: Option<Uri>,
         /// Identity to publish as
         pub identity: Identity,
@@ -156,7 +174,7 @@ mod args {
     #[derive(Aargvark)]
     pub struct Unpublish {
         /// URL of a server with publishing set up. Defaults to the value of environment
-        /// variable `SPAGH_PUBLISHER` or else localhost with the default port.
+        /// variable `SPAGH` or else localhost with the default port.
         pub server: Option<Uri>,
         pub identity: Identity,
     }
@@ -164,14 +182,14 @@ mod args {
     #[derive(Aargvark)]
     pub struct ListPublisherIdentities {
         /// URL of a server with publishing set up. Defaults to the value of environment
-        /// variable `SPAGH_PUBLISHER` or else localhost with the default port.
+        /// variable `SPAGH_PRIV` or else localhost with the default port.
         pub server: Option<Uri>,
     }
 
     #[derive(Aargvark)]
     pub struct ListPublisherKeyValues {
         /// URL of a server with publishing set up. Defaults to the value of environment
-        /// variable `SPAGH_PUBLISHER` or else localhost with the default port.
+        /// variable `SPAGH_PRIV` or else localhost with the default port.
         pub server: Option<Uri>,
         pub identity: String,
     }
@@ -227,6 +245,10 @@ mod args {
         ShowLocalIdentity(AargvarkJson<IdentitySecret>),
         /// List usable pcsc cards (configured with curve25519/ed25519 signing keys)
         ListCardIdentities,
+        /// Register an identity with the server, allowing it to publish
+        Register(Register),
+        /// Unregister an identity with the server, disallowing it from publishing
+        Unregister(Unregister),
         /// Create or replace existing publish data for an identity on a publisher server
         Publish(Publish),
         /// A shortcut for publishing DNS data, generating the key values for you
@@ -352,42 +374,96 @@ fn default_url(
     }
 }
 
-fn publisher_admin_client(log: &loga::Log) -> Result<reqwest::Client, loga::Error> {
-    let mut c = reqwest::ClientBuilder::new();
-    match env::var(ENV_PUBLISHER_AUTH) {
-        Ok(e) => {
-            let mut headers = header::HeaderMap::new();
-            headers.insert(
-                AUTHORIZATION,
-                header::HeaderValue::from_str(
-                    &format!("Bearer {}", &e),
-                ).log_context(log, "Token isn't a valid header value")?,
-            );
-            c = c.default_headers(headers);
+fn publisher_priv_client(_log: &loga::Log) -> Result<reqwest::Client, loga::Error> {
+    return Ok(reqwest::ClientBuilder::new().build().unwrap());
+}
+
+fn default_priv_url(log: &loga::Log, url: Option<Uri>) -> Result<Uri, loga::Error> {
+    return default_url(log, url, ENV_PRIV_ADDR, PORT_PRIV);
+}
+
+fn default_pub_url(log: &loga::Log, url: Option<Uri>) -> Result<Uri, loga::Error> {
+    return default_url(log, url, ENV_PUB_ADDR, PORT_PUB);
+}
+
+trait IdentitySigner {
+    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error>;
+}
+
+struct LocalIdentitySigner(IdentitySecret);
+
+impl IdentitySigner for LocalIdentitySigner {
+    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error> {
+        return Ok((self.0.identity(), self.0.sign(data)));
+    }
+}
+
+fn get_identity_signer(ident: args::Identity) -> Result<Box<dyn IdentitySigner>, loga::Error> {
+    match ident {
+        args::Identity::Local(ident_config) => {
+            return Ok(Box::new(LocalIdentitySigner(ident_config.0)));
         },
-        Err(e) => {
-            match e {
-                env::VarError::NotPresent => { },
-                env::VarError::NotUnicode(e) => {
-                    return Err(
-                        log.new_err_with(
-                            "Environment variable isn't valid unicode",
-                            ea!(env = ENV_PUBLISHER_AUTH, value = e.to_string_lossy()),
-                        ),
-                    );
-                },
-            }
+        args::Identity::Card { pcsc_id, pin } => {
+            let pin = if pin == "-" {
+                rpassword::prompt_password(
+                    "Enter your pin to sign announcement: ",
+                ).context("Error securely reading pin")?
+            } else {
+                pin
+            };
+            return Ok(Box::new(CardIdentitySigner {
+                card: PcscBackend::open_by_ident(&pcsc_id, None)
+                    .context_with("Failed to open card", ea!(card = pcsc_id))?
+                    .into(),
+                pcsc_id: pcsc_id,
+                pin: pin,
+            }));
         },
     };
-    return Ok(c.build().unwrap());
 }
 
-fn default_publisher_admin_url(log: &loga::Log, url: Option<Uri>) -> Result<Uri, loga::Error> {
-    return default_url(log, url, ENV_PUBLISHER, PORT_PUBLISHER_ADMIN);
+struct CardIdentitySigner {
+    pcsc_id: String,
+    pin: String,
+    card: Card<Open>,
 }
 
-fn default_resolver_url(log: &loga::Log, url: Option<Uri>) -> Result<Uri, loga::Error> {
-    return default_url(log, url, ENV_RESOLVER, PORT_RESOLVER);
+impl IdentitySigner for CardIdentitySigner {
+    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error> {
+        let mut transaction = self.card.transaction().context("Failed to start card transaction")?;
+        transaction
+            .verify_user_for_signing(self.pin.as_bytes())
+            .context_with("Error unlocking card with pin", ea!(card = self.pcsc_id))?;
+        let mut user = transaction.signing_card().unwrap();
+        let signer_interact = || eprintln!("Card {} requests interaction to sign", self.pcsc_id);
+        let mut signer = user.signer(&signer_interact).context("Failed to get signer from card")?;
+        let identity;
+        loop {
+            match signer.public() {
+                sequoia_openpgp::packet::Key::V4(k) => match k.mpis() {
+                    sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { curve, q } => {
+                        if let Some(i) = pgp_eddsa_to_identity(curve, q) {
+                            identity = i;
+                            break;
+                        };
+                    },
+                    _ => (),
+                },
+                _ => (),
+            };
+            return Err(loga::err("Unsupported key type - must be Ed25519"));
+        }
+        return Ok(
+            (
+                identity,
+                extract_pgp_ed25519_sig(
+                    &signer
+                        .sign(HashAlgorithm::SHA512, &crate::data::identity::hash_for_ed25519(data))
+                        .map_err(|e| loga::err_with("Card signature failed", ea!(err = e)))?,
+                ).to_vec(),
+            ),
+        );
+    }
 }
 
 async fn publish(
@@ -405,7 +481,7 @@ async fn publish(
             .check_bytes()
             .await
             .log_context(log, "Error getting publisher info")?;
-    let info: crate::data::publisher::admin::InfoResponse =
+    let info: crate::data::publisher::public::InfoResponse =
         serde_json::from_slice(
             &info_body,
         ).log_context_with(
@@ -422,72 +498,31 @@ async fn publish(
         )?,
         published: Utc::now(),
     }.to_bytes();
-    let (identity, announcement) = match identity_arg {
-        args::Identity::Local(ident_config) => {
-            let secret = ident_config.0;
-            let identity = secret.identity();
-            (identity, Announcement {
-                message: announce_message.clone(),
-                signature: secret.sign(announce_message.as_ref()),
-            })
+    let mut signer = get_identity_signer(identity_arg).log_context(&log, "Error constructing signer")?;
+    let (identity, request_message_sig) =
+        signer.sign(&announce_message).log_context(&log, "Failed to sign announcement")?;
+    let request_message = PublishRequestBody {
+        announce: Announcement {
+            message: announce_message.clone(),
+            signature: request_message_sig,
         },
-        args::Identity::Card { pcsc_id, pin } => {
-            let mut card: Card<Open> =
-                PcscBackend::open_by_ident(&pcsc_id, None)
-                    .log_context_with(log, "Failed to open card", ea!(card = pcsc_id))?
-                    .into();
-            let mut transaction = card.transaction().log_context(log, "Failed to start card transaction")?;
-            let pin = if pin == "-" {
-                rpassword::prompt_password(
-                    "Enter your pin to sign announcement: ",
-                ).log_context(log, "Error securely reading pin")?
-            } else {
-                pin
-            };
-            transaction
-                .verify_user_for_signing(pin.as_bytes())
-                .log_context_with(log, "Error unlocking card with pin", ea!(card = pcsc_id))?;
-            let mut user = transaction.signing_card().unwrap();
-            let signer_interact = || eprintln!("Card {} requests interaction to sign", pcsc_id);
-            let mut signer = user.signer(&signer_interact).log_context(log, "Failed to get signer from card")?;
-            match es!({
-                match signer.public() {
-                    sequoia_openpgp::packet::Key::V4(k) => match k.mpis() {
-                        sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { curve, q } => {
-                            let identity = match pgp_eddsa_to_identity(curve, q) {
-                                Some(i) => i,
-                                None => return Ok(None),
-                            };
-                            let hash = crate::data::identity::hash_for_ed25519(&announce_message);
-                            return Ok(Some((identity, Announcement {
-                                message: announce_message.clone(),
-                                signature: extract_pgp_ed25519_sig(
-                                    &signer
-                                        .sign(HashAlgorithm::SHA512, &hash)
-                                        .map_err(|e| loga::err_with("Card signature failed", ea!(err = e)))?,
-                                ).to_vec(),
-                            })));
-                        },
-                        _ => {
-                            return Ok(None);
-                        },
-                    },
-                    _ => {
-                        return Ok(None);
-                    },
-                };
-            })? {
-                Some(r) => r,
-                None => {
-                    return Err(loga::err("Unsupported key type - must be Ed25519"));
-                },
-            }
+        keyvalues: keyvalues,
+    }.to_bytes();
+    let request = PublishRequest {
+        identity: identity,
+        signed: PublishRequestSigned {
+            signature: signer.sign(&request_message).log_context(&log, "Failed to sign publish request")?.1,
+            message: request_message,
         },
     };
-    c.post(format!("{}publish/{}", server, identity.to_string())).json(&PublishRequest {
-        announce: announcement,
-        keyvalues: keyvalues,
-    }).send().await.check().await.log_context(log, "Error making publish request")?;
+    c
+        .post(format!("{}publish/publish", server))
+        .json(&request)
+        .send()
+        .await
+        .check()
+        .await
+        .log_context(log, "Error making publish request")?;
     return Ok(());
 }
 
@@ -547,11 +582,29 @@ async fn main() {
                 }
                 println!("{}", serde_json::to_string_pretty(&out).unwrap());
             },
+            args::Args::Register(config) => {
+                publisher_priv_client(log)?
+                    .post(format!("{}publish/register/{}", default_priv_url(log, config.server)?, config.identity_id))
+                    .send()
+                    .await
+                    .check_text()
+                    .await?;
+            },
+            args::Args::Unregister(config) => {
+                publisher_priv_client(log)?
+                    .post(
+                        format!("{}publish/unregister/{}", default_priv_url(log, config.server)?, config.identity_id),
+                    )
+                    .send()
+                    .await
+                    .check_text()
+                    .await?;
+            },
             args::Args::Publish(config) => {
                 publish(
                     log,
-                    publisher_admin_client(log)?,
-                    &default_publisher_admin_url(log, config.server)?,
+                    reqwest::ClientBuilder::new().build().unwrap(),
+                    &default_priv_url(log, config.server)?,
                     config.identity,
                     config.data.0,
                 ).await?;
@@ -559,8 +612,8 @@ async fn main() {
             args::Args::PublishDns(config) => {
                 publish(
                     log,
-                    publisher_admin_client(log)?,
-                    &default_publisher_admin_url(log, config.server)?,
+                    reqwest::ClientBuilder::new().build().unwrap(),
+                    &default_priv_url(log, config.server)?,
                     config.identity,
                     spaghettinuum::data::publisher::v1::Publish {
                         missing_ttl: config.ttl,
@@ -637,59 +690,32 @@ async fn main() {
                 ).await?;
             },
             args::Args::Unpublish(config) => {
-                let c = publisher_admin_client(log)?;
-                let identity = match config.identity {
-                    args::Identity::Local(ident_config) => {
-                        ident_config.0.identity()
-                    },
-                    args::Identity::Card { pcsc_id, pin: _ } => {
-                        let mut card: Card<Open> = PcscBackend::open_by_ident(&pcsc_id, None)?.into();
-                        let mut transaction = card.transaction()?;
-                        let mut user = transaction.signing_card().unwrap();
-                        let signer_interact = || panic!("Card requesting interaction despite not signing");
-                        let signer = user.signer(&signer_interact)?;
-                        match es!({
-                            match signer.public() {
-                                sequoia_openpgp::packet::Key::V4(k) => match k.mpis() {
-                                    sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { curve, q } => {
-                                        return Ok(Some(match pgp_eddsa_to_identity(curve, q) {
-                                            Some(i) => i,
-                                            None => return Ok(None),
-                                        }));
-                                    },
-                                    _ => {
-                                        return Ok(None);
-                                    },
-                                },
-                                _ => {
-                                    return Ok(None);
-                                },
-                            };
-                        })? {
-                            Some(r) => r,
-                            None => {
-                                return Err(loga::err("Unsupported key type - must be Ed25519"));
-                            },
-                        }
+                let c = reqwest::ClientBuilder::new().build().unwrap();
+                let mut signer =
+                    get_identity_signer(config.identity).log_context(&log, "Error constructing signer")?;
+                let request_message = UnpublishRequestBody { now: Utc::now() }.to_bytes();
+                let (identity, request_message_sig) =
+                    signer.sign(&request_message).log_context(&log, "Failed to sign unpublish request")?;
+                let request = UnpublishRequest {
+                    identity: identity,
+                    signed: UnpublishRequestSigned {
+                        signature: request_message_sig,
+                        message: request_message,
                     },
                 };
                 c
-                    .delete(
-                        format!(
-                            "{}publish/{}",
-                            default_publisher_admin_url(log, config.server)?,
-                            identity.to_string()
-                        ),
-                    )
+                    .post(format!("{}publish/unpublish", default_pub_url(&log, config.server)?))
+                    .json(&request)
                     .send()
                     .await
                     .check()
-                    .await?;
+                    .await
+                    .log_context(log, "Error making unpublish request")?;
             },
             args::Args::ListPublisherIdentities(config) => {
                 let mut out = vec![];
-                let c = publisher_admin_client(log)?;
-                let url = default_publisher_admin_url(log, config.server)?;
+                let c = publisher_priv_client(log)?;
+                let url = default_priv_url(log, config.server)?;
                 let mut res = c.get(format!("{}publish", url)).send().await.check_bytes().await?;
                 loop {
                     let mut identities: Vec<Identity> =
@@ -712,10 +738,8 @@ async fn main() {
             args::Args::ListPublisherKeyValues(config) => {
                 println!(
                     "{}",
-                    publisher_admin_client(log)?
-                        .get(
-                            format!("{}publish/{}", default_publisher_admin_url(log, config.server)?, config.identity),
-                        )
+                    publisher_priv_client(log)?
+                        .get(format!("{}publish/{}", default_priv_url(log, config.server)?, config.identity))
                         .send()
                         .await
                         .check_text()
@@ -731,7 +755,7 @@ async fn main() {
                         .get(
                             format!(
                                 "{}v1/{}?{}",
-                                default_resolver_url(log, config.server)?,
+                                default_pub_url(log, config.server)?,
                                 config.identity,
                                 config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
                             ),
@@ -760,6 +784,16 @@ async fn main() {
                             ).unwrap(),
                         }],
                         persist_path: Some(cwd.join("node_persist.json")),
+                    },
+                    public_http_addr: if config.publisher.is_some() || config.resolver.is_some() {
+                        Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PUB)))
+                    } else {
+                        None
+                    },
+                    private_http_addr: if config.publisher.is_some() {
+                        Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PRIV)))
+                    } else {
+                        None
                     },
                     publisher: if config.publisher.is_some() {
                         Some(spaghettinuum::publisher::config::Config {
@@ -792,18 +826,12 @@ async fn main() {
                                 }
                             },
                             db_path: cwd.join("publisher.sqlite3"),
-                            admin_bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PUBLISHER_ADMIN)),
                         })
                     } else {
                         None
                     },
                     resolver: if config.resolver.is_some() || config.dns_bridge.is_some() {
                         Some(spaghettinuum::resolver::config::ResolverConfig {
-                            bind_addr: if config.dns_bridge.is_some() {
-                                Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_RESOLVER)))
-                            } else {
-                                None
-                            },
                             cache_persist_path: Some(cwd.join("resolver_cache.sqlite3")),
                             max_cache: None,
                             dns_bridge: if config.dns_bridge.is_some() {

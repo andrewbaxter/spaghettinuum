@@ -9,6 +9,7 @@ use good_ormning::{
             helpers::{
                 set_field,
                 eq_field,
+                gt_field,
             },
             expr::{
                 Expr,
@@ -18,10 +19,16 @@ use good_ormning::{
             insert::InsertConflict,
         },
         new_delete,
-        schema::field::{
-            field_bytes,
-            field_str,
-            field_utctime_ms,
+        schema::{
+            field::{
+                field_bytes,
+                field_str,
+                field_utctime_ms,
+            },
+            constraint::{
+                PrimaryKeyDef,
+                ConstraintType,
+            },
         },
         QueryResCount,
         new_insert,
@@ -76,6 +83,15 @@ fn main() {
     // Publisher
     {
         let mut latest_version = Version::default();
+        let allowed_identities = latest_version.table("zMJAKGR8Z", "allowed_identities");
+        let allowed_identities_ident =
+            allowed_identities.field(&mut latest_version, "zPASWU9NI", "identity", field_ident.clone());
+        allowed_identities.constraint(
+            &mut latest_version,
+            "zIRUS5EQ1",
+            "allowed_identities_pk_ident",
+            ConstraintType::PrimaryKey(PrimaryKeyDef { fields: vec![allowed_identities_ident.clone()] }),
+        );
         let announce = latest_version.table("zNMSOUSV6", "announce");
         let announce_ident = announce.field(&mut latest_version, "zEC5LV9D2", "identity", field_ident.clone());
         let announce_value =
@@ -100,7 +116,30 @@ fn main() {
             // Versions
             (0usize, latest_version)
         ], vec![
-            // Queries
+            // Registration
+            new_insert(&allowed_identities, vec![set_field("ident", &allowed_identities_ident)])
+                .on_conflict(InsertConflict::DoNothing)
+                .build_query("allow_identity", QueryResCount::None),
+            new_delete(&allowed_identities)
+                .where_(eq_field("ident", &allowed_identities_ident))
+                .build_query("disallow_identity", QueryResCount::None),
+            new_select(&allowed_identities)
+                .where_(eq_field("ident", &allowed_identities_ident))
+                .return_named("found", Expr::LitI32(0))
+                .limit(Expr::LitI32(1))
+                .build_query("is_identity_allowed", QueryResCount::MaybeOne),
+            new_select(&allowed_identities)
+                .return_fields(&[&allowed_identities_ident])
+                .order(Expr::Field(allowed_identities_ident.clone()), Order::Asc)
+                .limit(Expr::LitI32(50))
+                .build_query("list_allowed_identities_start", QueryResCount::Many),
+            new_select(&allowed_identities)
+                .return_fields(&[&allowed_identities_ident])
+                .where_(gt_field("ident", &allowed_identities_ident))
+                .order(Expr::Field(allowed_identities_ident.clone()), Order::Asc)
+                .limit(Expr::LitI32(50))
+                .build_query("list_allowed_identities_after", QueryResCount::Many),
+            // Announcements
             new_insert(&announce, vec![set_field("ident", &announce_ident), set_field("value", &announce_value)])
                 .on_conflict(InsertConflict::DoUpdate(vec![set_field("value", &announce_value)]))
                 .build_query("set_announce", QueryResCount::None),
@@ -114,21 +153,12 @@ fn main() {
                 .build_query("list_announce_start", QueryResCount::Many),
             new_select(&announce)
                 .return_fields(&[&announce_ident, &announce_value])
-                .where_(Expr::BinOp {
-                    left: Box::new(Expr::Field(announce_ident.clone())),
-                    op: BinOp::LessThan,
-                    right: Box::new(Expr::Param {
-                        name: "ident".to_string(),
-                        type_: announce_ident.type_.type_.clone(),
-                    }),
-                })
+                .where_(gt_field("ident", &announce_ident))
                 .order(Expr::Field(announce_ident.clone()), Order::Asc)
                 .limit(Expr::LitI32(50))
                 .build_query("list_announce_after", QueryResCount::Many),
-            new_insert(
-                &publish,
-                vec![set_field("ident", &publish_ident), set_field("keyvalues", &publish_keyvalues)],
-            )
+            // Published data
+            new_insert(&publish, vec![set_field("ident", &publish_ident), set_field("keyvalues", &publish_keyvalues)])
                 .on_conflict(InsertConflict::DoUpdate(vec![set_field("keyvalues", &publish_keyvalues)]))
                 .build_query("set_keyvalues", QueryResCount::None),
             new_select(&publish)

@@ -20,7 +20,10 @@ use crate::{
             KEY_DNS_TXT,
         },
     },
-    utils::reqwest_get,
+    utils::{
+        reqwest_get,
+        SystemEndpoints,
+    },
 };
 use crate::{
     aes,
@@ -49,12 +52,12 @@ use poem::{
     async_trait,
     get,
     http::StatusCode,
-    listener::TcpListener,
     Endpoint,
     IntoResponse,
     Request,
     Response,
-    Server,
+    IntoEndpoint,
+    EndpointExt,
 };
 use rusqlite::Connection;
 use rustls::{
@@ -337,77 +340,62 @@ impl Core {
 }
 
 #[doc(hidden)]
-pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: Node) -> Result<(), loga::Error> {
+pub async fn start(
+    tm: &TaskManager,
+    log: &Log,
+    config: ResolverConfig,
+    node: Node,
+) -> Result<SystemEndpoints, loga::Error> {
     let log = log.fork(ea!(sys = "resolver"));
     let core = Core::new(&log, tm, node, config.max_cache, config.cache_persist_path).await?;
 
-    // Launch resolver server
-    if let Some(bind_addr) = config.bind_addr {
-        struct Inner {
-            core: Core,
-            log: Log,
-        }
-
-        struct Outer(Arc<Inner>);
-
-        #[async_trait]
-        impl Endpoint for Outer {
-            type Output = Response;
-
-            async fn call(&self, req: Request) -> poem::Result<Self::Output> {
-                self.0.log.debug("Request", ea!(path = req.uri().path()));
-                if req.uri().path() == "/health" {
-                    return Ok(StatusCode::OK.into_response());
-                }
-                match aes!({
-                    let ident_src =
-                        parse_path::V1PathFromRegex::new()
-                            .parse(req.uri().path())
-                            .map_err(|e| loga::Error::from(e))?;
-                    let kvs =
-                        self
-                            .0
-                            .core
-                            .get(
-                                &Identity::from_str(
-                                    &ident_src.identity,
-                                ).context_with("Failed to parse identity", ea!(identity = ident_src.identity))?,
-                                &req.uri().query().unwrap_or("").split(",").collect_vec(),
-                            )
-                            .await?;
-                    return Ok(ResolveKeyValues::V1(crate::data::publisher::v1::ResolveKeyValues(kvs)));
-                }).await {
-                    Ok(kvs) => Ok(poem::web::Json(kvs).into_response()),
-                    Err(e) => {
-                        return Ok(
-                            <String as IntoResponse>::with_status(
-                                e.to_string(),
-                                StatusCode::BAD_REQUEST,
-                            ).into_response(),
-                        );
-                    },
-                }
-            }
-        }
-
-        tm.critical_task::<_, loga::Error>({
-            let tm1 = tm.clone();
-            let core1 = core.clone();
-            let log = log.fork(ea!(subsys = "endpoint"));
-            async move {
-                match tm1.if_alive(Server::new(TcpListener::bind(bind_addr.1)).run(get(Outer(Arc::new(Inner {
-                    core: core1,
-                    log: log,
-                }))))).await {
-                    Some(r) => {
-                        r?;
-                    },
-                    None => { },
-                };
-                return Ok(());
-            }
-        });
+    // Launch http resolver server
+    struct Inner {
+        core: Core,
+        log: Log,
     }
+
+    struct Outer(Arc<Inner>);
+
+    #[async_trait]
+    impl Endpoint for Outer {
+        type Output = Response;
+
+        async fn call(&self, req: Request) -> poem::Result<Self::Output> {
+            self.0.log.debug("Request", ea!(path = req.uri().path()));
+            if req.uri().path() == "/health" {
+                return Ok(StatusCode::OK.into_response());
+            }
+            match aes!({
+                let ident_src =
+                    parse_path::V1PathFromRegex::new().parse(req.uri().path()).map_err(|e| loga::Error::from(e))?;
+                let kvs =
+                    self
+                        .0
+                        .core
+                        .get(
+                            &Identity::from_str(
+                                &ident_src.identity,
+                            ).context_with("Failed to parse identity", ea!(identity = ident_src.identity))?,
+                            &req.uri().query().unwrap_or("").split(",").collect_vec(),
+                        )
+                        .await?;
+                return Ok(ResolveKeyValues::V1(crate::data::publisher::v1::ResolveKeyValues(kvs)));
+            }).await {
+                Ok(kvs) => Ok(poem::web::Json(kvs).into_response()),
+                Err(e) => {
+                    return Ok(
+                        <String as IntoResponse>::with_status(e.to_string(), StatusCode::BAD_REQUEST).into_response(),
+                    );
+                },
+            }
+        }
+    }
+
+    let public_route = get(Outer(Arc::new(Inner {
+        core: core.clone(),
+        log: log.clone(),
+    }))).into_endpoint().boxed();
 
     // Launch dns bridge
     if let Some(dns_config) = config.dns_bridge {
@@ -769,5 +757,8 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
             }
         });
     }
-    return Ok(());
+    return Ok(SystemEndpoints {
+        public: Some(public_route),
+        private: None,
+    });
 }

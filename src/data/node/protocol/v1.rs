@@ -149,6 +149,10 @@ impl ValueBody {
     pub fn to_bytes(&self) -> Vec<u8> {
         return bincode::serialize(self).unwrap();
     }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self, loga::Error> {
+        return Ok(bincode::deserialize(data)?);
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -161,7 +165,7 @@ pub struct Value {
 
 impl Value {
     pub fn parse(&self) -> Result<ValueBody, loga::Error> {
-        return Ok(bincode::deserialize(&self.message)?);
+        return ValueBody::from_bytes(&self.message);
     }
 }
 

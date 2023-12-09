@@ -55,6 +55,11 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
                     let query = "create unique index \"announce_ident\" on \"announce\" ( \"identity\" )";
                     txn.execute(query, ()).to_good_error_query(query)?
                 };
+                {
+                    let query =
+                        "create table \"allowed_identities\" ( \"identity\" blob not null , constraint \"allowed_identities_pk_ident\" primary key ( \"identity\" ) )";
+                    txn.execute(query, ()).to_good_error_query(query)?
+                };
             }
             let query = "update __good_version set version = $1, lock = 0";
             txn.execute(query, rusqlite::params![0i64]).to_good_error_query(query)?;
@@ -91,6 +96,130 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
             },
         }
     }
+}
+
+pub fn allow_identity(db: &rusqlite::Connection, ident: &crate::data::identity::Identity) -> Result<(), GoodError> {
+    let query = "insert into \"allowed_identities\" ( \"identity\" ) values ( $1 ) on conflict do nothing";
+    db
+        .execute(
+            query,
+            rusqlite::params![
+                <crate::data::identity::Identity as good_ormning_runtime
+                ::sqlite
+                ::GoodOrmningCustomBytes<crate::data::identity::Identity>>::to_sql(
+                    &ident,
+                )
+            ],
+        )
+        .to_good_error_query(query)?;
+    Ok(())
+}
+
+pub fn disallow_identity(
+    db: &rusqlite::Connection,
+    ident: &crate::data::identity::Identity,
+) -> Result<(), GoodError> {
+    let query = "delete from \"allowed_identities\" where ( \"allowed_identities\" . \"identity\" = $1 )";
+    db
+        .execute(
+            query,
+            rusqlite::params![
+                <crate::data::identity::Identity as good_ormning_runtime
+                ::sqlite
+                ::GoodOrmningCustomBytes<crate::data::identity::Identity>>::to_sql(
+                    &ident,
+                )
+            ],
+        )
+        .to_good_error_query(query)?;
+    Ok(())
+}
+
+pub fn is_identity_allowed(
+    db: &rusqlite::Connection,
+    ident: &crate::data::identity::Identity,
+) -> Result<Option<i32>, GoodError> {
+    let query =
+        "select 0 as \"found\" from \"allowed_identities\" where ( \"allowed_identities\" . \"identity\" = $1 ) limit 1";
+    let mut stmt = db.prepare(query).to_good_error_query(query)?;
+    let mut rows =
+        stmt
+            .query(
+                rusqlite::params![
+                    <crate::data::identity::Identity as good_ormning_runtime
+                    ::sqlite
+                    ::GoodOrmningCustomBytes<crate::data::identity::Identity>>::to_sql(
+                        &ident,
+                    )
+                ],
+            )
+            .to_good_error_query(query)?;
+    let r = rows.next().to_good_error(|| format!("Getting row in query [{}]", query))?;
+    if let Some(r) = r {
+        return Ok(Some({
+            let x: i32 = r.get(0usize).to_good_error(|| format!("Getting result {}", 0usize))?;
+            x
+        }));
+    }
+    Ok(None)
+}
+
+pub fn list_allowed_identities_start(
+    db: &rusqlite::Connection,
+) -> Result<Vec<crate::data::identity::Identity>, GoodError> {
+    let mut out = vec![];
+    let query =
+        "select \"allowed_identities\" . \"identity\" from \"allowed_identities\" order by \"allowed_identities\" . \"identity\" asc limit 50";
+    let mut stmt = db.prepare(query).to_good_error_query(query)?;
+    let mut rows = stmt.query(rusqlite::params![]).to_good_error_query(query)?;
+    while let Some(r) = rows.next().to_good_error(|| format!("Getting row in query [{}]", query))? {
+        out.push({
+            let x: Vec<u8> = r.get(0usize).to_good_error(|| format!("Getting result {}", 0usize))?;
+            let x =
+                <crate::data::identity::Identity as good_ormning_runtime
+                ::sqlite
+                ::GoodOrmningCustomBytes<crate::data::identity::Identity>>::from_sql(
+                    x,
+                ).to_good_error(|| format!("Parsing result {}", 0usize))?;
+            x
+        });
+    }
+    Ok(out)
+}
+
+pub fn list_allowed_identities_after(
+    db: &rusqlite::Connection,
+    ident: &crate::data::identity::Identity,
+) -> Result<Vec<crate::data::identity::Identity>, GoodError> {
+    let mut out = vec![];
+    let query =
+        "select \"allowed_identities\" . \"identity\" from \"allowed_identities\" where ( \"allowed_identities\" . \"identity\" > $1 ) order by \"allowed_identities\" . \"identity\" asc limit 50";
+    let mut stmt = db.prepare(query).to_good_error_query(query)?;
+    let mut rows =
+        stmt
+            .query(
+                rusqlite::params![
+                    <crate::data::identity::Identity as good_ormning_runtime
+                    ::sqlite
+                    ::GoodOrmningCustomBytes<crate::data::identity::Identity>>::to_sql(
+                        &ident,
+                    )
+                ],
+            )
+            .to_good_error_query(query)?;
+    while let Some(r) = rows.next().to_good_error(|| format!("Getting row in query [{}]", query))? {
+        out.push({
+            let x: Vec<u8> = r.get(0usize).to_good_error(|| format!("Getting result {}", 0usize))?;
+            let x =
+                <crate::data::identity::Identity as good_ormning_runtime
+                ::sqlite
+                ::GoodOrmningCustomBytes<crate::data::identity::Identity>>::from_sql(
+                    x,
+                ).to_good_error(|| format!("Parsing result {}", 0usize))?;
+            x
+        });
+    }
+    Ok(out)
 }
 
 pub fn set_announce(
@@ -181,7 +310,7 @@ pub fn list_announce_after(
 ) -> Result<Vec<DbRes1>, GoodError> {
     let mut out = vec![];
     let query =
-        "select \"announce\" . \"identity\" , \"announce\" . \"value\" from \"announce\" where ( \"announce\" . \"identity\" < $1 ) order by \"announce\" . \"identity\" asc limit 50";
+        "select \"announce\" . \"identity\" , \"announce\" . \"value\" from \"announce\" where ( \"announce\" . \"identity\" > $1 ) order by \"announce\" . \"identity\" asc limit 50";
     let mut stmt = db.prepare(query).to_good_error_query(query)?;
     let mut rows =
         stmt

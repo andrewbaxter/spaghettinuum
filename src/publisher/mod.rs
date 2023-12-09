@@ -16,6 +16,7 @@ use deadpool_sqlite::{
     Pool,
     Runtime,
 };
+use good_ormning_runtime::GoodError;
 use pem::Pem;
 use sha2::{
     Digest,
@@ -31,7 +32,10 @@ use poem::{
     Response,
     async_trait,
     Request,
-    http::StatusCode,
+    http::{
+        StatusCode,
+        Uri,
+    },
     get,
     listener::{
         TcpListener,
@@ -67,8 +71,10 @@ use crate::{
         publisher::{
             ResolveKeyValues,
             self,
-            admin::{
+            public::{
                 InfoResponse,
+                PublishRequestBody,
+                UnpublishRequestBody,
             },
             Publish,
         },
@@ -76,6 +82,7 @@ use crate::{
     },
     utils::{
         lookup_ip,
+        SystemEndpoints,
     },
     node::ValueArgs,
 };
@@ -233,64 +240,6 @@ struct DynamicPublisherInner {
 #[derive(Clone)]
 pub struct DynamicPublisher(Arc<DynamicPublisherInner>);
 
-#[async_trait]
-impl Endpoint for DynamicPublisher {
-    type Output = Response;
-
-    async fn call(&self, req: Request) -> poem::Result<Self::Output> {
-        match aes2!({
-            let ident =
-                Identity::from_str(req.uri().path().get(1..).unwrap_or(""))
-                    .context("Couldn't parse identity")
-                    .err_external()?;
-            let mut kvs = publisher::v1::ResolveKeyValues(HashMap::new());
-            if let Some(found_kvs) = self.0.db.get().await.err_internal()?.interact(move |db| {
-                db::get_keyvalues(db, &ident)
-            }).await.err_internal()?.err_internal()? {
-                let now = Utc::now();
-                match found_kvs {
-                    publisher::Publish::V1(mut found) => {
-                        for k in req.uri().query().unwrap_or("").split(",") {
-                            if let Some(v) = found.data.remove(k) {
-                                kvs.0.insert(k.to_string(), publisher::v1::ResolveValue {
-                                    expires: now + Duration::minutes(v.ttl as i64),
-                                    data: Some(v.data),
-                                });
-                            } else {
-                                kvs.0.insert(k.to_string(), publisher::v1::ResolveValue {
-                                    expires: now + Duration::minutes(found.missing_ttl as i64),
-                                    data: None,
-                                });
-                            }
-                        }
-                    },
-                }
-            }
-            return Ok(ResolveKeyValues::V1(kvs));
-        }).await {
-            Ok(kvs) => Ok(
-                <poem::web::Json<ResolveKeyValues> as IntoResponse>::into_response(poem::web::Json(kvs)),
-            ),
-            Err(e) => {
-                match e {
-                    VisErr::Internal(e) => {
-                        self.0.log.warn_e(e, "Error processing request", ea!());
-                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-                    },
-                    VisErr::External(e) => {
-                        return Ok(
-                            <String as IntoResponse>::with_status(
-                                e.to_string(),
-                                StatusCode::BAD_REQUEST,
-                            ).into_response(),
-                        );
-                    },
-                }
-            },
-        }
-    }
-}
-
 impl DynamicPublisher {
     /// Launch a new dynamic publisher in task manager.
     ///
@@ -328,7 +277,6 @@ impl DynamicPublisher {
         }));
         tm.critical_task({
             let tm1 = tm.clone();
-            let core = core.clone();
             async move {
                 match tm1
                     .if_alive(
@@ -339,7 +287,60 @@ impl DynamicPublisher {
                                 RustlsConfig
                                 ::new().fallback(RustlsCertificate::new().key(certs.priv_pem).cert(certs.pub_pem)),
                             ),
-                        ).run(get(core.clone())),
+                        ).run(get({
+                            #[handler]
+                            async fn ep(service: Data<&DynamicPublisher>, uri: &Uri) -> Response {
+                                match aes2!({
+                                    let ident =
+                                        Identity::from_str(uri.path().get(1..).unwrap_or(""))
+                                            .context("Couldn't parse identity")
+                                            .err_external()?;
+                                    let mut kvs = publisher::v1::ResolveKeyValues(HashMap::new());
+                                    if let Some(found_kvs) =
+                                        service.0.0.db.get().await.err_internal()?.interact(move |db| {
+                                            db::get_keyvalues(db, &ident)
+                                        }).await.err_internal()?.err_internal()? {
+                                        let now = Utc::now();
+                                        match found_kvs {
+                                            publisher::Publish::V1(mut found) => {
+                                                for k in uri.query().unwrap_or("").split(",") {
+                                                    if let Some(v) = found.data.remove(k) {
+                                                        kvs.0.insert(k.to_string(), publisher::v1::ResolveValue {
+                                                            expires: now + Duration::minutes(v.ttl as i64),
+                                                            data: Some(v.data),
+                                                        });
+                                                    } else {
+                                                        kvs.0.insert(k.to_string(), publisher::v1::ResolveValue {
+                                                            expires: now + Duration::minutes(found.missing_ttl as i64),
+                                                            data: None,
+                                                        });
+                                                    }
+                                                }
+                                            },
+                                        }
+                                    }
+                                    return Ok(ResolveKeyValues::V1(kvs));
+                                }).await {
+                                    Ok(kvs) => poem::web::Json(kvs).into_response(),
+                                    Err(e) => {
+                                        match e {
+                                            VisErr::Internal(e) => {
+                                                service.0.0.log.warn_e(e, "Error processing request", ea!());
+                                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                                            },
+                                            VisErr::External(e) => {
+                                                return <String as IntoResponse>::with_status(
+                                                    e.to_string(),
+                                                    StatusCode::BAD_REQUEST,
+                                                ).into_response();
+                                            },
+                                        }
+                                    },
+                                }
+                            }
+
+                            ep
+                        })),
                     )
                     .await {
                     Some(r) => {
@@ -401,6 +402,43 @@ impl DynamicPublisher {
         return Ok(core);
     }
 
+    /// Allow publishing with this identity via the public publish endpoint.
+    pub async fn allow_identity(&self, identity: Identity) -> Result<(), loga::Error> {
+        let identity = identity.clone();
+        self.0.db.get().await?.interact(move |db| {
+            db::allow_identity(db, &identity)?;
+            return Ok(()) as Result<(), GoodError>;
+        }).await??;
+        return Ok(());
+    }
+
+    pub async fn disallow_identity(&self, identity: Identity) -> Result<(), loga::Error> {
+        let identity = identity.clone();
+        self.0.db.get().await?.interact(move |db| {
+            db::disallow_identity(db, &identity)?;
+            return Ok(()) as Result<(), GoodError>;
+        }).await??;
+        return Ok(());
+    }
+
+    pub async fn is_identity_allowed(&self, identity: Identity) -> Result<bool, loga::Error> {
+        let identity = identity.clone();
+        return Ok(self.0.db.get().await?.interact(move |db| {
+            return Ok(db::is_identity_allowed(db, &identity)?.is_some()) as Result<bool, GoodError>;
+        }).await??);
+    }
+
+    pub async fn list_allowed_identities(&self, after: Option<Identity>) -> Result<Vec<Identity>, loga::Error> {
+        return Ok(match after {
+            None => {
+                self.0.db.get().await?.interact(|db| db::list_allowed_identities_start(db)).await??
+            },
+            Some(a) => {
+                self.0.db.get().await?.interact(move |db| db::list_allowed_identities_after(db, &a)).await??
+            },
+        });
+    }
+
     /// Make data available to resolvers. This does two things: add it to the database,
     /// and trigger an initial announcement that this publisher is authoritative for
     /// the identity.
@@ -435,7 +473,7 @@ impl DynamicPublisher {
         return Ok(());
     }
 
-    pub async fn list_identities(&self, after: Option<Identity>) -> Result<Vec<Identity>, loga::Error> {
+    pub async fn list_announcements(&self, after: Option<Identity>) -> Result<Vec<Identity>, loga::Error> {
         return Ok(match after {
             None => {
                 self
@@ -541,10 +579,10 @@ async fn resolve_advertise_addr(a: AdvertiseAddrConfig) -> Result<SocketAddr, lo
 }
 
 #[doc(hidden)]
-pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> Result<(), loga::Error> {
+pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> Result<SystemEndpoints, loga::Error> {
     let log = log.fork(ea!(sys = "publisher"));
 
-    // Serve
+    // Serve server-server
     let core =
         DynamicPublisher::new(
             &log,
@@ -555,129 +593,220 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
             config.cert_path,
             config.db_path,
         ).await?;
-    tm.critical_task({
-        let log = log.fork(ea!(subsys = "admin"));
-        let tm1 = tm.clone();
-        async move {
-            struct Inner {
-                core: DynamicPublisher,
-                log: Log,
-            }
 
-            match tm1
-                .if_alive(Server::new(TcpListener::bind(config.admin_bind_addr.1)).run(Route::new().at("/info", get({
-                    #[handler]
-                    async fn ep(service: Data<&Arc<Inner>>) -> Response {
-                        return Json(InfoResponse {
-                            advertise_addr: service.core.0.advertise_addr,
-                            cert_pub_hash: zbase32::encode_full_bytes(&service.core.0.cert_pub_hash).to_string(),
-                        }).into_response();
-                    }
+    // Build endpoints
+    let public_endpoints = Route::new().at("/publish", post({
+        #[handler]
+        async fn ep(
+            Data(service): Data<&DynamicPublisher>,
+            Json(body): Json<crate::data::publisher::public::PublishRequest>,
+        ) -> Response {
+            match aes!({
+                // Before db access, make sure the stated identity actually created the message
+                if !body.identity.verify(&service.0.log, &body.signed.message, &body.signed.signature) {
+                    return Ok(StatusCode::BAD_REQUEST.into_response());
+                }
 
-                    ep
-                })).at("/publish", get({
-                    #[derive(Debug, Deserialize)]
-                    struct Params {
-                        after: Option<String>,
-                    }
+                // Check the identity is in the list of allowed to publish
+                if !service.is_identity_allowed(body.identity.clone()).await? {
+                    return Ok(StatusCode::UNAUTHORIZED.into_response());
+                }
 
-                    #[handler]
-                    async fn ep(service: Data<&Arc<Inner>>, query: Query<Params>) -> Response {
-                        match aes!({
-                            match &query.after {
-                                Some(i) => {
-                                    let identity = Identity::from_str(i)?;
-                                    return Ok(service.core.list_identities(Some(identity)).await?);
-                                },
-                                None => {
-                                    return Ok(service.core.list_identities(None).await?);
-                                },
-                            }
-                        }).await {
-                            Ok(d) => {
-                                return Json(d).into_response();
-                            },
-                            Err(e) => {
-                                service.log.warn_e(e, "Error getting published identities", ea!());
-                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                            },
-                        }
-                    }
-
-                    ep
-                })).at("/publish/:identity", post({
-                    #[handler]
-                    async fn ep(
-                        service: Data<&Arc<Inner>>,
-                        Path(identity): Path<String>,
-                        body: Json<crate::data::publisher::admin::PublishRequest>,
-                    ) -> Response {
-                        match aes!({
-                            let identity = Identity::from_str(&identity)?;
-                            service.core.publish(identity, body.0.announce, body.0.keyvalues).await?;
-                            return Ok(());
-                        }).await {
-                            Ok(()) => {
-                                return StatusCode::OK.into_response();
-                            },
-                            Err(e) => {
-                                service.log.warn_e(e, "Error publishing key values", ea!());
-                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                            },
-                        }
-                    }
-
-                    ep
-                }).delete({
-                    #[handler]
-                    async fn ep(service: Data<&Arc<Inner>>, Path(identity): Path<String>) -> Response {
-                        match aes!({
-                            let identity = Identity::from_str(&identity)?;
-                            service.core.unpublish(identity).await?;
-                            return Ok(());
-                        }).await {
-                            Ok(()) => {
-                                return StatusCode::OK.into_response();
-                            },
-                            Err(e) => {
-                                service.log.warn_e(e, "Error deleting published data", ea!(identity = identity));
-                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                            },
-                        }
-                    }
-
-                    ep
-                }).get({
-                    #[handler]
-                    async fn ep(service: Data<&Arc<Inner>>, Path(identity): Path<String>) -> Response {
-                        match aes!({
-                            let identity = Identity::from_str(&identity)?;
-                            return Ok(service.core.get_published_data(identity).await?);
-                        }).await {
-                            Ok(d) => {
-                                return Json(d).into_response();
-                            },
-                            Err(e) => {
-                                service.log.warn_e(e, "Error getting published identity data", ea!());
-                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                            },
-                        }
-                    }
-
-                    ep
-                })).with(AddData::new(Arc::new(Inner {
-                    core: core,
-                    log: log.clone(),
-                })))))
-                .await {
-                Some(r) => {
-                    return r.log_context_with(&log, "Exited with error", ea!(addr = config.admin_bind_addr));
+                // Publish it
+                let body2 =
+                    PublishRequestBody::from_bytes(
+                        &body.signed.message,
+                    ).log_context(&service.0.log, "Failed to deserialize message")?;
+                service.publish(body.identity, body2.announce, body2.keyvalues).await?;
+                return Ok(StatusCode::OK.into_response());
+            }).await {
+                Ok(r) => {
+                    return r;
                 },
-                None => {
-                    return Ok(());
+                Err(e) => {
+                    service.0.log.warn_e(e, "Error publishing key values", ea!());
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 },
             }
         }
+
+        ep
+    })).at("/unpublish", post({
+        #[handler]
+        async fn ep(
+            Data(service): Data<&DynamicPublisher>,
+            Json(body): Json<crate::data::publisher::public::UnpublishRequest>,
+        ) -> Response {
+            match aes!({
+                // Before db access, make sure the stated identity actually created the message
+                if !body.identity.verify(&service.0.log, &body.signed.message, &body.signed.signature) {
+                    return Ok(StatusCode::BAD_REQUEST.into_response());
+                }
+
+                // Check the identity is in the list of allowed to (un)publish
+                if !service.is_identity_allowed(body.identity.clone()).await? {
+                    return Ok(StatusCode::UNAUTHORIZED.into_response());
+                }
+
+                // Check that the message is recent to discourage repeat attacks
+                let body2 =
+                    UnpublishRequestBody::from_bytes(
+                        &body.signed.message,
+                    ).log_context(&service.0.log, "Failed to deserialize message")?;
+                if body2.now + Duration::seconds(10) < Utc::now() {
+                    return Ok(StatusCode::BAD_REQUEST.into_response());
+                }
+
+                // The request is by the identity and the identity recently made the request - do
+                // the unpublish.
+                service.unpublish(body.identity.clone()).await?;
+                return Ok(StatusCode::OK.into_response());
+            }).await {
+                Ok(r) => {
+                    return r;
+                },
+                Err(e) => {
+                    service.0.log.warn_e(e, "Error deleting published data", ea!(identity = body.identity));
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                },
+            }
+        }
+
+        ep
+    })).at("/info", get({
+        #[handler]
+        async fn ep(service: Data<&DynamicPublisher>) -> Response {
+            return Json(InfoResponse {
+                advertise_addr: service.0.0.advertise_addr,
+                cert_pub_hash: zbase32::encode_full_bytes(&service.0.0.cert_pub_hash).to_string(),
+            }).into_response();
+        }
+
+        ep
+    })).with(AddData::new(core.clone())).boxed();
+    let private_endpoints = Route::new()
+        // Publishing permissions
+        .at("/allowed_identities", get({
+            #[derive(Debug, Deserialize)]
+            struct Params {
+                after: Option<String>,
+            }
+
+            #[handler]
+            async fn ep(Data(service): Data<&DynamicPublisher>, query: Query<Params>) -> Response {
+                match aes!({
+                    match &query.after {
+                        Some(i) => {
+                            let identity = Identity::from_str(i)?;
+                            return Ok(service.list_allowed_identities(Some(identity)).await?);
+                        },
+                        None => {
+                            return Ok(service.list_allowed_identities(None).await?);
+                        },
+                    }
+                }).await {
+                    Ok(d) => {
+                        return Json(d).into_response();
+                    },
+                    Err(e) => {
+                        service.0.log.warn_e(e, "Error getting published identities", ea!());
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    },
+                }
+            }
+
+            ep
+        })).at("/allowed_identities/:identity", post({
+            #[handler]
+            async fn ep(Data(service): Data<&DynamicPublisher>, Path(identity): Path<String>) -> Response {
+                match aes!({
+                    let identity = Identity::from_str(&identity)?;
+                    return Ok(service.allow_identity(identity).await?);
+                }).await {
+                    Ok(d) => {
+                        return Json(d).into_response();
+                    },
+                    Err(e) => {
+                        service.0.log.warn_e(e, "Error registering identity for publishing", ea!());
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    },
+                }
+            }
+
+            ep
+        }).delete({
+            #[handler]
+            async fn ep(Data(service): Data<&DynamicPublisher>, Path(identity): Path<String>) -> Response {
+                match aes!({
+                    let identity = Identity::from_str(&identity)?;
+                    return Ok(service.disallow_identity(identity).await?);
+                }).await {
+                    Ok(d) => {
+                        return Json(d).into_response();
+                    },
+                    Err(e) => {
+                        service.0.log.warn_e(e, "Error unregistering identity for publishing", ea!());
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    },
+                }
+            }
+
+            ep
+        }))
+        // Announced identities
+        .at("/announcements", get({
+            #[derive(Debug, Deserialize)]
+            struct Params {
+                after: Option<String>,
+            }
+
+            #[handler]
+            async fn ep(Data(service): Data<&DynamicPublisher>, query: Query<Params>) -> Response {
+                match aes!({
+                    match &query.after {
+                        Some(i) => {
+                            let identity = Identity::from_str(i)?;
+                            return Ok(service.list_announcements(Some(identity)).await?);
+                        },
+                        None => {
+                            return Ok(service.list_announcements(None).await?);
+                        },
+                    }
+                }).await {
+                    Ok(d) => {
+                        return Json(d).into_response();
+                    },
+                    Err(e) => {
+                        service.0.log.warn_e(e, "Error getting published identities", ea!());
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    },
+                }
+            }
+
+            ep
+        })).at("/announcements/:identity", get({
+            #[handler]
+            async fn ep(Data(service): Data<&DynamicPublisher>, Path(identity): Path<String>) -> Response {
+                match aes!({
+                    let identity = Identity::from_str(&identity)?;
+                    return Ok(service.get_published_data(identity).await?);
+                }).await {
+                    Ok(d) => {
+                        return Json(d).into_response();
+                    },
+                    Err(e) => {
+                        service.0.log.warn_e(e, "Error getting published identity data", ea!());
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    },
+                }
+            }
+
+            ep
+        }))
+        // Etc
+        .with(AddData::new(core)).boxed();
+    return Ok(SystemEndpoints {
+        public: Some(public_endpoints),
+        private: Some(private_endpoints),
     });
-    return Ok(());
 }

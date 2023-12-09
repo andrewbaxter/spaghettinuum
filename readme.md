@@ -12,11 +12,7 @@ Current status: Planned features implemented, but not thoroughly tested
 
 # What is this
 
-- A reference implementation `spagh`, including a fully static as well as a database-backed configuration, plus an HTTP resolver, and a DNS bridge for people still using DNS
-- A command line tool `spagh-cli` for interacting with your node, managing identities, publishing data, and generating basic configs
-- A Rust library for embedding a resolver/publisher in your own software
-
-Conceptually Spaghettinuum is a distributed two-level key-value store, like DNS
+_Conceptually_ Spaghettinuum is a distributed two-level key-value store, like DNS
 
 - Level 1: an identity (like a DNS name, but based on your public key)
 - Level 2: an arbitrary key (like a DNS record type, but arbitrary)
@@ -24,19 +20,25 @@ Conceptually Spaghettinuum is a distributed two-level key-value store, like DNS
 
 You can use it for hosting your websites (or at least, the name bit, almost, several huge caveats below) and providing public service discovery for various services that don't exist yet.
 
+_This repo_ is
+
+- A reference implementation `spagh`, including a fully static as well as a database-backed configuration, plus an HTTP resolver, and a DNS bridge for people still using DNS
+- A command line tool `spagh-cli` for interacting with your node, managing identities, publishing data, and generating basic configs
+- A Rust library for embedding a resolver/publisher in your own software
+
 # Installing
 
-Install it with `cargo install spaghettinuum`.
+To get the server `spagh` and CLI `spagh-CLI`, install with `cargo install spaghettinuum`.
 
-This provides both the server `spagh` and CLI `spagh-cli`.
+If you're just interacting with a server, `curl` is all you need.
 
-# Querying
+# Try it on the public node
 
-There's a public gnocchi at `spaghetinnuum.isandrew.com`, ip `149.248.205.99`.
+There's a public node at `spaghetinnuum.isandrew.com`, ip `149.248.205.99` featuring a resolver and DNS bridge.
 
 ## Resolver
 
-It's running a resolver on port `43891`.
+The resolver runs on port `43891`.
 
 You can query arbitrary keys using the CLI (`cargo install spaghettinuum`):
 
@@ -52,7 +54,7 @@ curl https://spaghetinnuum.isandrew.com:43891/yryyyyyyyyei1n3eqbew6ysyy6ocdzseit
 
 ## DNS bridge
 
-There's a DNS bridge running on UDP port `53`.
+The DNS bridge runs on UDP port `53`.
 
 Try it out with `dig`:
 
@@ -62,7 +64,7 @@ dig @149.248.205.99 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67
 
 If you set your DNS resolver to `149.248.205.99` you can read my writings (WIP) in your browser at <https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s/5987> (WIP - note SSL issues working with traditional infrastructure, discussed below).
 
-## Environment variables
+# Querying
 
 ## Resolver API
 
@@ -84,6 +86,10 @@ The response has this format:
 If the identity can't be resolved you'll get an empty `{"v1": {}}` response.
 
 All resolvers must have this API.
+
+## The CLI and environment variables
+
+`spagh-cli` uses environment variable `SPAGH_RESOLVER` to find the server if none is specified. This should be a `host:port` pair.
 
 # Hosting a publisher or resolver
 
@@ -121,6 +127,8 @@ To use a card identity, with a Yubikey straight out of the extruder,
 
 The card must be plugged into the server so the server can sign publications.
 
+## Approve the identity
+
 ## Publish your records
 
 To publish you need a server with the publisher service enabled.
@@ -157,15 +165,13 @@ spagh-cli publish --server http://localhost card 0006:12345678 - ./data.json
 
 to publish using a card.
 
-If you're publishing to a server which requires authorization, you can set environment variable `SPAGH_PUBLISHER_TOKEN` which will be sent as a bearer token with the publishing requests.
-
 ## Publishing DNS
 
 DNS is normal published data with DNS-bridge specific keys, with a specific value JSON format understood by the DNS bridge service.
 
 You can use `spagh-cli generate-dns-data` to generate data for use with `spagh-cli publish` or `spagh-cli publish-dns` to publish records directly to a dynamic publisher.
 
-If you want to modify the data, the recognized DNS keys are listed in <src/data/standard.rs>.
+If you want to modify the data, the recognized DNS keys are listed in [tree/master/src/data/standard.rs](tree/master/src/data/standard.rs).
 
 ## Publishing a website
 
@@ -184,10 +190,10 @@ TLDR: There's no good options available immediately.
 
 # Architecture
 
-To do a lookup, first
+When you do a lookup, what happens is
 
 1. You send a request to the resolver
-2. The resolver queries the DHT to find the address of the authoritative publisher for the identity. This is like a DNS name server record - it says who is allowed to dictate records for a name.
+2. The resolver queries the DHT to find the address of the authoritative publisher for the identity. This is like a DNS NS record - it says who is allowed to dictate records for a name.
 3. Once the resolver gets the publisher, it opens a TLS connection to the publisher and asks for the keys.
 4. It sends you the results
 
@@ -199,15 +205,15 @@ The DHT is a modified Kademlia which uses public keys for node ids and requires 
 
 ## Why not DNS
 
-Anarchy
+You have a penchant for anarchy.
 
 Just kidding. The real reasons for disliking DNS are:
 
 - Paying large amounts of money to rent seeking middlemen
-- Pay up or lose everything you've ever built
+- Pay up or lose everything
 - Global competition over an artificially limited resource
 - Poor DNS registrar security/tech casting your domain names into the void
-- Increasing ability for corporations to arrange takeovers
+- Large corporations can take over bit player domains
 - IANA granting tiny fiefdoms to despots
 
 More and more things rely on DNS: Getting SSL certificates, email, Matrix, that new Twitter replacement. For all the reasons above, the faster we have an alternative the better.
@@ -246,9 +252,3 @@ My thoughts were:
 - Encoding binary in UTF-8 isn't hard. Base64 is widely available
 
 A binary API may be available in the future.
-
-## Double hashing
-
-This is a confession.
-
-In order to be compatible with GPG keys (so we can use security card hardware) messages are hashed _twice_ for Ed25519 signing. GPG does the same thing, apparently it's required by the spec.

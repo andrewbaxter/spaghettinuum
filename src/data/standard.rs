@@ -1,11 +1,15 @@
+// Server
 pub const ENV_CONFIG: &'static str = "SPAGH_CONFIG";
-pub const ENV_RESOLVER: &'static str = "SPAGH_RESOLVER";
-pub const ENV_PUBLISHER: &'static str = "SPAGH_PUBLISHER";
-pub const ENV_PUBLISHER_AUTH: &'static str = "SPAGH_PUBLISHER_TOKEN";
+
+// Client
+pub const ENV_PUB_ADDR: &'static str = "SPAGH";
+
+// Client
+pub const ENV_PRIV_ADDR: &'static str = "SPAGH_PRIV";
 pub const PORT_NODE: u16 = 43889;
 pub const PORT_PUBLISHER: u16 = 43890;
-pub const PORT_PUBLISHER_ADMIN: u16 = 43892;
-pub const PORT_RESOLVER: u16 = 43891;
+pub const PORT_PUB: u16 = 43891;
+pub const PORT_PRIV: u16 = 43892;
 pub const KEY_DNS_A: &'static str = "dsf9oyfz83fatqpscp9yt8wkuw";
 pub const KEY_DNS_AAAA: &'static str = "wwfukygd6tykiqrmi3jp6qnoiw";
 pub const KEY_DNS_CNAME: &'static str = "gi3saqn8pfn7tmwbd4pxj3tour";
