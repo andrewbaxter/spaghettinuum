@@ -167,12 +167,12 @@ macro_rules! aes2{
 
 pub async fn reqwest_get(r: Response, limit: usize) -> Result<Vec<u8>, loga::Error> {
     let status = r.status();
-    let mut resp_bytes = r.bytes().await.context("Error reading response body", ea!())?;
+    let mut resp_bytes = r.bytes().await.context("Error reading response body")?;
     resp_bytes.truncate(limit);
     let resp_bytes = resp_bytes.to_vec();
     if status.is_client_error() || status.is_server_error() {
         return Err(
-            loga::Error::new(
+            loga::err_with(
                 "Got response with error code",
                 ea!(status = status, body = String::from_utf8_lossy(&resp_bytes)),
             ),
@@ -183,16 +183,13 @@ pub async fn reqwest_get(r: Response, limit: usize) -> Result<Vec<u8>, loga::Err
 
 pub async fn lookup_ip(lookup: &str, ipv4_only: bool, ipv6_only: bool) -> Result<IpAddr, loga::Error> {
     let lookup =
-        Url::parse(&lookup).context("Couldn't parse `advertise_addr` lookup as URL", ea!(lookup = lookup))?;
+        Url::parse(&lookup).context_with("Couldn't parse `advertise_addr` lookup as URL", ea!(lookup = lookup))?;
     let lookup_host =
-        lookup
-            .host()
-            .ok_or_else(|| loga::Error::new("Missing host portion in `advertise_addr` url", ea!()))?
-            .to_string();
+        lookup.host().ok_or_else(|| loga::err("Missing host portion in `advertise_addr` url"))?.to_string();
     let lookup_port = lookup.port().unwrap_or(match lookup.scheme() {
         "http" => 80,
         "https" => 443,
-        _ => return Err(loga::Error::new("Only http/https are supported for ip lookups", ea!())),
+        _ => return Err(loga::err("Only http/https are supported for ip lookups")),
     });
     let ip =
         reqwest_get(
@@ -201,7 +198,7 @@ pub async fn lookup_ip(lookup: &str, ipv4_only: bool, ipv6_only: bool) -> Result
                     &lookup_host,
                     format!("{}:{}", lookup_host, lookup_port)
                         .to_socket_addrs()
-                        .context("Failed to look up lookup host", ea!(host = lookup_host))?
+                        .context_with("Failed to look up lookup host", ea!(host = lookup_host))?
                         .into_iter()
                         .filter(|a| {
                             if ipv4_only && !a.is_ipv4() {
@@ -214,7 +211,7 @@ pub async fn lookup_ip(lookup: &str, ipv4_only: bool, ipv6_only: bool) -> Result
                         })
                         .next()
                         .ok_or_else(
-                            || loga::Error::new(
+                            || loga::err_with(
                                 "Unable to resolve any addresses (matching ipv4/6 requirements) via lookup",
                                 ea!(lookup = lookup),
                             ),
@@ -230,7 +227,7 @@ pub async fn lookup_ip(lookup: &str, ipv4_only: bool, ipv6_only: bool) -> Result
     let ip =
         String::from_utf8(
             ip.clone(),
-        ).context("Failed to parse response as utf8", ea!(resp = String::from_utf8_lossy(&ip)))?;
-    let ip = IpAddr::from_str(&ip).context("Failed to parse response as socket addr", ea!(ip = ip))?;
+        ).context_with("Failed to parse response as utf8", ea!(resp = String::from_utf8_lossy(&ip)))?;
+    let ip = IpAddr::from_str(&ip).context_with("Failed to parse response as socket addr", ea!(ip = ip))?;
     return Ok(ip);
 }

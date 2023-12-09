@@ -29,7 +29,6 @@ use chrono::{
 };
 use ipnet::IpAdd;
 use itertools::Itertools;
-use loga::Log;
 use spaghettinuum::{
     data::{
         standard::PORT_NODE,
@@ -58,9 +57,9 @@ async fn main() {
         let mut prev_node = None;
         for i in 0 .. 1000 {
             let log = &if i == 0 {
-                Log::new(loga::Level::Debug)
+                loga::new(loga::Level::Debug)
             } else {
-                Log::new(loga::Level::Warn)
+                loga::new(loga::Level::Warn)
             };
             let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 1, 1).saturating_add(i), PORT_NODE));
             let node =

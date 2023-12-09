@@ -297,7 +297,10 @@ impl Node {
                                 <[Vec<NodeState>; HASH_SIZE]>::try_from(
                                     p.initial_buckets,
                                 ).map_err(
-                                    |e| log.new_err("Bucket count mismatch", ea!(got = e.len(), want = HASH_SIZE)),
+                                    |e| log.new_err_with(
+                                        "Bucket count mismatch",
+                                        ea!(got = e.len(), want = HASH_SIZE),
+                                    ),
                                 )?,
                             ),
                         ),
@@ -327,7 +330,7 @@ impl Node {
         log.info("Starting", ea!());
         let sock = {
             let log = log.fork(ea!(addr = bind_addr));
-            UdpSocket::bind(bind_addr.1).await.log_context(&log, "Failed to open node UDP port", ea!())?
+            UdpSocket::bind(bind_addr.1).await.log_context(&log, "Failed to open node UDP port")?
         };
         let own_id_hash = hash(&own_id);
         let (find_timeout_write, find_timeout_recv) = unbounded::<NextFindTimeout>();
@@ -376,7 +379,7 @@ impl Node {
                     match tokio::fs::write(persist_path, &serde_json::to_vec(&Persisted {
                         own_secret: dir.0.own_secret.clone(),
                         initial_buckets: buckets.into(),
-                    }).unwrap()).await.context("Failed to write state to file", ea!()) {
+                    }).unwrap()).await.context("Failed to write state to file") {
                         Ok(_) => { },
                         Err(e) => log.warn_e(e, "Failed to persist state", ea!()),
                     };
@@ -537,7 +540,7 @@ impl Node {
                                     Ok(()) => Ok(()),
                                     Err(e) => Err(e),
                                 },
-                                Err(e) => Err(e.context("Failed to bincode deserialize packet", ea!())),
+                                Err(e) => Err(e.context("Failed to bincode deserialize packet")),
                             } {
                                 Ok(()) => { },
                                 Err(e) => {
@@ -1073,16 +1076,13 @@ impl Node {
                 Message::Store(m) => {
                     self.0.log.debug("Storing", ea!(value = m.key.dbg_str()));
                     if !m.key.verify(&self.0.log, &m.value.message, &m.value.signature) {
-                        return Err(self.0.log.new_err("Store request failed signature validation", ea!()))
+                        return Err(self.0.log.new_err("Store request failed signature validation"))
                     };
                     let until_expire = m.value.expires.signed_duration_since(Utc::now());
                     if until_expire > chrono::Duration::hours(24) || until_expire <= chrono::Duration::zero() {
-                        return Err(
-                            self.0.log.new_err("Store request failed, expired or invalid expiration", ea!()),
-                        );
+                        return Err(self.0.log.new_err("Store request failed, expired or invalid expiration"));
                     }
-                    let got_value =
-                        m.value.parse().log_context(&self.0.log, "Failed to parse received value", ea!())?;
+                    let got_value = m.value.parse().log_context(&self.0.log, "Failed to parse received value")?;
                     match self.0.store.lock().unwrap().entry(m.key) {
                         Entry::Occupied(mut e) => {
                             let stored_value = e.get().value.parse().unwrap();

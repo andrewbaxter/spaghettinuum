@@ -1,41 +1,31 @@
-#[derive(Debug)]
-pub struct GoodError(pub String);
-
-impl std::fmt::Display for GoodError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl std::error::Error for GoodError { }
-
-impl From<rusqlite::Error> for GoodError {
-    fn from(value: rusqlite::Error) -> Self {
-        GoodError(value.to_string())
-    }
-}
+use good_ormning_runtime::GoodError;
+use good_ormning_runtime::ToGoodError;
 
 pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
-    db.execute(
-        "create table if not exists __good_version (rid int primary key, version bigint not null, lock int not null);",
-        (),
-    )?;
-    db.execute("insert into __good_version (rid, version, lock) values (0, -1, 0) on conflict do nothing;", ())?;
+    {
+        let query =
+            "create table if not exists __good_version (rid int primary key, version bigint not null, lock int not null);";
+        db.execute(query, ()).to_good_error_query(query)?;
+    }
+    {
+        let query = "insert into __good_version (rid, version, lock) values (0, -1, 0) on conflict do nothing;";
+        db.execute(query, ()).to_good_error_query(query)?;
+    }
     loop {
-        let txn = db.transaction()?;
+        let txn = db.transaction().to_good_error(|| "Starting transaction".to_string())?;
         match (|| {
-            let mut stmt =
-                txn.prepare("update __good_version set lock = 1 where rid = 0 and lock = 0 returning version")?;
-            let mut rows = stmt.query(())?;
-            let version = match rows.next()? {
+            let query = "update __good_version set lock = 1 where rid = 0 and lock = 0 returning version";
+            let mut stmt = txn.prepare(query).to_good_error_query(query)?;
+            let mut rows = stmt.query(()).to_good_error_query(query)?;
+            let version = match rows.next().to_good_error_query(query)? {
                 Some(r) => {
-                    let ver: i64 = r.get(0usize)?;
+                    let ver: i64 = r.get(0usize).to_good_error_query(query)?;
                     ver
                 },
                 None => return Ok(false),
             };
             drop(rows);
-            stmt.finalize()?;
+            stmt.finalize().to_good_error_query(query)?;
             if version > 0i64 {
                 return Err(
                     GoodError(
@@ -48,12 +38,14 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
                 );
             }
             if version < 0i64 {
-                txn.execute(
-                    "create table \"cache_persist\" ( \"value\" text , \"identity\" blob not null , \"key\" text not null , \"expires\" text not null )",
-                    (),
-                )?;
+                {
+                    let query =
+                        "create table \"cache_persist\" ( \"value\" text , \"identity\" blob not null , \"key\" text not null , \"expires\" text not null )";
+                    txn.execute(query, ()).to_good_error_query(query)?
+                };
             }
-            txn.execute("update __good_version set version = $1, lock = 0", rusqlite::params![0i64])?;
+            let query = "update __good_version set version = $1, lock = 0";
+            txn.execute(query, rusqlite::params![0i64]).to_good_error_query(query)?;
             let out: Result<bool, GoodError> = Ok(true);
             out
         })() {
@@ -90,18 +82,29 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
 }
 
 pub fn push(
-    db: &mut rusqlite::Connection,
-    identity: &crate::data::identity::Identity,
+    db: &rusqlite::Connection,
+    ident: &crate::data::identity::Identity,
     key: &str,
     expires: chrono::DateTime<chrono::Utc>,
     value: Option<&str>,
 ) -> Result<(), GoodError> {
+    let query =
+        "insert into \"cache_persist\" ( \"identity\" , \"key\" , \"expires\" , \"value\" ) values ( $1 , $2 , $3 , $4 )";
     db
         .execute(
-            "insert into \"cache_persist\" ( \"identity\" , \"key\" , \"expires\" , \"value\" ) values ( $1 , $2 , $3 , $4 )",
-            rusqlite::params![identity.to_sql(), key, expires.to_rfc3339(), value.map(|value| value)],
+            query,
+            rusqlite::params![
+                <crate::data::identity::Identity as good_ormning_runtime
+                ::sqlite
+                ::GoodOrmningCustomBytes<crate::data::identity::Identity>>::to_sql(
+                    &ident,
+                ),
+                key,
+                expires.to_rfc3339(),
+                value.map(|value| value)
+            ],
         )
-        .map_err(|e| GoodError(e.to_string()))?;
+        .to_good_error_query(query)?;
     Ok(())
 }
 
@@ -113,40 +116,44 @@ pub struct DbRes1 {
     pub value: Option<String>,
 }
 
-pub fn list(db: &mut rusqlite::Connection, row: i64) -> Result<Vec<DbRes1>, GoodError> {
+pub fn list(db: &rusqlite::Connection, row: i64) -> Result<Vec<DbRes1>, GoodError> {
     let mut out = vec![];
-    let mut stmt =
-        db.prepare(
-            "select \"cache_persist\" . \"rowid\" , \"cache_persist\" . \"identity\" , \"cache_persist\" . \"key\" , \"cache_persist\" . \"expires\" , \"cache_persist\" . \"value\" from \"cache_persist\" where ( \"cache_persist\" . \"rowid\" < $1 ) order by \"cache_persist\" . \"rowid\" desc limit 50",
-        )?;
-    let mut rows = stmt.query(rusqlite::params![row]).map_err(|e| GoodError(e.to_string()))?;
-    while let Some(r) = rows.next()? {
+    let query =
+        "select \"cache_persist\" . \"rowid\" , \"cache_persist\" . \"identity\" , \"cache_persist\" . \"key\" , \"cache_persist\" . \"expires\" , \"cache_persist\" . \"value\" from \"cache_persist\" where ( \"cache_persist\" . \"rowid\" < $1 ) order by \"cache_persist\" . \"rowid\" desc limit 50";
+    let mut stmt = db.prepare(query).to_good_error_query(query)?;
+    let mut rows = stmt.query(rusqlite::params![row]).to_good_error_query(query)?;
+    while let Some(r) = rows.next().to_good_error(|| format!("Getting row in query [{}]", query))? {
         out.push(DbRes1 {
             rowid: {
-                let x: i64 = r.get(0usize)?;
+                let x: i64 = r.get(0usize).to_good_error(|| format!("Getting result {}", 0usize))?;
                 x
             },
             identity: {
-                let x: Vec<u8> = r.get(1usize)?;
-                let x = crate::data::identity::Identity::from_sql(x).map_err(|e| GoodError(e.to_string()))?;
+                let x: Vec<u8> = r.get(1usize).to_good_error(|| format!("Getting result {}", 1usize))?;
+                let x =
+                    <crate::data::identity::Identity as good_ormning_runtime
+                    ::sqlite
+                    ::GoodOrmningCustomBytes<crate::data::identity::Identity>>::from_sql(
+                        x,
+                    ).to_good_error(|| format!("Parsing result {}", 1usize))?;
                 x
             },
             key: {
-                let x: String = r.get(2usize)?;
+                let x: String = r.get(2usize).to_good_error(|| format!("Getting result {}", 2usize))?;
                 x
             },
             expires: {
-                let x: String = r.get(3usize)?;
+                let x: String = r.get(3usize).to_good_error(|| format!("Getting result {}", 3usize))?;
                 let x =
                     chrono::DateTime::<chrono::Utc>::from(
                         chrono::DateTime::<chrono::FixedOffset>::parse_from_rfc3339(
                             &x,
-                        ).map_err(|e| GoodError(e.to_string()))?,
+                        ).to_good_error(|| format!("Getting result {}", 3usize))?,
                     );
                 x
             },
             value: {
-                let x: Option<String> = r.get(4usize)?;
+                let x: Option<String> = r.get(4usize).to_good_error(|| format!("Getting result {}", 4usize))?;
                 x
             },
         });

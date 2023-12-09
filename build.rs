@@ -8,7 +8,7 @@ use good_ormning::{
         query::{
             helpers::{
                 set_field,
-                field_eq,
+                eq_field,
             },
             expr::{
                 Expr,
@@ -51,10 +51,10 @@ fn main() {
             new_insert(
                 &persist,
                 vec![
-                    set_field(&persist_ident),
-                    set_field(&persist_key),
-                    set_field(&persist_expires),
-                    set_field(&persist_value)
+                    set_field("ident", &persist_ident),
+                    set_field("key", &persist_key),
+                    set_field("expires", &persist_expires),
+                    set_field("value", &persist_value)
                 ],
             ).build_query("push", QueryResCount::None),
             new_select(&persist)
@@ -68,7 +68,7 @@ fn main() {
                     }),
                 })
                 .order(Expr::Field(persist_row.clone()), Order::Desc)
-                .limit(50)
+                .limit(Expr::LitI32(50))
                 .build_query("list", QueryResCount::Many)
         ]).unwrap();
     }
@@ -101,16 +101,16 @@ fn main() {
             (0usize, latest_version)
         ], vec![
             // Queries
-            new_insert(&announce, vec![set_field(&announce_ident), set_field(&announce_value)])
-                .on_conflict(InsertConflict::DoUpdate(vec![set_field(&announce_value)]))
+            new_insert(&announce, vec![set_field("ident", &announce_ident), set_field("value", &announce_value)])
+                .on_conflict(InsertConflict::DoUpdate(vec![set_field("value", &announce_value)]))
                 .build_query("set_announce", QueryResCount::None),
             new_delete(&announce)
-                .where_(field_eq(&announce_ident))
+                .where_(eq_field("ident", &announce_ident))
                 .build_query("delete_announce", QueryResCount::None),
             new_select(&announce)
                 .return_fields(&[&announce_ident, &announce_value])
                 .order(Expr::Field(announce_ident.clone()), Order::Asc)
-                .limit(50)
+                .limit(Expr::LitI32(50))
                 .build_query("list_announce_start", QueryResCount::Many),
             new_select(&announce)
                 .return_fields(&[&announce_ident, &announce_value])
@@ -123,17 +123,20 @@ fn main() {
                     }),
                 })
                 .order(Expr::Field(announce_ident.clone()), Order::Asc)
-                .limit(50)
+                .limit(Expr::LitI32(50))
                 .build_query("list_announce_after", QueryResCount::Many),
-            new_insert(&publish, vec![set_field(&publish_ident), set_field(&publish_keyvalues)])
-                .on_conflict(InsertConflict::DoUpdate(vec![set_field(&publish_keyvalues)]))
+            new_insert(
+                &publish,
+                vec![set_field("ident", &publish_ident), set_field("keyvalues", &publish_keyvalues)],
+            )
+                .on_conflict(InsertConflict::DoUpdate(vec![set_field("keyvalues", &publish_keyvalues)]))
                 .build_query("set_keyvalues", QueryResCount::None),
             new_select(&publish)
                 .return_fields(&[&publish_keyvalues])
-                .where_(field_eq(&publish_ident))
+                .where_(eq_field("ident", &publish_ident))
                 .build_query("get_keyvalues", QueryResCount::MaybeOne),
             new_delete(&publish)
-                .where_(field_eq(&publish_ident))
+                .where_(eq_field("ident", &publish_ident))
                 .build_query("delete_keyvalues", QueryResCount::None)
         ]).unwrap();
     }

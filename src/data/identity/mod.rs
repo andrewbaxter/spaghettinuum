@@ -1,4 +1,7 @@
 use std::fmt::Display;
+use good_ormning_runtime::sqlite::{
+    GoodOrmningCustomBytes,
+};
 use loga::{
     ea,
     Log,
@@ -43,23 +46,25 @@ impl std::fmt::Debug for Identity {
     }
 }
 
+impl GoodOrmningCustomBytes<Identity> for Identity {
+    fn to_sql<'a>(value: &'a Identity) -> std::borrow::Cow<'a, [u8]> {
+        return value.to_bytes().into();
+    }
+
+    fn from_sql(value: Vec<u8>) -> Result<Identity, String> {
+        return Self::from_bytes(&value).map_err(|e| e.to_string());
+    }
+}
+
 impl Identity {
     pub fn from_str(data: &str) -> Result<Self, loga::Error> {
         return Ok(
             Self::from_bytes(
                 &zbase32::decode_full_bytes_str(
                     data,
-                ).map_err(|e| loga::Error::new("Failed to decode zbase32 for identity", ea!(err = e)))?,
+                ).map_err(|e| loga::err_with("Failed to decode zbase32 for identity", ea!(err = e)))?,
             )?,
         );
-    }
-
-    pub fn to_sql(&self) -> Vec<u8> {
-        return self.to_bytes();
-    }
-
-    pub fn from_sql(data: Vec<u8>) -> Result<Self, loga::Error> {
-        return Self::from_bytes(&data);
     }
 
     pub fn new() -> (Self, IdentitySecret) {

@@ -1,5 +1,6 @@
 pub mod v1;
 
+use good_ormning_runtime::sqlite::GoodOrmningCustomBytes;
 pub use v1::*;
 use crate::versioned;
 
@@ -9,12 +10,12 @@ versioned!(
     (V1, 1, v1::Announcement)
 );
 
-impl Announcement {
-    pub fn to_sql(&self) -> Vec<u8> {
-        return bincode::serialize(self).unwrap();
+impl GoodOrmningCustomBytes<Announcement> for Announcement {
+    fn to_sql<'a>(value: &'a Announcement) -> std::borrow::Cow<'a, [u8]> {
+        return bincode::serialize(value).unwrap().into();
     }
 
-    pub fn from_sql(data: Vec<u8>) -> Result<Self, loga::Error> {
-        return Ok(bincode::deserialize(&data)?);
+    fn from_sql(value: Vec<u8>) -> Result<Announcement, String> {
+        return bincode::deserialize(&value).map_err(|e| e.to_string());
     }
 }

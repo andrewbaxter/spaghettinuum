@@ -55,7 +55,7 @@ mod tests {
             dalek_sig.r_bytes().iter().format(" "),
             dalek_sig.s_bytes().iter().format(" ")
         );
-        let log = &loga::Log::new(loga::Level::Debug);
+        let log = &loga::new(loga::Level::Debug);
         if !ident.verify(log, message.as_bytes(), &dalek_sig.to_bytes()) {
             panic!("verify failed");
         }

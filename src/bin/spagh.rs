@@ -5,7 +5,6 @@ use aargvark::{
 use itertools::Itertools;
 use loga::{
     ea,
-    Log,
     ResultContext,
 };
 use spaghettinuum::{
@@ -29,7 +28,7 @@ struct Args {
 async fn main() {
     async fn inner() -> Result<(), loga::Error> {
         let args = aargvark::vark::<Args>();
-        let log = &Log::new(if args.debug.is_some() {
+        let log = &loga::new(if args.debug.is_some() {
             loga::Level::Debug
         } else {
             loga::Level::Info
@@ -42,7 +41,7 @@ async fn main() {
                 std::env::VarError::NotPresent => None,
                 std::env::VarError::NotUnicode(_) => {
                     return Err(
-                        loga::Error::new(
+                        loga::err_with(
                             "Error parsing env var as unicode",
                             ea!(env = spaghettinuum::data::standard::ENV_CONFIG),
                         ),
@@ -51,10 +50,10 @@ async fn main() {
             },
         } {
             let log = log.fork(ea!(source = "env"));
-            serde_json::from_str::<Config>(&c).log_context(&log, "Parsing config", ea!())?
+            serde_json::from_str::<Config>(&c).log_context(&log, "Parsing config")?
         } else {
             return Err(
-                log.new_err(
+                log.new_err_with(
                     "No config passed on command line, and no config set in env var",
                     ea!(env = spaghettinuum::data::standard::ENV_CONFIG),
                 ),

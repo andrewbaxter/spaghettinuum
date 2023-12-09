@@ -261,7 +261,7 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
             return Err(
-                loga::Error::new("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
             );
         }
         return Ok(());
@@ -273,13 +273,13 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
             return Err(
-                loga::Error::new("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
             );
         }
         return Ok(
             String::from_utf8(
                 body.clone(),
-            ).context(
+            ).context_with(
                 "Failed to parse response as bytes",
                 ea!(status = status, body = String::from_utf8_lossy(&body)),
             )?,
@@ -292,7 +292,7 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
             return Err(
-                loga::Error::new("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
             );
         }
         return Ok(body);
@@ -312,7 +312,7 @@ fn default_url(
                     Some(
                         Uri::from_str(
                             &e,
-                        ).log_context(log, "Couldn't parse environment variable", ea!(env = env_key))?,
+                        ).log_context_with(log, "Couldn't parse environment variable", ea!(env = env_key))?,
                     );
             },
             Err(e) => {
@@ -320,7 +320,7 @@ fn default_url(
                     env::VarError::NotPresent => { },
                     env::VarError::NotUnicode(e) => {
                         return Err(
-                            log.new_err(
+                            log.new_err_with(
                                 "Environment variable isn't valid unicode",
                                 ea!(env = env_key, value = e.to_string_lossy()),
                             ),
@@ -361,7 +361,7 @@ fn publisher_admin_client(log: &loga::Log) -> Result<reqwest::Client, loga::Erro
                 AUTHORIZATION,
                 header::HeaderValue::from_str(
                     &format!("Bearer {}", &e),
-                ).log_context(log, "Token isn't a valid header value", ea!())?,
+                ).log_context(log, "Token isn't a valid header value")?,
             );
             c = c.default_headers(headers);
         },
@@ -370,7 +370,7 @@ fn publisher_admin_client(log: &loga::Log) -> Result<reqwest::Client, loga::Erro
                 env::VarError::NotPresent => { },
                 env::VarError::NotUnicode(e) => {
                     return Err(
-                        log.new_err(
+                        log.new_err_with(
                             "Environment variable isn't valid unicode",
                             ea!(env = ENV_PUBLISHER_AUTH, value = e.to_string_lossy()),
                         ),
@@ -404,11 +404,11 @@ async fn publish(
             .await
             .check_bytes()
             .await
-            .log_context(log, "Error getting publisher info", ea!())?;
+            .log_context(log, "Error getting publisher info")?;
     let info: crate::data::publisher::admin::InfoResponse =
         serde_json::from_slice(
             &info_body,
-        ).log_context(
+        ).log_context_with(
             log,
             "Error parsing info response from publisher as json",
             ea!(body = String::from_utf8_lossy(&info_body)),
@@ -418,7 +418,7 @@ async fn publish(
         cert_hash: zbase32::decode_full_bytes_str(
             &info.cert_pub_hash,
         ).map_err(
-            |e| log.new_err("Couldn't parse zbase32 pub cert hash in response from publisher", ea!(text = e)),
+            |e| log.new_err_with("Couldn't parse zbase32 pub cert hash in response from publisher", ea!(text = e)),
         )?,
         published: Utc::now(),
     }.to_bytes();
@@ -434,23 +434,22 @@ async fn publish(
         args::Identity::Card { pcsc_id, pin } => {
             let mut card: Card<Open> =
                 PcscBackend::open_by_ident(&pcsc_id, None)
-                    .log_context(log, "Failed to open card", ea!(card = pcsc_id))?
+                    .log_context_with(log, "Failed to open card", ea!(card = pcsc_id))?
                     .into();
-            let mut transaction = card.transaction().log_context(log, "Failed to start card transaction", ea!())?;
+            let mut transaction = card.transaction().log_context(log, "Failed to start card transaction")?;
             let pin = if pin == "-" {
                 rpassword::prompt_password(
                     "Enter your pin to sign announcement: ",
-                ).log_context(log, "Error securely reading pin", ea!())?
+                ).log_context(log, "Error securely reading pin")?
             } else {
                 pin
             };
             transaction
                 .verify_user_for_signing(pin.as_bytes())
-                .log_context(log, "Error unlocking card with pin", ea!(card = pcsc_id))?;
+                .log_context_with(log, "Error unlocking card with pin", ea!(card = pcsc_id))?;
             let mut user = transaction.signing_card().unwrap();
             let signer_interact = || eprintln!("Card {} requests interaction to sign", pcsc_id);
-            let mut signer =
-                user.signer(&signer_interact).log_context(log, "Failed to get signer from card", ea!())?;
+            let mut signer = user.signer(&signer_interact).log_context(log, "Failed to get signer from card")?;
             match es!({
                 match signer.public() {
                     sequoia_openpgp::packet::Key::V4(k) => match k.mpis() {
@@ -465,7 +464,7 @@ async fn publish(
                                 signature: extract_pgp_ed25519_sig(
                                     &signer
                                         .sign(HashAlgorithm::SHA512, &hash)
-                                        .map_err(|e| loga::Error::new("Card signature failed", ea!(err = e)))?,
+                                        .map_err(|e| loga::err_with("Card signature failed", ea!(err = e)))?,
                                 ).to_vec(),
                             })));
                         },
@@ -480,7 +479,7 @@ async fn publish(
             })? {
                 Some(r) => r,
                 None => {
-                    return Err(loga::Error::new("Unsupported key type - must be Ed25519", ea!()));
+                    return Err(loga::err("Unsupported key type - must be Ed25519"));
                 },
             }
         },
@@ -488,13 +487,13 @@ async fn publish(
     c.post(format!("{}publish/{}", server, identity.to_string())).json(&PublishRequest {
         announce: announcement,
         keyvalues: keyvalues,
-    }).send().await.check().await.log_context(log, "Error making publish request", ea!())?;
+    }).send().await.check().await.log_context(log, "Error making publish request")?;
     return Ok(());
 }
 
 #[tokio::main]
 async fn main() {
-    let log = Log::new(loga::Level::Info);
+    let log = loga::new(loga::Level::Info);
 
     async fn inner(log: &Log) -> Result<(), loga::Error> {
         match aargvark::vark::<args::Args>() {
@@ -505,7 +504,7 @@ async fn main() {
                     fs::write(
                         args.path,
                         &serde_json::to_string_pretty(&secret).unwrap(),
-                    ).log_context(&log, "Failed to write identity secret to file", ea!())?;
+                    ).log_context(&log, "Failed to write identity secret to file")?;
                 }
                 println!("{}", serde_json::to_string_pretty(&json!({
                     "identity": ident.to_string()
@@ -520,14 +519,14 @@ async fn main() {
             },
             args::Args::ListCardIdentities => {
                 let mut out = vec![];
-                for card in PcscBackend::cards(None).log_context(log, "Failed to list smart cards", ea!())? {
+                for card in PcscBackend::cards(None).log_context(log, "Failed to list smart cards")? {
                     let mut card: Card<Open> = card.into();
                     let mut transaction =
-                        card.transaction().log_context(log, "Error starting transaction with card", ea!())?;
+                        card.transaction().log_context(log, "Error starting transaction with card")?;
                     let card_id =
                         transaction
                             .application_identifier()
-                            .log_context(log, "Error getting gpg id of card", ea!())?
+                            .log_context(log, "Error getting gpg id of card")?
                             .ident();
                     let identity = match pgp::card_to_ident(&mut transaction) {
                         Ok(i) => match i {
@@ -614,13 +613,13 @@ async fn main() {
                                         v
                                             .split_once("/")
                                             .ok_or_else(
-                                                || loga::Error::new(
+                                                || loga::err_with(
                                                     "Incorrect mx record specification, must be like `PRIORITY/NAME`",
                                                     ea!(entry = v),
                                                 ),
                                             )?;
                                     let priority =
-                                        u16::from_str(&priority).context("Couldn't parse priority as int", ea!())?;
+                                        u16::from_str(&priority).context("Couldn't parse priority as int")?;
                                     values.push((priority, name.to_string()));
                                 }
                                 kvs.insert(KEY_DNS_MX.to_string(), PublishValue {
@@ -669,7 +668,7 @@ async fn main() {
                         })? {
                             Some(r) => r,
                             None => {
-                                return Err(loga::Error::new("Unsupported key type - must be Ed25519", ea!()));
+                                return Err(loga::err("Unsupported key type - must be Ed25519"));
                             },
                         }
                     },
@@ -696,7 +695,7 @@ async fn main() {
                     let mut identities: Vec<Identity> =
                         serde_json::from_slice(
                             &res,
-                        ).log_context(log, "Failed to parse response from publisher admin", ea!())?;
+                        ).log_context(log, "Failed to parse response from publisher admin")?;
                     for i in &identities {
                         out.push(json!({
                             "identity": i.to_string()
@@ -748,9 +747,7 @@ async fn main() {
                     (config.publisher_advertise_addr_ipv4.is_some() as i32) +
                     (config.publisher_advertise_addr_ipv6.is_some() as i32) >
                     1 {
-                    return Err(
-                        log.new_err("Only one of --advertise-addr, --ipv4 and --ipv6 may be specified", ea!()),
-                    );
+                    return Err(log.new_err("Only one of --advertise-addr, --ipv4 and --ipv6 may be specified"));
                 }
                 let cwd = current_dir().unwrap();
                 let config: Config = Config {
@@ -876,13 +873,12 @@ async fn main() {
                                     v
                                         .split_once("/")
                                         .ok_or_else(
-                                            || loga::Error::new(
+                                            || loga::err_with(
                                                 "Incorrect mx record specification, must be like `PRIORITY/NAME`",
                                                 ea!(entry = v),
                                             ),
                                         )?;
-                                let priority =
-                                    u16::from_str(&priority).context("Couldn't parse priority as int", ea!())?;
+                                let priority = u16::from_str(&priority).context("Couldn't parse priority as int")?;
                                 values.push((priority, name.to_string()));
                             }
                             kvs.insert(KEY_DNS_MX.to_string(), PublishValue {

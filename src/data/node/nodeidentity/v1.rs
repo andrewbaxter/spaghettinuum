@@ -7,7 +7,6 @@ use ed25519_dalek::SigningKey;
 use ed25519_dalek::Verifier;
 use ed25519_dalek::VerifyingKey;
 use loga::ResultContext;
-use loga::ea;
 use rand::rngs::OsRng;
 use serde::{
     Deserialize,
@@ -36,7 +35,7 @@ impl<'de> Deserialize<'de> for Ed25519NodeIdentity {
             Ed25519NodeIdentity(
                 VerifyingKey::from_bytes(
                     &<[u8; ed25519_dalek::PUBLIC_KEY_LENGTH]>::deserialize(deserializer)
-                        .context("Failed to extract identity bytes", ea!())
+                        .context("Failed to extract identity bytes")
                         .map_err(|e| serde::de::Error::custom(e.to_string()))?,
                 ).map_err(|e| serde::de::Error::custom(format!("Failed to parse bytes as ed25519 key: {}", e)))?,
             ),
@@ -95,7 +94,7 @@ impl<'de> Deserialize<'de> for Ed25519NodeSecret {
             Ed25519NodeSecret(
                 SigningKey::from_bytes(
                     &<[u8; ed25519_dalek::SECRET_KEY_LENGTH]>::deserialize(deserializer)
-                        .context("Failed to extract secret bytes", ea!())
+                        .context("Failed to extract secret bytes")
                         .map_err(|e| serde::de::Error::custom(e.to_string()))?,
                 ),
             ),
@@ -123,7 +122,7 @@ impl Display for NodeIdentity {
 
 impl NodeIdentity {
     pub fn from_bytes(message: &[u8]) -> Result<Self, loga::Error> {
-        return Ok(bincode::deserialize(message).context("Bincode decode failed", ea!())?);
+        return Ok(bincode::deserialize(message).context("Bincode decode failed")?);
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -146,7 +145,7 @@ pub enum NodeSecret {
 
 impl NodeSecret {
     pub fn from_bytes(message: &[u8]) -> Result<Self, loga::Error> {
-        return Ok(bincode::deserialize(message).context("Bincode decode failed", ea!())?);
+        return Ok(bincode::deserialize(message).context("Bincode decode failed")?);
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {

@@ -1,6 +1,6 @@
 [package]
 name = "spaghettinuum"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 description = "The future of the internet is al dente"
 readme = "readme.md"
@@ -69,6 +69,7 @@ urlencoding = "2.1.2"
 ipnet = "2.7.2"
 structre = "0.0.1"
 rpassword = "7.2.0"
+good-ormning-runtime = { version = "0.1.13", features = ["sqlite", "chrono"] }
 
 [build-dependencies]
-good-ormning = "0.1.6"
+good-ormning = { version = "0.1.13", features = ["sqlite", "chrono"] }

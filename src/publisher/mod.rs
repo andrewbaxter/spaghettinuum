@@ -144,7 +144,7 @@ pub async fn new_static_publisher(
                 let ident =
                     Identity::from_str(
                         req.uri().path().get(1..).unwrap_or(""),
-                    ).context("Couldn't parse identity", ea!())?;
+                    ).context("Couldn't parse identity")?;
                 let mut kvs = publisher::v1::ResolveKeyValues(HashMap::new());
                 if let Some(d) = self.0.keyvalues.get(&ident) {
                     let now = Utc::now();
@@ -193,7 +193,7 @@ pub async fn new_static_publisher(
                 )
                 .await {
                 Some(r) => {
-                    return r.log_context(&log, "Exited with error", ea!());
+                    return r.log_context(&log, "Exited with error");
                 },
                 None => {
                     return Ok(())
@@ -241,7 +241,7 @@ impl Endpoint for DynamicPublisher {
         match aes2!({
             let ident =
                 Identity::from_str(req.uri().path().get(1..).unwrap_or(""))
-                    .context("Couldn't parse identity", ea!())
+                    .context("Couldn't parse identity")
                     .err_external()?;
             let mut kvs = publisher::v1::ResolveKeyValues(HashMap::new());
             if let Some(found_kvs) = self.0.db.get().await.err_internal()?.interact(move |db| {
@@ -314,16 +314,9 @@ impl DynamicPublisher {
         let db = deadpool_sqlite::Config::new(db_path).create_pool(Runtime::Tokio1).unwrap();
         {
             let log = log.fork(ea!(action = "db_init"));
-            db
-                .get()
-                .await
-                .log_context(&log, "Error getting db instance", ea!())?
-                .interact(|db| {
-                    db::migrate(db)
-                })
-                .await
-                .log_context(&log, "Pool interaction error", ea!())?
-                .log_context(&log, "Migration failed", ea!())?;
+            db.get().await.log_context(&log, "Error getting db instance")?.interact(|db| {
+                db::migrate(db)
+            }).await.log_context(&log, "Pool interaction error")?.log_context(&log, "Migration failed")?;
         }
         let core_log = log.fork(ea!(subsys = "server"));
         let core = DynamicPublisher(Arc::new(DynamicPublisherInner {
@@ -350,7 +343,7 @@ impl DynamicPublisher {
                     )
                     .await {
                     Some(r) => {
-                        return r.log_context(&core_log, "Exited with error", ea!());
+                        return r.log_context(&core_log, "Exited with error");
                     },
                     None => {
                         return Ok(());
@@ -368,7 +361,7 @@ impl DynamicPublisher {
                 let db = db.clone();
                 return async move {
                     match aes!({
-                        let db = db.get().await.context("Error getting db connection", ea!())?;
+                        let db = db.get().await.context("Error getting db connection")?;
 
                         // easier than lambda...
                         macro_rules! announce{
@@ -678,7 +671,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> R
                 })))))
                 .await {
                 Some(r) => {
-                    return r.log_context(&log, "Exited with error", ea!(addr = config.admin_bind_addr));
+                    return r.log_context_with(&log, "Exited with error", ea!(addr = config.admin_bind_addr));
                 },
                 None => {
                     return Ok(());

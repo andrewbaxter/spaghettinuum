@@ -302,13 +302,13 @@ impl Core {
                     .get(format!("https://{}/{}?{}", resp.addr, ident, request_keys.join(",")))
                     .send()
                     .await
-                    .log_context(&log, "Error sending request", ea!())?,
+                    .log_context(&log, "Error sending request")?,
                 128 * 1024 * request_keys.len(),
             )
                 .await
-                .log_context(&log, "Error getting response from publisher", ea!())?;
+                .log_context(&log, "Error getting response from publisher")?;
         let resp_kvs: publisher::ResolveKeyValues =
-            serde_json::from_slice(&pub_resp_bytes).log_context(&log, "Couldn't parse response", ea!())?;
+            serde_json::from_slice(&pub_resp_bytes).log_context(&log, "Couldn't parse response")?;
 
         // Store found values
         spawn({
@@ -371,7 +371,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                             .get(
                                 &Identity::from_str(
                                     &ident_src.identity,
-                                ).context("Failed to parse identity", ea!(identity = ident_src.identity))?,
+                                ).context_with("Failed to parse identity", ea!(identity = ident_src.identity))?,
                                 &req.uri().query().unwrap_or("").split(",").collect_vec(),
                             )
                             .await?;
@@ -441,7 +441,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                         }
                         if request.query().name().num_labels() != 2 {
                             return Err(
-                                loga::Error::new(
+                                loga::err_with(
                                     "Expected two parts in request (id., s.) but got different number",
                                     ea!(name = request.query().name(), count = request.query().name().num_labels()),
                                 ),
@@ -451,9 +451,9 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                         let ident_part = query_name.iter().next().unwrap();
                         let ident =
                             Identity::from_bytes(&zbase32::decode_full_bytes(ident_part).map_err(|e| {
-                                loga::Error::new("Wrong number of parts in request", ea!(ident = e))
+                                loga::err_with("Wrong number of parts in request", ea!(ident = e))
                             }).err_external()?)
-                                .context(
+                                .context_with(
                                     "Couldn't parse ident in request",
                                     ea!(ident = String::from_utf8_lossy(&ident_part)),
                                 )
@@ -481,7 +481,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                                 ).build_no_records(Header::response_from_request(request.header())),
                                             )
                                             .await
-                                            .context("Error sending response", ea!()),
+                                            .context("Error sending response"),
                                     ),
                                 );
                             },
@@ -499,7 +499,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                 .flatten()
                                 .or_else(|| res.remove(lookup_key).map(filter_some).flatten()) {
                             match serde_json::from_str::<DnsRecordsetJson>(&data)
-                                .context("Failed to parse received record json", ea!())
+                                .context("Failed to parse received record json")
                                 .err_internal()? {
                                 DnsRecordsetJson::V1(v) => match v {
                                     crate::data::dns::v1::DnsRecordsetJson::A(n) => {
@@ -647,7 +647,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                                         ),
                                     )
                                     .await
-                                    .context("Error sending response", ea!()),
+                                    .context("Error sending response"),
                             ),
                         );
                     }).await as Result<Option<Result<ResponseInfo, loga::Error>>, VisErr> {
@@ -746,7 +746,7 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                 let (upstream, upstream_bg) =
                     AsyncClient::connect(UdpClientStream::<UdpSocket>::new(dns_config.upstream.1))
                         .await
-                        .log_context(&log, "Failed to open upstream client", ea!())?;
+                        .log_context(&log, "Failed to open upstream client")?;
                 spawn(upstream_bg);
                 let mut server = trust_dns_server::ServerFuture::new(Handler(Arc::new(HandlerInner {
                     log: log.clone(),
@@ -757,11 +757,11 @@ pub async fn start(tm: &TaskManager, log: &Log, config: ResolverConfig, node: No
                 server.register_socket(
                     UdpSocket::bind(&dns_config.bind_addr.1)
                         .await
-                        .log_context(&log, "Opening UDP listener failed", ea!(socket = dns_config.bind_addr.1))?,
+                        .log_context_with(&log, "Opening UDP listener failed", ea!(socket = dns_config.bind_addr.1))?,
                 );
                 match tm1.if_alive(server.block_until_done()).await {
                     Some(r) => {
-                        r.log_context(&log, "Server exited with error", ea!())?;
+                        r.log_context(&log, "Server exited with error")?;
                     },
                     None => { },
                 };

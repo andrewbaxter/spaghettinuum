@@ -48,7 +48,7 @@ impl NodeIdentity {
 
     pub fn from_str(text: &str) -> Result<Self, loga::Error> {
         Ok(Self::from_bytes(&zbase32::decode_full_bytes_str(text).map_err(|e| {
-            loga::Error::new("Unable to decode node identity zbase32", ea!(text = e))
+            loga::err_with("Unable to decode node identity zbase32", ea!(text = e))
         })?)?)
     }
 }
