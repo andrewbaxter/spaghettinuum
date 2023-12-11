@@ -105,7 +105,7 @@ use crate::{
     aes2,
 };
 use crate::publisher::config::{
-    Config,
+    PublisherConfig,
 };
 use self::{
     config::{
@@ -647,7 +647,12 @@ async fn resolve_advertise_addr(a: AdvertiseAddrConfig) -> Result<SocketAddr, lo
 }
 
 #[doc(hidden)]
-pub async fn start(tm: &TaskManager, log: &Log, config: Config, node: Node) -> Result<SystemEndpoints, loga::Error> {
+pub async fn start(
+    tm: &TaskManager,
+    log: &Log,
+    config: PublisherConfig,
+    node: Node,
+) -> Result<SystemEndpoints, loga::Error> {
     let log = log.fork(ea!(sys = "publisher"));
 
     // Serve server-server

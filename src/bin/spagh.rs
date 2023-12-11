@@ -1,3 +1,8 @@
+//! The server executable.  This takes a json config with the schema:
+#![doc= "```"]
+#![doc= include_str !("../../server_config.schema.json")]
+#![doc= "```"]
+
 use aargvark::{
     Aargvark,
     AargvarkJson,

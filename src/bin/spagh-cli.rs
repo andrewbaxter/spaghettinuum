@@ -796,7 +796,7 @@ async fn main() {
                         None
                     },
                     publisher: if config.publisher.is_some() {
-                        Some(spaghettinuum::publisher::config::Config {
+                        Some(spaghettinuum::publisher::config::PublisherConfig {
                             bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PUBLISHER)),
                             cert_path: cwd.join("publisher_cert.json"),
                             advertise_addr: if let Some(advertise_addr) = config.publisher_advertise_addr {
@@ -835,7 +835,7 @@ async fn main() {
                             cache_persist_path: Some(cwd.join("resolver_cache.sqlite3")),
                             max_cache: None,
                             dns_bridge: if config.dns_bridge.is_some() {
-                                Some(spaghettinuum::resolver::config::DnsBridgerConfig {
+                                Some(spaghettinuum::resolver::config::DnsBridgeConfig {
                                     upstream: StrSocketAddr::new_fake("1.1.1.1:53".to_string()),
                                     bind_addr: StrSocketAddr::new_fake("0.0.0.0:53".to_string()),
                                 })

@@ -1,4 +1,12 @@
 use loga::ea;
+use schemars::{
+    JsonSchema,
+    schema::{
+        Metadata,
+        InstanceType,
+        SchemaObject,
+    },
+};
 use crate::versioned;
 use std::fmt::Display;
 
@@ -22,6 +30,23 @@ impl Display for NodeIdentity {
 impl std::fmt::Debug for NodeIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         <dyn std::fmt::Debug>::fmt(&<dyn Display>::to_string(self), f)
+    }
+}
+
+impl JsonSchema for NodeIdentity {
+    fn schema_name() -> String {
+        return "NodeIdentity".to_string();
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        return SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            metadata: Some(Box::new(Metadata {
+                description: Some("A node identity (zbase32 string)".to_string()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }.into();
     }
 }
 

@@ -28,7 +28,7 @@ _This repo_ is
 
 # Installing
 
-To get the server `spagh` and CLI `spagh-CLI`, install with `cargo install spaghettinuum`.
+To get the server `spagh` and CLI `spagh-cli`, install with `cargo install spaghettinuum`.
 
 If you're just interacting with a server, `curl` is all you need.
 
@@ -54,7 +54,7 @@ curl https://spaghetinnuum.isandrew.com:43891/yryyyyyyyyei1n3eqbew6ysyy6ocdzseit
 
 ## DNS bridge
 
-The DNS bridge runs on UDP port `53`.
+Spaghettinuum supports a DNS bridge, limited to a set of keys mapped to DNS types. The DNS bridge runs on UDP port `53`.
 
 Try it out with `dig`:
 
@@ -187,6 +187,18 @@ The main sticking point here is SSL. There are a couple theoretical options for 
 4. Browser extensions(?) that resolve `.s` domains and do the cert validation themselves - I really wanted to avoid this, since browser extensions are getting less capable (ex: manifest v3), require custom extensions for N types of browser, need to deal with hostile publishing review/policies, need to work with Javascript, so on and so forth
 
 TLDR: There's no good options available immediately.
+
+# Self hosting
+
+You need:
+
+- `spaghettinuum` installed
+- A little disk space for caches, databases
+- A UDP port for DHT access
+- Optional: HTTP port (and maybe a TLS reverse proxy) for resolving and publishing if either are enabled
+- Optional: HTTP port (no TLS wrapper, it uses its own TLS) for publisher-publisher communication if publishing is enabled
+
+See `spagh -h` for instructions on running. See [server_config.schema.json](tree/master/src/server_config.schema.json) for the config schema and field explanations. `spagh-cli` will generate a default config for you if you want.
 
 # Architecture
 

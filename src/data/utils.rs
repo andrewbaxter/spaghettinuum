@@ -4,6 +4,14 @@ use std::net::{
     SocketAddrV4,
     Ipv4Addr,
 };
+use schemars::{
+    JsonSchema,
+    schema::{
+        SchemaObject,
+        Metadata,
+        InstanceType,
+    },
+};
 use serde::{
     Serialize,
     Deserialize,
@@ -55,5 +63,24 @@ impl<'t> Deserialize<'t> for StrSocketAddr {
                     .ok_or_else(|| serde::de::Error::custom(format!("No recognizable address in [{}]", s)))?,
             ),
         );
+    }
+}
+
+impl JsonSchema for StrSocketAddr {
+    fn schema_name() -> String {
+        return "StrSocketAddr".to_string();
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        return SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "An ip address or domain (ex: \"localhost\") which resolves to an address".to_string(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }.into();
     }
 }
