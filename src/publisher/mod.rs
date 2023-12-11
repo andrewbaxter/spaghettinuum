@@ -6,6 +6,8 @@ use std::{
     path::PathBuf,
     net::{
         SocketAddr,
+        SocketAddrV4,
+        SocketAddrV6,
     },
 };
 use chrono::{
@@ -17,6 +19,10 @@ use deadpool_sqlite::{
     Runtime,
 };
 use good_ormning_runtime::GoodError;
+use network_interface::{
+    NetworkInterface,
+    NetworkInterfaceConfig,
+};
 use pem::Pem;
 use sha2::{
     Digest,
@@ -83,19 +89,19 @@ use crate::{
     utils::{
         lookup_ip,
         SystemEndpoints,
+        VisErr,
+        ResultVisErr,
+        unstableip::{
+            UnstableIpv4,
+            UnstableIpv6,
+        },
     },
     node::ValueArgs,
-};
-use crate::{
     aes,
     node::{
         Node,
     },
     es,
-    utils::{
-        VisErr,
-        ResultVisErr,
-    },
     aes2,
 };
 use crate::publisher::config::{
@@ -104,6 +110,7 @@ use crate::publisher::config::{
 use self::{
     config::{
         AdvertiseAddrConfig,
+        AdvertiseAddrConfigIpVer,
     },
 };
 
@@ -572,6 +579,67 @@ fn get_certs(log: &Log, advertise_addr: SocketAddr, cert_path: PathBuf) -> Resul
 async fn resolve_advertise_addr(a: AdvertiseAddrConfig) -> Result<SocketAddr, loga::Error> {
     match a {
         AdvertiseAddrConfig::Fixed(a) => return Ok(a),
+        AdvertiseAddrConfig::FromInterface { name, ip_version, port } => {
+            for iface in NetworkInterface::show().context("Failure listing network interfaces")?.iter() {
+                match &name {
+                    Some(n) => {
+                        if n != &iface.name {
+                            continue;
+                        } else {
+                            // pass
+                        }
+                    },
+                    _ => {
+                        // pass
+                    },
+                }
+                for addr in &iface.addr {
+                    match addr.ip() {
+                        std::net::IpAddr::V4(addr) => {
+                            match &ip_version {
+                                Some(v) => {
+                                    if !matches!(v, AdvertiseAddrConfigIpVer::V4) {
+                                        continue;
+                                    } else {
+                                        // pass
+                                    }
+                                },
+                                _ => {
+                                    // pass
+                                },
+                            }
+                            if !addr.unstable_is_global() {
+                                continue;
+                            }
+                            return Ok(SocketAddr::V4(SocketAddrV4::new(addr, port)));
+                        },
+                        std::net::IpAddr::V6(addr) => {
+                            match &ip_version {
+                                Some(v) => {
+                                    if !matches!(v, AdvertiseAddrConfigIpVer::V6) {
+                                        continue;
+                                    } else {
+                                        // pass
+                                    }
+                                },
+                                _ => {
+                                    // pass
+                                },
+                            }
+                            if !addr.unstable_is_global() {
+                                continue;
+                            }
+                            return Ok(SocketAddr::V6(SocketAddrV6::new(addr, port, 0, 0)));
+                        },
+                    }
+                }
+            }
+            return Err(
+                loga::err(
+                    "Couldn't find any interfaces matching specification or configured with a public ip address",
+                ),
+            );
+        },
         AdvertiseAddrConfig::Lookup(l) => {
             return Ok(SocketAddr::new(lookup_ip(&l.lookup, l.ipv4_only, l.ipv6_only).await?, l.port));
         },

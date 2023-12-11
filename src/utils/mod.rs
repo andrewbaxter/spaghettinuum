@@ -38,6 +38,7 @@ use serde::Serialize;
 pub mod pgp;
 pub mod versioned;
 pub mod misctests;
+pub mod unstableip;
 
 pub trait BincodeSerializable {
     fn serialize(&self) -> Box<[u8]>;
