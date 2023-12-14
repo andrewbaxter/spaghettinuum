@@ -44,7 +44,7 @@ async fn main() {
             loga::Level::Info
         });
         let config = if let Some(p) = args.config {
-            p.0
+            p.value
         } else if let Some(c) = match std::env::var(spaghettinuum::data::standard::ENV_CONFIG) {
             Ok(c) => Some(c),
             Err(e) => match e {

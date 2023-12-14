@@ -57,7 +57,11 @@ impl<'t> Deserialize<'t> for StrSocketAddr {
                 s.clone(),
                 s
                     .to_socket_addrs()
-                    .map_err(|e| serde::de::Error::custom(e.to_string()))?
+                    .map_err(
+                        |e| serde::de::Error::custom(
+                            format!("Error turning socket address [{}] into IP: {}", s, e.to_string()),
+                        ),
+                    )?
                     .into_iter()
                     .next()
                     .ok_or_else(|| serde::de::Error::custom(format!("No recognizable address in [{}]", s)))?,

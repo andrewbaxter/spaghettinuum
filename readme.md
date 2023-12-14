@@ -34,7 +34,7 @@ If you're just interacting with a server, `curl` is all you need.
 
 # Try it on the public node
 
-There's a public node at `spaghetinnuum.isandrew.com`, ip `149.248.205.99` featuring a resolver and DNS bridge.
+There's a public node at `spaghettinuum.isandrew.com`, ip `149.248.205.99` featuring a resolver and DNS bridge.
 
 ## Resolver
 
@@ -43,13 +43,13 @@ The resolver runs on port `43891`.
 You can query arbitrary keys using the CLI (`cargo install spaghettinuum`):
 
 ```
-spagh-cli query https://spaghetinnuum.isandrew.com:43891 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r dsf9oyfz83fatqpscp9yt8wkuw
+spagh-cli query https://spaghettinuum.isandrew.com:43891 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r dsf9oyfz83fatqpscp9yt8wkuw
 ```
 
 or using `curl`:
 
 ```
-curl https://spaghetinnuum.isandrew.com:43891/yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r?key1,key2,...
+curl https://spaghettinuum.isandrew.com:43891/yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r?key1,key2,...
 ```
 
 ## DNS bridge
@@ -175,7 +175,7 @@ If you want to modify the data, the recognized DNS keys are listed in [tree/mast
 
 ## Publishing a website
 
-This is about hacking spaghettinuum into the old technologies, so you can use a plain browser to access your website over the spaghetinnuum.
+This is about hacking spaghettinuum into the old technologies, so you can use a plain browser to access your website over the spaghettinuum.
 
 Note that spaghetinium only handles name resolution - you still need a server to publish the HTTP content, APIs, etc.
 

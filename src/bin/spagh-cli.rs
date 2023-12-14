@@ -61,8 +61,6 @@ use spaghettinuum::{
             KEY_DNS_TXT,
             PORT_NODE,
             PORT_PUBLISHER,
-            PORT_PRIV,
-            PORT_PUB,
             ENV_PRIV_ADDR,
             ENV_PUB_ADDR,
         },
@@ -379,11 +377,11 @@ fn publisher_priv_client(_log: &loga::Log) -> Result<reqwest::Client, loga::Erro
 }
 
 fn default_priv_url(log: &loga::Log, url: Option<Uri>) -> Result<Uri, loga::Error> {
-    return default_url(log, url, ENV_PRIV_ADDR, PORT_PRIV);
+    return default_url(log, url, ENV_PRIV_ADDR, 8081);
 }
 
 fn default_pub_url(log: &loga::Log, url: Option<Uri>) -> Result<Uri, loga::Error> {
-    return default_url(log, url, ENV_PUB_ADDR, PORT_PUB);
+    return default_url(log, url, ENV_PUB_ADDR, 8080);
 }
 
 trait IdentitySigner {
@@ -401,7 +399,7 @@ impl IdentitySigner for LocalIdentitySigner {
 fn get_identity_signer(ident: args::Identity) -> Result<Box<dyn IdentitySigner>, loga::Error> {
     match ident {
         args::Identity::Local(ident_config) => {
-            return Ok(Box::new(LocalIdentitySigner(ident_config.0)));
+            return Ok(Box::new(LocalIdentitySigner(ident_config.value)));
         },
         args::Identity::Card { pcsc_id, pin } => {
             let pin = if pin == "-" {
@@ -546,7 +544,7 @@ async fn main() {
                 })).unwrap());
             },
             args::Args::ShowLocalIdentity(p) => {
-                let secret = p.0;
+                let secret = p.value;
                 let identity = secret.identity();
                 println!("{}", serde_json::to_string_pretty(&json!({
                     "identity": identity.to_string()
@@ -606,7 +604,7 @@ async fn main() {
                     reqwest::ClientBuilder::new().build().unwrap(),
                     &default_priv_url(log, config.server)?,
                     config.identity,
-                    config.data.0,
+                    config.data.value,
                 ).await?;
             },
             args::Args::PublishDns(config) => {
@@ -786,12 +784,12 @@ async fn main() {
                         persist_path: Some(cwd.join("node_persist.json")),
                     },
                     public_http_addr: if config.publisher.is_some() || config.resolver.is_some() {
-                        Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PUB)))
+                        Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", 8080)))
                     } else {
                         None
                     },
                     private_http_addr: if config.publisher.is_some() {
-                        Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PRIV)))
+                        Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", 8081)))
                     } else {
                         None
                     },
