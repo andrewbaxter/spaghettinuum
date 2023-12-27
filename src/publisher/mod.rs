@@ -646,7 +646,8 @@ async fn resolve_advertise_addr(a: AdvertiseAddrConfig) -> Result<SocketAddr, lo
     }
 }
 
-#[doc(hidden)]
+/// Launch a publisher into the task manager and return the API endpoints for
+/// attaching to the user-facing HTTP servers.
 pub async fn start(
     tm: &TaskManager,
     log: &Log,
