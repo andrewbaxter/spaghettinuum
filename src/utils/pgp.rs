@@ -21,8 +21,9 @@ use sequoia_openpgp::{
     },
     types::Curve,
 };
-use crate::data::{
-    identity::Identity,
+use crate::interface::identity::{
+    self,
+    Identity,
 };
 
 pub fn pgp_eddsa_to_identity(curve: &Curve, q: &MPI) -> Option<Identity> {
@@ -30,8 +31,8 @@ pub fn pgp_eddsa_to_identity(curve: &Curve, q: &MPI) -> Option<Identity> {
         sequoia_openpgp::types::Curve::Ed25519 => {
             Some(
                 Identity::V1(
-                    crate::data::identity::v1::Identity::Ed25519(
-                        crate::data::identity::v1::Ed25519Identity(
+                    identity::v1::Identity::Ed25519(
+                        identity::v1::Ed25519Identity(
                             ed25519_dalek::VerifyingKey::from_bytes(
                                 q.decode_point(&Curve::Ed25519).unwrap().0.try_into().unwrap(),
                             ).unwrap(),

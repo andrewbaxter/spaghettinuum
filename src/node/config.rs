@@ -1,18 +1,15 @@
-use std::{
-    path::PathBuf,
-};
 use schemars::JsonSchema;
 use serde::{
     Deserialize,
     Serialize,
 };
-use crate::data::{
-    node::nodeidentity::NodeIdentity,
-    utils::StrSocketAddr,
+use crate::interface::{
+    spagh_cli::StrSocketAddr,
+    node_protocol::NodeIdentity,
 };
 
-#[derive(JsonSchema)]
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct BootstrapConfig {
     /// Peer address.
     pub addr: StrSocketAddr,
@@ -20,13 +17,11 @@ pub struct BootstrapConfig {
     pub id: NodeIdentity,
 }
 
-#[derive(JsonSchema)]
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct NodeConfig {
     /// The address the node will listen on (UDP).
     pub bind_addr: StrSocketAddr,
     /// A list of peers to use to bootstrap the connection.
     pub bootstrap: Vec<BootstrapConfig>,
-    /// Where to persist peers across startups.
-    pub persist_path: Option<PathBuf>,
 }

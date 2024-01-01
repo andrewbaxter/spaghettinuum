@@ -18,10 +18,13 @@
 //! ```bash
 //! qdisc del dev lo root
 //! ```
-use std::net::{
-    SocketAddr,
-    SocketAddrV4,
-    Ipv4Addr,
+use std::{
+    net::{
+        SocketAddr,
+        SocketAddrV4,
+        Ipv4Addr,
+    },
+    env::current_dir,
 };
 use chrono::{
     Utc,
@@ -30,28 +33,30 @@ use chrono::{
 use ipnet::IpAdd;
 use itertools::Itertools;
 use spaghettinuum::{
-    data::{
-        standard::PORT_NODE,
-        node::{
-            protocol::{
-                NodeInfo,
-                SerialAddr,
-                ValueBody,
-            },
-        },
-        identity::{
-            Identity,
-            IdentitySecretVersionMethods,
-        },
-        utils::StrSocketAddr,
+    node::{
+        ValueArgs,
+        Node,
     },
-    node::ValueArgs,
+    interface::{
+        spagh_cli::{
+            PORT_NODE,
+            StrSocketAddr,
+            BackedIdentityLocal,
+        },
+        node_protocol::latest::{
+            NodeInfo,
+            SerialAddr,
+            ValueBody,
+        },
+    },
 };
-use spaghettinuum::node::Node;
+use tokio::fs::create_dir_all;
 
 #[tokio::main]
 async fn main() {
     async fn inner() -> Result<(), loga::Error> {
+        let root = current_dir().unwrap().join("piatto_test");
+        create_dir_all(&root).await.unwrap();
         let tm = taskmanager::TaskManager::new();
         let mut nodes = vec![];
         let mut prev_node = None;
@@ -62,6 +67,8 @@ async fn main() {
                 loga::new(loga::Level::Warn)
             };
             let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 1, 1).saturating_add(i), PORT_NODE));
+            let path = root.join(format!("node_{}", i));
+            create_dir_all(&path).await.unwrap();
             let node =
                 Node::new(
                     log,
@@ -71,13 +78,13 @@ async fn main() {
                         address: addr,
                         id: id,
                     }).into_iter().collect_vec(),
-                    None,
+                    &path,
                 ).await?;
             nodes.push(node.clone());
             prev_node = Some((SerialAddr(addr), node.identity()));
         }
         tm.if_alive(tokio::time::sleep(Duration::seconds(60).to_std().unwrap())).await;
-        let (ident, ident_secret) = Identity::new();
+        let (ident, ident_secret) = BackedIdentityLocal::new();
         let message_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(169, 168, 167, 165), 1111));
         let message = ValueBody {
             addr: SerialAddr(message_addr.clone()),

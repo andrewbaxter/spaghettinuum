@@ -40,7 +40,11 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
             if version < 0i64 {
                 {
                     let query =
-                        "create table \"cache_persist\" ( \"value\" text , \"identity\" text not null , \"key\" text not null , \"expires\" text not null )";
+                        "create table \"neighbors\" ( \"bucket\" integer not null , \"neighbor\" text not null )";
+                    txn.execute(query, ()).to_good_error_query(query)?
+                };
+                {
+                    let query = "create table \"secret\" ( \"unique\" integer not null , \"secret\" text not null )";
                     txn.execute(query, ()).to_good_error_query(query)?
                 };
             }
@@ -81,85 +85,101 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
     }
 }
 
-pub fn cache_clear(db: &rusqlite::Connection) -> Result<(), GoodError> {
-    let query = "delete from \"cache_persist\"";
-    db.execute(query, rusqlite::params![]).to_good_error_query(query)?;
-    Ok(())
-}
-
-pub fn cache_push(
+pub fn secret_ensure(
     db: &rusqlite::Connection,
-    ident: &crate::interface::identity::Identity,
-    key: &str,
-    expires: chrono::DateTime<chrono::Utc>,
-    value: Option<&str>,
+    secret: &crate::interface::node_protocol::NodeSecret,
 ) -> Result<(), GoodError> {
     let query =
-        "insert into \"cache_persist\" ( \"identity\" , \"key\" , \"expires\" , \"value\" ) values ( $1 , $2 , $3 , $4 )";
+        "insert into \"secret\" ( \"unique\" , \"secret\" ) values ( 0 , $1 ) on conflict do update set \"secret\" = $1";
     db
         .execute(
             query,
             rusqlite::params![
-                <crate::interface::identity::Identity as good_ormning_runtime
+                <crate::interface::node_protocol::NodeSecret as good_ormning_runtime
                 ::sqlite
-                ::GoodOrmningCustomString<crate::interface::identity::Identity>>::to_sql(
-                    &ident,
-                ),
-                key,
-                expires.to_rfc3339(),
-                value.map(|value| value)
+                ::GoodOrmningCustomString<crate::interface::node_protocol::NodeSecret>>::to_sql(
+                    &secret,
+                )
             ],
         )
         .to_good_error_query(query)?;
     Ok(())
 }
 
-pub struct DbRes1 {
-    pub rowid: i64,
-    pub identity: crate::interface::identity::Identity,
-    pub key: String,
-    pub expires: chrono::DateTime<chrono::Utc>,
-    pub value: Option<String>,
+pub fn secret_get(
+    db: &rusqlite::Connection,
+) -> Result<Option<crate::interface::node_protocol::NodeSecret>, GoodError> {
+    let query = "select \"secret\" . \"secret\" from \"secret\"";
+    let mut stmt = db.prepare(query).to_good_error_query(query)?;
+    let mut rows = stmt.query(rusqlite::params![]).to_good_error_query(query)?;
+    let r = rows.next().to_good_error(|| format!("Getting row in query [{}]", query))?;
+    if let Some(r) = r {
+        return Ok(Some({
+            let x: String = r.get(0usize).to_good_error(|| format!("Getting result {}", 0usize))?;
+            let x =
+                <crate::interface::node_protocol::NodeSecret as good_ormning_runtime
+                ::sqlite
+                ::GoodOrmningCustomString<crate::interface::node_protocol::NodeSecret>>::from_sql(
+                    x,
+                ).to_good_error(|| format!("Parsing result {}", 0usize))?;
+            x
+        }));
+    }
+    Ok(None)
 }
 
-pub fn cache_list(db: &rusqlite::Connection, row: i64) -> Result<Vec<DbRes1>, GoodError> {
+pub fn neighbors_insert(
+    db: &rusqlite::Connection,
+    bucket: u32,
+    neighbor: &crate::interface::node_protocol::NodeState,
+) -> Result<(), GoodError> {
+    let query = "insert into \"neighbors\" ( \"bucket\" , \"neighbor\" ) values ( $1 , $2 )";
+    db
+        .execute(
+            query,
+            rusqlite::params![
+                bucket,
+                <crate::interface::node_protocol::NodeState as good_ormning_runtime
+                ::sqlite
+                ::GoodOrmningCustomString<crate::interface::node_protocol::NodeState>>::to_sql(
+                    &neighbor,
+                )
+            ],
+        )
+        .to_good_error_query(query)?;
+    Ok(())
+}
+
+pub fn neighbors_clear(db: &rusqlite::Connection) -> Result<(), GoodError> {
+    let query = "delete from \"neighbors\"";
+    db.execute(query, rusqlite::params![]).to_good_error_query(query)?;
+    Ok(())
+}
+
+pub struct DbRes1 {
+    pub bucket: u32,
+    pub neighbor: crate::interface::node_protocol::NodeState,
+}
+
+pub fn neighbors_get(db: &rusqlite::Connection) -> Result<Vec<DbRes1>, GoodError> {
     let mut out = vec![];
-    let query =
-        "select \"cache_persist\" . \"rowid\" , \"cache_persist\" . \"identity\" , \"cache_persist\" . \"key\" , \"cache_persist\" . \"expires\" , \"cache_persist\" . \"value\" from \"cache_persist\" where ( \"cache_persist\" . \"rowid\" < $1 ) order by \"cache_persist\" . \"rowid\" desc limit 50";
+    let query = "select \"neighbors\" . \"bucket\" , \"neighbors\" . \"neighbor\" from \"neighbors\"";
     let mut stmt = db.prepare(query).to_good_error_query(query)?;
-    let mut rows = stmt.query(rusqlite::params![row]).to_good_error_query(query)?;
+    let mut rows = stmt.query(rusqlite::params![]).to_good_error_query(query)?;
     while let Some(r) = rows.next().to_good_error(|| format!("Getting row in query [{}]", query))? {
         out.push(DbRes1 {
-            rowid: {
-                let x: i64 = r.get(0usize).to_good_error(|| format!("Getting result {}", 0usize))?;
+            bucket: {
+                let x: u32 = r.get(0usize).to_good_error(|| format!("Getting result {}", 0usize))?;
                 x
             },
-            identity: {
+            neighbor: {
                 let x: String = r.get(1usize).to_good_error(|| format!("Getting result {}", 1usize))?;
                 let x =
-                    <crate::interface::identity::Identity as good_ormning_runtime
+                    <crate::interface::node_protocol::NodeState as good_ormning_runtime
                     ::sqlite
-                    ::GoodOrmningCustomString<crate::interface::identity::Identity>>::from_sql(
+                    ::GoodOrmningCustomString<crate::interface::node_protocol::NodeState>>::from_sql(
                         x,
                     ).to_good_error(|| format!("Parsing result {}", 1usize))?;
-                x
-            },
-            key: {
-                let x: String = r.get(2usize).to_good_error(|| format!("Getting result {}", 2usize))?;
-                x
-            },
-            expires: {
-                let x: String = r.get(3usize).to_good_error(|| format!("Getting result {}", 3usize))?;
-                let x =
-                    chrono::DateTime::<chrono::Utc>::from(
-                        chrono::DateTime::<chrono::FixedOffset>::parse_from_rfc3339(
-                            &x,
-                        ).to_good_error(|| format!("Getting result {}", 3usize))?,
-                    );
-                x
-            },
-            value: {
-                let x: Option<String> = r.get(4usize).to_good_error(|| format!("Getting result {}", 4usize))?;
                 x
             },
         });

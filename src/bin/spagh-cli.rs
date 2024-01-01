@@ -17,70 +17,77 @@ use poem::{
         uri::Authority,
     },
 };
+use rand::{
+    distributions::{
+        Alphanumeric,
+        DistString,
+    },
+};
 use reqwest::{
     Response,
+    header::AUTHORIZATION,
 };
-use sequoia_openpgp::{
-    types::HashAlgorithm,
-    crypto::Signer,
-};
+use ring::rand::SystemRandom;
 use serde_json::json;
 use spaghettinuum::{
-    config::Config,
-    data::{
+    config::{
+        Config,
+        SelfIdentityConfig,
+        GlobalAddrConfig,
         self,
-        identity::{
-            Identity,
-            IdentitySecretVersionMethods,
-            IdentitySecret,
-        },
-        node::{
-            nodeidentity::NodeIdentity,
-            protocol::SerialAddr,
-        },
-        publisher::{
-            v1::{
-                PublishValue,
-                Publish,
-            },
-            public::{
-                PublishRequest,
-                PublishRequestBody,
-                PublishRequestSigned,
-                UnpublishRequestBody,
-                UnpublishRequest,
-                UnpublishRequestSigned,
-            },
-            announcement::v1::Announcement,
-        },
-        standard::{
-            KEY_DNS_A,
-            KEY_DNS_AAAA,
-            KEY_DNS_CNAME,
-            KEY_DNS_MX,
-            KEY_DNS_TXT,
-            PORT_NODE,
-            PORT_PUBLISHER,
-            ENV_PRIV_ADDR,
-            ENV_PUB_ADDR,
-        },
-        utils::StrSocketAddr,
     },
     node::config::{
         BootstrapConfig,
         NodeConfig,
     },
-    publisher::config::{
-        AdvertiseAddrConfig,
-        AdvertiseAddrLookupConfig,
-    },
     utils::{
+        backed_identity::{
+            get_identity_signer,
+        },
         pgp::{
             self,
-            extract_pgp_ed25519_sig,
-            pgp_eddsa_to_identity,
         },
-        lookup_ip,
+        local_identity::write_identity,
+        tls_util::{
+            encode_priv_pem,
+            extract_expiry,
+        },
+    },
+    interface::{
+        spagh_cli::{
+            ENV_API_ADDR,
+            BackedIdentityLocal,
+            BackedIdentityArg,
+            StrSocketAddr,
+            PORT_NODE,
+            ENV_API_ADMIN_TOKEN,
+            PORT_PUBLISHER,
+            DEFAULT_CERTIFIER_URL,
+        },
+        node_protocol::{
+            self,
+            latest::SerialAddr,
+            NodeIdentity,
+        },
+        spagh_api::{
+            publish::{
+                self,
+            },
+            resolve::{
+                KEY_DNS_MX,
+                KEY_DNS_TXT,
+                KEY_DNS_AAAA,
+                KEY_DNS_A,
+                KEY_DNS_CNAME,
+                self,
+            },
+        },
+        identity::Identity,
+    },
+    self_tls::{
+        request_cert,
+        default_generate_cert_keys,
+        certifier_url,
     },
 };
 use std::{
@@ -89,40 +96,32 @@ use std::{
         current_dir,
         self,
     },
-    fs,
-    net::{
-        SocketAddr,
-    },
     str::FromStr,
 };
 
 mod args {
     use std::{
         path::PathBuf,
-        net::SocketAddr,
     };
     use aargvark::{
         Aargvark,
         AargvarkJson,
     };
     use poem::http::Uri;
-    use spaghettinuum::data::identity::IdentitySecret;
+    use spaghettinuum::{
+        interface::{
+            spagh_cli::{
+                BackedIdentityArg,
+                BackedIdentityLocal,
+            },
+            spagh_api::publish,
+        },
+    };
 
     #[derive(Aargvark)]
     pub struct NewLocalIdentity {
         /// Store the new id and secret in a file at this path
         pub path: PathBuf,
-    }
-
-    #[derive(Clone, Aargvark)]
-    pub enum Identity {
-        Local(AargvarkJson<IdentitySecret>),
-        Card {
-            /// Card to register, using id per pcscd (not identity id)
-            pcsc_id: String,
-            /// Card pin
-            pin: String,
-        },
     }
 
     #[derive(Aargvark)]
@@ -147,10 +146,10 @@ mod args {
         /// variable `SPAGH` or else localhost with the default port.
         pub server: Option<Uri>,
         /// Identity to publish as
-        pub identity: Identity,
+        pub identity: BackedIdentityArg,
         /// Data to publish.  Must be json in the structure
         /// `{KEY: {"ttl": SECONDS, "value": "DATA"}, ...}`
-        pub data: AargvarkJson<crate::data::publisher::v1::Publish>,
+        pub data: AargvarkJson<publish::latest::Publish>,
     }
 
     #[derive(Aargvark)]
@@ -159,7 +158,7 @@ mod args {
         /// variable `SPAGH` or else localhost with the default port.
         pub server: Option<Uri>,
         /// Identity to publish as
-        pub identity: Identity,
+        pub identity: BackedIdentityArg,
         pub ttl: u32,
         pub dns_cname: Vec<String>,
         pub dns_a: Vec<String>,
@@ -174,7 +173,7 @@ mod args {
         /// URL of a server with publishing set up. Defaults to the value of environment
         /// variable `SPAGH` or else localhost with the default port.
         pub server: Option<Uri>,
-        pub identity: Identity,
+        pub identity: BackedIdentityArg,
     }
 
     #[derive(Aargvark)]
@@ -207,21 +206,13 @@ mod args {
     pub struct GenerateConfig {
         /// Enable the publisher, allowing you to publish data on your server
         pub publisher: Option<()>,
-        /// Use specific address for publishing announcements, rather than automatic
-        /// detection
-        pub publisher_advertise_addr: Option<SocketAddr>,
-        /// Configure the publisher to look up the advertise addr at startup via this URL.
-        /// The URL must respond to a GET with the body containing just the IP address
-        /// string.
-        pub publisher_advertise_addr_lookup: Option<String>,
-        /// Force ipv4 public ip for publisher advertised addr detection
-        pub publisher_advertise_addr_ipv4: Option<()>,
-        /// Force ipv6 public ip for publisher advertised addr detection
-        pub publisher_advertise_addr_ipv6: Option<()>,
         /// Build config for enabling the resolver
         pub resolver: Option<()>,
         /// Build config for enabling the dns bridge
         pub dns_bridge: Option<()>,
+        /// An identity to use to enable self-identity features. This can be an existing
+        /// identity or a path to a file where a new local identity will be written.
+        pub self_identity: Option<BackedIdentityArg>,
     }
 
     #[derive(Aargvark)]
@@ -240,7 +231,7 @@ mod args {
         /// Create a new local (file) identity
         NewLocalIdentity(NewLocalIdentity),
         /// Show the identity for a local identity file
-        ShowLocalIdentity(AargvarkJson<IdentitySecret>),
+        ShowLocalIdentity(AargvarkJson<BackedIdentityLocal>),
         /// List usable pcsc cards (configured with curve25519/ed25519 signing keys)
         ListCardIdentities,
         /// Register an identity with the server, allowing it to publish
@@ -263,6 +254,9 @@ mod args {
         GenerateConfig(GenerateConfig),
         /// Generate data for publishing DNS records
         GenerateDnsKeyValues(GenerateDnsKeyValues),
+        /// Get a new `.s` TLS cert from a Spaghettinuum certifier. Returns the certs (pub
+        /// and priv) as JSON along with the expiration date.
+        ProvisionCert(BackedIdentityArg),
     }
 }
 
@@ -319,20 +313,40 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
     }
 }
 
-fn default_url(
-    log: &loga::Log,
-    mut url: Option<Uri>,
-    env_key: &'static str,
-    default_port: u16,
-) -> Result<Uri, loga::Error> {
+fn publisher_priv_client() -> Result<reqwest::Client, loga::Error> {
+    return Ok(reqwest::ClientBuilder::new().default_headers({
+        let mut h = reqwest::header::HeaderMap::new();
+        let env_key = ENV_API_ADMIN_TOKEN;
+        h.insert(
+            AUTHORIZATION,
+            format!(
+                "Bearer {}",
+                env::var(
+                    env_key,
+                ).context_with(
+                    "This operation uses an admin endpoint, but missing the admin token in the environment",
+                    ea!(key = env_key),
+                )?
+            )
+                .try_into()
+                .context_with(
+                    "The admin token in the environment isn't a valid HTTP authorization token",
+                    ea!(key = env_key),
+                )?,
+        );
+        h
+    }).build().unwrap());
+}
+
+fn api_url(mut url: Option<Uri>) -> Result<Uri, loga::Error> {
+    let env_key = ENV_API_ADDR;
+    let default_port = 443;
     if url.is_none() {
         match env::var(env_key) {
             Ok(e) => {
                 url =
                     Some(
-                        Uri::from_str(
-                            &e,
-                        ).log_context_with(log, "Couldn't parse environment variable", ea!(env = env_key))?,
+                        Uri::from_str(&e).context_with("Couldn't parse environment variable", ea!(env = env_key))?,
                     );
             },
             Err(e) => {
@@ -340,7 +354,7 @@ fn default_url(
                     env::VarError::NotPresent => { },
                     env::VarError::NotUnicode(e) => {
                         return Err(
-                            log.new_err_with(
+                            loga::err_with(
                                 "Environment variable isn't valid unicode",
                                 ea!(env = env_key, value = e.to_string_lossy()),
                             ),
@@ -372,104 +386,12 @@ fn default_url(
     }
 }
 
-fn publisher_priv_client(_log: &loga::Log) -> Result<reqwest::Client, loga::Error> {
-    return Ok(reqwest::ClientBuilder::new().build().unwrap());
-}
-
-fn default_priv_url(log: &loga::Log, url: Option<Uri>) -> Result<Uri, loga::Error> {
-    return default_url(log, url, ENV_PRIV_ADDR, 8081);
-}
-
-fn default_pub_url(log: &loga::Log, url: Option<Uri>) -> Result<Uri, loga::Error> {
-    return default_url(log, url, ENV_PUB_ADDR, 8080);
-}
-
-trait IdentitySigner {
-    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error>;
-}
-
-struct LocalIdentitySigner(IdentitySecret);
-
-impl IdentitySigner for LocalIdentitySigner {
-    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error> {
-        return Ok((self.0.identity(), self.0.sign(data)));
-    }
-}
-
-fn get_identity_signer(ident: args::Identity) -> Result<Box<dyn IdentitySigner>, loga::Error> {
-    match ident {
-        args::Identity::Local(ident_config) => {
-            return Ok(Box::new(LocalIdentitySigner(ident_config.value)));
-        },
-        args::Identity::Card { pcsc_id, pin } => {
-            let pin = if pin == "-" {
-                rpassword::prompt_password(
-                    "Enter your pin to sign announcement: ",
-                ).context("Error securely reading pin")?
-            } else {
-                pin
-            };
-            return Ok(Box::new(CardIdentitySigner {
-                card: PcscBackend::open_by_ident(&pcsc_id, None)
-                    .context_with("Failed to open card", ea!(card = pcsc_id))?
-                    .into(),
-                pcsc_id: pcsc_id,
-                pin: pin,
-            }));
-        },
-    };
-}
-
-struct CardIdentitySigner {
-    pcsc_id: String,
-    pin: String,
-    card: Card<Open>,
-}
-
-impl IdentitySigner for CardIdentitySigner {
-    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error> {
-        let mut transaction = self.card.transaction().context("Failed to start card transaction")?;
-        transaction
-            .verify_user_for_signing(self.pin.as_bytes())
-            .context_with("Error unlocking card with pin", ea!(card = self.pcsc_id))?;
-        let mut user = transaction.signing_card().unwrap();
-        let signer_interact = || eprintln!("Card {} requests interaction to sign", self.pcsc_id);
-        let mut signer = user.signer(&signer_interact).context("Failed to get signer from card")?;
-        let identity;
-        loop {
-            match signer.public() {
-                sequoia_openpgp::packet::Key::V4(k) => match k.mpis() {
-                    sequoia_openpgp::crypto::mpi::PublicKey::EdDSA { curve, q } => {
-                        if let Some(i) = pgp_eddsa_to_identity(curve, q) {
-                            identity = i;
-                            break;
-                        };
-                    },
-                    _ => (),
-                },
-                _ => (),
-            };
-            return Err(loga::err("Unsupported key type - must be Ed25519"));
-        }
-        return Ok(
-            (
-                identity,
-                extract_pgp_ed25519_sig(
-                    &signer
-                        .sign(HashAlgorithm::SHA512, &crate::data::identity::hash_for_ed25519(data))
-                        .map_err(|e| loga::err_with("Card signature failed", ea!(err = e)))?,
-                ).to_vec(),
-            ),
-        );
-    }
-}
-
 async fn publish(
     log: &loga::Log,
     c: reqwest::Client,
     server: &Uri,
-    identity_arg: args::Identity,
-    keyvalues: Publish,
+    identity_arg: BackedIdentityArg,
+    keyvalues: publish::latest::Publish,
 ) -> Result<(), loga::Error> {
     let info_body =
         c
@@ -479,7 +401,7 @@ async fn publish(
             .check_bytes()
             .await
             .log_context(log, "Error getting publisher info")?;
-    let info: crate::data::publisher::public::InfoResponse =
+    let info: publish::latest::InfoResponse =
         serde_json::from_slice(
             &info_body,
         ).log_context_with(
@@ -487,7 +409,7 @@ async fn publish(
             "Error parsing info response from publisher as json",
             ea!(body = String::from_utf8_lossy(&info_body)),
         )?;
-    let announce_message = crate::data::node::protocol::v1::ValueBody {
+    let announce_message = node_protocol::latest::ValueBody {
         addr: SerialAddr(info.advertise_addr),
         cert_hash: zbase32::decode_full_bytes_str(
             &info.cert_pub_hash,
@@ -499,20 +421,20 @@ async fn publish(
     let mut signer = get_identity_signer(identity_arg).log_context(&log, "Error constructing signer")?;
     let (identity, request_message_sig) =
         signer.sign(&announce_message).log_context(&log, "Failed to sign announcement")?;
-    let request_message = PublishRequestBody {
-        announce: Announcement {
+    let request_message = publish::latest::PublishRequestBody {
+        announce: publish::latest::Announcement {
             message: announce_message.clone(),
             signature: request_message_sig,
         },
         keyvalues: keyvalues,
     }.to_bytes();
-    let request = PublishRequest {
+    let request = publish::PublishRequest::V1(publish::latest::PublishRequest {
         identity: identity,
-        signed: PublishRequestSigned {
+        signed: publish::latest::PublishRequestSigned {
             signature: signer.sign(&request_message).log_context(&log, "Failed to sign publish request")?.1,
             message: request_message,
         },
-    };
+    });
     c
         .post(format!("{}publish/publish", server))
         .json(&request)
@@ -531,14 +453,8 @@ async fn main() {
     async fn inner(log: &Log) -> Result<(), loga::Error> {
         match aargvark::vark::<args::Args>() {
             args::Args::NewLocalIdentity(args) => {
-                let (ident, secret) = Identity::new();
-                {
-                    let log = log.fork(ea!(path = args.path.to_string_lossy()));
-                    fs::write(
-                        args.path,
-                        &serde_json::to_string_pretty(&secret).unwrap(),
-                    ).log_context(&log, "Failed to write identity secret to file")?;
-                }
+                let (ident, secret) = BackedIdentityLocal::new();
+                write_identity(&args.path, &secret).await.log_context(&log, "Error creating local identity")?;
                 println!("{}", serde_json::to_string_pretty(&json!({
                     "identity": ident.to_string()
                 })).unwrap());
@@ -581,18 +497,16 @@ async fn main() {
                 println!("{}", serde_json::to_string_pretty(&out).unwrap());
             },
             args::Args::Register(config) => {
-                publisher_priv_client(log)?
-                    .post(format!("{}publish/register/{}", default_priv_url(log, config.server)?, config.identity_id))
+                publisher_priv_client()?
+                    .post(format!("{}publish/register/{}", api_url(config.server)?, config.identity_id))
                     .send()
                     .await
                     .check_text()
                     .await?;
             },
             args::Args::Unregister(config) => {
-                publisher_priv_client(log)?
-                    .post(
-                        format!("{}publish/unregister/{}", default_priv_url(log, config.server)?, config.identity_id),
-                    )
+                publisher_priv_client()?
+                    .post(format!("{}publish/unregister/{}", api_url(config.server)?, config.identity_id))
                     .send()
                     .await
                     .check_text()
@@ -602,7 +516,7 @@ async fn main() {
                 publish(
                     log,
                     reqwest::ClientBuilder::new().build().unwrap(),
-                    &default_priv_url(log, config.server)?,
+                    &api_url(config.server)?,
                     config.identity,
                     config.data.value,
                 ).await?;
@@ -611,48 +525,48 @@ async fn main() {
                 publish(
                     log,
                     reqwest::ClientBuilder::new().build().unwrap(),
-                    &default_priv_url(log, config.server)?,
+                    &api_url(config.server)?,
                     config.identity,
-                    spaghettinuum::data::publisher::v1::Publish {
+                    publish::latest::Publish {
                         missing_ttl: config.ttl,
                         data: {
                             let mut kvs = HashMap::new();
                             if !config.dns_cname.is_empty() {
-                                kvs.insert(KEY_DNS_CNAME.to_string(), PublishValue {
+                                kvs.insert(KEY_DNS_CNAME.to_string(), publish::latest::PublishValue {
                                     ttl: config.ttl,
                                     data: serde_json::to_string(
-                                        &crate::data::dns::DnsRecordsetJson::V1(
-                                            crate::data::dns::v1::DnsRecordsetJson::Cname(config.dns_cname),
+                                        &resolve::DnsRecordsetJson::V1(
+                                            resolve::latest::DnsRecordsetJson::Cname(config.dns_cname),
                                         ),
                                     ).unwrap(),
                                 });
                             }
                             if !config.dns_a.is_empty() {
-                                kvs.insert(KEY_DNS_A.to_string(), PublishValue {
+                                kvs.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
                                     ttl: config.ttl,
                                     data: serde_json::to_string(
-                                        &crate::data::dns::DnsRecordsetJson::V1(
-                                            crate::data::dns::v1::DnsRecordsetJson::A(config.dns_a),
+                                        &resolve::DnsRecordsetJson::V1(
+                                            resolve::latest::DnsRecordsetJson::A(config.dns_a),
                                         ),
                                     ).unwrap(),
                                 });
                             }
                             if !config.dns_aaaa.is_empty() {
-                                kvs.insert(KEY_DNS_AAAA.to_string(), PublishValue {
+                                kvs.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
                                     ttl: config.ttl,
                                     data: serde_json::to_string(
-                                        &crate::data::dns::DnsRecordsetJson::V1(
-                                            crate::data::dns::v1::DnsRecordsetJson::Aaaa(config.dns_aaaa),
+                                        &resolve::DnsRecordsetJson::V1(
+                                            resolve::latest::DnsRecordsetJson::Aaaa(config.dns_aaaa),
                                         ),
                                     ).unwrap(),
                                 });
                             }
                             if !config.dns_txt.is_empty() {
-                                kvs.insert(KEY_DNS_TXT.to_string(), PublishValue {
+                                kvs.insert(KEY_DNS_TXT.to_string(), publish::latest::PublishValue {
                                     ttl: config.ttl,
                                     data: serde_json::to_string(
-                                        &crate::data::dns::DnsRecordsetJson::V1(
-                                            crate::data::dns::v1::DnsRecordsetJson::Txt(config.dns_txt),
+                                        &resolve::DnsRecordsetJson::V1(
+                                            resolve::latest::DnsRecordsetJson::Txt(config.dns_txt),
                                         ),
                                     ).unwrap(),
                                 });
@@ -673,12 +587,10 @@ async fn main() {
                                         u16::from_str(&priority).context("Couldn't parse priority as int")?;
                                     values.push((priority, name.to_string()));
                                 }
-                                kvs.insert(KEY_DNS_MX.to_string(), PublishValue {
+                                kvs.insert(KEY_DNS_MX.to_string(), publish::latest::PublishValue {
                                     ttl: config.ttl,
                                     data: serde_json::to_string(
-                                        &crate::data::dns::DnsRecordsetJson::V1(
-                                            crate::data::dns::v1::DnsRecordsetJson::Mx(values),
-                                        ),
+                                        &resolve::DnsRecordsetJson::V1(resolve::latest::DnsRecordsetJson::Mx(values)),
                                     ).unwrap(),
                                 });
                             }
@@ -691,18 +603,18 @@ async fn main() {
                 let c = reqwest::ClientBuilder::new().build().unwrap();
                 let mut signer =
                     get_identity_signer(config.identity).log_context(&log, "Error constructing signer")?;
-                let request_message = UnpublishRequestBody { now: Utc::now() }.to_bytes();
+                let request_message = publish::latest::UnpublishRequestBody { now: Utc::now() }.to_bytes();
                 let (identity, request_message_sig) =
                     signer.sign(&request_message).log_context(&log, "Failed to sign unpublish request")?;
-                let request = UnpublishRequest {
+                let request = publish::UnpublishRequest::V1(publish::latest::UnpublishRequest {
                     identity: identity,
-                    signed: UnpublishRequestSigned {
+                    signed: publish::latest::UnpublishRequestSigned {
                         signature: request_message_sig,
                         message: request_message,
                     },
-                };
+                });
                 c
-                    .post(format!("{}publish/unpublish", default_pub_url(&log, config.server)?))
+                    .post(format!("{}publish/unpublish", api_url(config.server)?))
                     .json(&request)
                     .send()
                     .await
@@ -712,8 +624,8 @@ async fn main() {
             },
             args::Args::ListPublisherIdentities(config) => {
                 let mut out = vec![];
-                let c = publisher_priv_client(log)?;
-                let url = default_priv_url(log, config.server)?;
+                let c = publisher_priv_client()?;
+                let url = api_url(config.server)?;
                 let mut res = c.get(format!("{}publish", url)).send().await.check_bytes().await?;
                 loop {
                     let mut identities: Vec<Identity> =
@@ -736,8 +648,8 @@ async fn main() {
             args::Args::ListPublisherKeyValues(config) => {
                 println!(
                     "{}",
-                    publisher_priv_client(log)?
-                        .get(format!("{}publish/{}", default_priv_url(log, config.server)?, config.identity))
+                    publisher_priv_client()?
+                        .get(format!("{}publish/{}", api_url(config.server)?, config.identity))
                         .send()
                         .await
                         .check_text()
@@ -753,7 +665,7 @@ async fn main() {
                         .get(
                             format!(
                                 "{}v1/{}?{}",
-                                default_pub_url(log, config.server)?,
+                                api_url(config.server)?,
                                 config.identity,
                                 config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
                             ),
@@ -765,14 +677,14 @@ async fn main() {
                 );
             },
             args::Args::GenerateConfig(config) => {
-                if (config.publisher_advertise_addr.is_some() as i32) +
-                    (config.publisher_advertise_addr_ipv4.is_some() as i32) +
-                    (config.publisher_advertise_addr_ipv6.is_some() as i32) >
-                    1 {
-                    return Err(log.new_err("Only one of --advertise-addr, --ipv4 and --ipv6 may be specified"));
-                }
+                let api = config.publisher.is_some() || config.resolver.is_some();
                 let cwd = current_dir().unwrap();
-                let config: Config = Config {
+                let config = Config {
+                    persistent_dir: cwd.join("spagh_persistent"),
+                    global_addr: GlobalAddrConfig::FromInterface {
+                        name: None,
+                        ip_version: Some(config::IpVer::V6),
+                    },
                     node: NodeConfig {
                         bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_NODE)),
                         bootstrap: vec![BootstrapConfig {
@@ -781,56 +693,17 @@ async fn main() {
                                 "yryyyyyyyb3jndem1w1e4f56cfhu3di3kpj5c6n8emk4bkye3ien388tj1thg",
                             ).unwrap(),
                         }],
-                        persist_path: Some(cwd.join("node_persist.json")),
-                    },
-                    public_http_addr: if config.publisher.is_some() || config.resolver.is_some() {
-                        Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", 8080)))
-                    } else {
-                        None
-                    },
-                    private_http_addr: if config.publisher.is_some() {
-                        Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", 8081)))
-                    } else {
-                        None
                     },
                     publisher: if config.publisher.is_some() {
                         Some(spaghettinuum::publisher::config::PublisherConfig {
                             bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PUBLISHER)),
-                            cert_path: cwd.join("publisher_cert.json"),
-                            advertise_addr: if let Some(advertise_addr) = config.publisher_advertise_addr {
-                                AdvertiseAddrConfig::Fixed(advertise_addr)
-                            } else {
-                                match config.publisher_advertise_addr_lookup {
-                                    Some(l) => {
-                                        AdvertiseAddrConfig::Lookup(AdvertiseAddrLookupConfig {
-                                            lookup: l,
-                                            port: PORT_PUBLISHER,
-                                            ipv4_only: config.publisher_advertise_addr_ipv4.is_some(),
-                                            ipv6_only: config.publisher_advertise_addr_ipv6.is_some(),
-                                        })
-                                    },
-                                    None => {
-                                        AdvertiseAddrConfig::Fixed(
-                                            SocketAddr::new(
-                                                lookup_ip(
-                                                    "https://api.seeip.org",
-                                                    config.publisher_advertise_addr_ipv4.is_some(),
-                                                    config.publisher_advertise_addr_ipv6.is_some(),
-                                                ).await?,
-                                                PORT_PUBLISHER,
-                                            ),
-                                        )
-                                    },
-                                }
-                            },
-                            db_path: cwd.join("publisher.sqlite3"),
+                            advertise_port: PORT_PUBLISHER,
                         })
                     } else {
                         None
                     },
                     resolver: if config.resolver.is_some() || config.dns_bridge.is_some() {
                         Some(spaghettinuum::resolver::config::ResolverConfig {
-                            cache_persist_path: Some(cwd.join("resolver_cache.sqlite3")),
                             max_cache: None,
                             dns_bridge: if config.dns_bridge.is_some() {
                                 Some(spaghettinuum::resolver::config::DnsBridgeConfig {
@@ -844,50 +717,85 @@ async fn main() {
                     } else {
                         None
                     },
+                    api_bind_addr: if api {
+                        if config.self_identity.is_some() {
+                            Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", 443)))
+                        } else {
+                            Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", 8080)))
+                        }
+                    } else {
+                        None
+                    },
+                    admin_token: if api {
+                        Some(Alphanumeric.sample_string(&mut rand::thread_rng(), 20))
+                    } else {
+                        None
+                    },
+                    identity: match config.self_identity {
+                        Some(i) => {
+                            match &i {
+                                BackedIdentityArg::Local(l) => {
+                                    if !l.exists() {
+                                        let (_, secret) = BackedIdentityLocal::new();
+                                        write_identity(l, &secret)
+                                            .await
+                                            .log_context(&log, "Error creating local identity")?;
+                                    }
+                                },
+                                _ => { },
+                            }
+                            Some(SelfIdentityConfig {
+                                identity: i,
+                                self_tls: Some(DEFAULT_CERTIFIER_URL.to_string()),
+                                self_publish: true,
+                            })
+                        },
+                        None => None,
+                    },
                 };
                 println!("{}", serde_json::to_string_pretty(&config).unwrap());
             },
             args::Args::GenerateDnsKeyValues(config) => {
-                println!("{}", serde_json::to_string_pretty(&spaghettinuum::data::publisher::v1::Publish {
+                println!("{}", serde_json::to_string_pretty(&publish::latest::Publish {
                     missing_ttl: config.ttl,
                     data: {
                         let mut kvs = HashMap::new();
                         if !config.dns_cname.is_empty() {
-                            kvs.insert(KEY_DNS_CNAME.to_string(), PublishValue {
+                            kvs.insert(KEY_DNS_CNAME.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &crate::data::dns::DnsRecordsetJson::V1(
-                                        crate::data::dns::v1::DnsRecordsetJson::Cname(config.dns_cname),
+                                    &resolve::DnsRecordsetJson::V1(
+                                        resolve::latest::DnsRecordsetJson::Cname(config.dns_cname),
                                     ),
                                 ).unwrap(),
                             });
                         }
                         if !config.dns_a.is_empty() {
-                            kvs.insert(KEY_DNS_A.to_string(), PublishValue {
+                            kvs.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &crate::data::dns::DnsRecordsetJson::V1(
-                                        crate::data::dns::v1::DnsRecordsetJson::A(config.dns_a),
+                                    &resolve::DnsRecordsetJson::V1(
+                                        resolve::latest::DnsRecordsetJson::A(config.dns_a),
                                     ),
                                 ).unwrap(),
                             });
                         }
                         if !config.dns_aaaa.is_empty() {
-                            kvs.insert(KEY_DNS_AAAA.to_string(), PublishValue {
+                            kvs.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &crate::data::dns::DnsRecordsetJson::V1(
-                                        crate::data::dns::v1::DnsRecordsetJson::Aaaa(config.dns_aaaa),
+                                    &resolve::DnsRecordsetJson::V1(
+                                        resolve::latest::DnsRecordsetJson::Aaaa(config.dns_aaaa),
                                     ),
                                 ).unwrap(),
                             });
                         }
                         if !config.dns_txt.is_empty() {
-                            kvs.insert(KEY_DNS_TXT.to_string(), PublishValue {
+                            kvs.insert(KEY_DNS_TXT.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &crate::data::dns::DnsRecordsetJson::V1(
-                                        crate::data::dns::v1::DnsRecordsetJson::Txt(config.dns_txt),
+                                    &resolve::DnsRecordsetJson::V1(
+                                        resolve::latest::DnsRecordsetJson::Txt(config.dns_txt),
                                     ),
                                 ).unwrap(),
                             });
@@ -907,18 +815,35 @@ async fn main() {
                                 let priority = u16::from_str(&priority).context("Couldn't parse priority as int")?;
                                 values.push((priority, name.to_string()));
                             }
-                            kvs.insert(KEY_DNS_MX.to_string(), PublishValue {
+                            kvs.insert(KEY_DNS_MX.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &crate::data::dns::DnsRecordsetJson::V1(
-                                        crate::data::dns::v1::DnsRecordsetJson::Mx(values),
-                                    ),
+                                    &resolve::DnsRecordsetJson::V1(resolve::latest::DnsRecordsetJson::Mx(values)),
                                 ).unwrap(),
                             });
                         }
                         kvs
                     },
                 }).unwrap());
+            },
+            args::Args::ProvisionCert(ident) => {
+                let random = SystemRandom::new();
+                let priv_key = default_generate_cert_keys(&random);
+                let cert_pub =
+                    request_cert(
+                        &certifier_url(),
+                        &mut get_identity_signer(ident).log_context(log, "Error accessing specified identity")?,
+                        &priv_key,
+                    )
+                        .await
+                        .map_err(|e| log.new_err_with("Failed to get certificate", ea!(err = e)))?
+                        .pub_pem;
+                let expiry = extract_expiry(&cert_pub)?;
+                println!("{}", serde_json::to_string_pretty(&json!({
+                    "expires_at": expiry,
+                    "cert_pub_pem": cert_pub,
+                    "cert_priv_pem": encode_priv_pem(&priv_key)
+                })).unwrap());
             },
         }
         return Ok(());

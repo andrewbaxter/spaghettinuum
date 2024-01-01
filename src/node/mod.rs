@@ -1,14 +1,12 @@
-use crate::data::node::protocol::v1::{
-    Message,
-    NodeInfo,
+use crate::interface::identity::Identity;
+use crate::interface::node_protocol::{
+    NodeSecretMethods,
+    NodeIdentityMethods,
+    Protocol,
+    self,
 };
-use crate::data::node::protocol::ChallengeResponse;
-use crate::data::node::protocol::Protocol;
-use crate::data::utils::StrSocketAddr;
-use crate::es;
-use crate::data::identity::{
-    Identity,
-};
+use crate::interface::spagh_cli::StrSocketAddr;
+use crate::utils::db_util::setup_db;
 use crate::utils::{
     BincodeSerializable,
 };
@@ -39,12 +37,8 @@ use std::collections::{
     HashSet,
 };
 use std::fmt::Debug;
-use std::fs;
-use std::io::{
-    ErrorKind,
-};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::{
     AtomicUsize,
     AtomicBool,
@@ -55,29 +49,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::Instant;
-use crate::data::node::{
-    nodeidentity::{
-        NodeIdentity,
-        NodeSecret,
-        NodeSecretMethods,
-        NodeIdentityMethods,
-    },
-    protocol::{
-        v1::{
-            FindRequest,
-            TempChallengeSigBody,
-            Value,
-        },
-        SerialAddr,
-        ValueBody,
-        FindMode,
-        FindResponse,
-        FindResponseBody,
-        FindResponseModeBody,
-        StoreRequest,
-    },
-};
 
+pub mod db;
 pub mod config;
 
 const HASH_SIZE: usize = 256usize;
@@ -139,48 +112,42 @@ fn hash(x: &dyn BincodeSerializable) -> DhtHash {
     return hash.finalize();
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct NodeState {
-    node: NodeInfo,
-    unresponsive: bool,
-}
-
 struct NextFindTimeout {
     end: Instant,
-    key: (FindMode, usize),
+    key: (node_protocol::latest::FindMode, usize),
 }
 
 #[derive(Clone)]
 struct ValueState {
-    value: Value,
+    value: node_protocol::latest::Value,
     updated: Instant,
 }
 
 struct NextPingTimeout {
     end: Instant,
-    key: (NodeIdentity, usize),
+    key: (node_protocol::latest::NodeIdentity, usize),
 }
 
 struct NextChallengeTimeout {
     end: Instant,
-    key: (NodeIdentity, usize),
+    key: (node_protocol::latest::NodeIdentity, usize),
 }
 
 struct NodeInner {
     log: Log,
-    own_id: NodeIdentity,
+    own_id: node_protocol::latest::NodeIdentity,
     own_id_hash: DhtHash,
-    own_secret: NodeSecret,
-    buckets: Mutex<[Vec<NodeState>; HASH_SIZE]>,
+    own_secret: node_protocol::latest::NodeSecret,
+    buckets: Mutex<[Vec<node_protocol::latest::NodeState>; HASH_SIZE]>,
     store: Mutex<HashMap<Identity, ValueState>>,
     dirty: AtomicBool,
     socket: UdpSocket,
     next_req_id: AtomicUsize,
     find_timeouts: UnboundedSender<NextFindTimeout>,
-    find_states: Mutex<HashMap<FindMode, FindState>>,
-    ping_states: Mutex<HashMap<NodeIdentity, PingState>>,
+    find_states: Mutex<HashMap<node_protocol::latest::FindMode, FindState>>,
+    ping_states: Mutex<HashMap<node_protocol::latest::NodeIdentity, PingState>>,
     challenge_timeouts: UnboundedSender<NextChallengeTimeout>,
-    challenge_states: Mutex<HashMap<NodeIdentity, ChallengeState>>,
+    challenge_states: Mutex<HashMap<node_protocol::latest::NodeIdentity, ChallengeState>>,
 }
 
 #[derive(Clone)]
@@ -191,12 +158,12 @@ struct OutstandingNodeEntry {
     dist: DhtHash,
     leading_zeros: usize,
     challenge: Box<[u8]>,
-    node: NodeInfo,
+    node: node_protocol::latest::NodeInfo,
 }
 
 enum BestNodeEntryNode {
     Self_,
-    Node(NodeInfo),
+    Node(node_protocol::latest::NodeInfo),
 }
 
 struct BestNodeEntry {
@@ -206,15 +173,15 @@ struct BestNodeEntry {
 
 struct FindState {
     req_id: usize,
-    mode: FindMode,
+    mode: node_protocol::latest::FindMode,
     target_hash: DhtHash,
     timeout: Instant,
     best: Vec<BestNodeEntry>,
     outstanding: Vec<OutstandingNodeEntry>,
-    requested: HashSet<NodeIdentity>,
+    requested: HashSet<node_protocol::latest::NodeIdentity>,
     // for storing value, or retrieving value
-    value: Option<Value>,
-    futures: Vec<ManualFutureCompleter<Option<Value>>>,
+    value: Option<node_protocol::latest::Value>,
+    futures: Vec<ManualFutureCompleter<Option<node_protocol::latest::Value>>>,
 }
 
 struct PingState {
@@ -225,7 +192,7 @@ struct PingState {
 struct ChallengeState {
     req_id: usize,
     challenge: Box<[u8]>,
-    node: NodeInfo,
+    node: node_protocol::latest::NodeInfo,
 }
 
 fn generate_challenge() -> Box<[u8]> {
@@ -234,20 +201,26 @@ fn generate_challenge() -> Box<[u8]> {
     return out;
 }
 
-fn sign_challenge<B: Serialize>(secret: &NodeSecret, t: TempChallengeSigBody<B>) -> Box<[u8]> {
+fn sign_challenge<
+    B: Serialize,
+>(secret: &node_protocol::latest::NodeSecret, t: node_protocol::latest::TempChallengeSigBody<B>) -> Box<[u8]> {
     secret.sign(&t.to_bytes())
 }
 
 fn verify_challenge<
     B: Serialize,
->(id: &NodeIdentity, t: TempChallengeSigBody<B>, sig: Box<[u8]>) -> Result<(), loga::Error> {
+>(
+    id: &node_protocol::latest::NodeIdentity,
+    t: node_protocol::latest::TempChallengeSigBody<B>,
+    sig: Box<[u8]>,
+) -> Result<(), loga::Error> {
     id.verify(&t.to_bytes(), &sig)
 }
 
 #[derive(Serialize, Deserialize)]
 struct Persisted {
-    own_secret: NodeSecret,
-    initial_buckets: Vec<Vec<NodeState>>,
+    own_secret: node_protocol::latest::NodeSecret,
+    initial_buckets: Vec<Vec<node_protocol::latest::NodeState>>,
 }
 
 pub struct ValueArgs {
@@ -269,63 +242,49 @@ impl Node {
         log: &Log,
         tm: TaskManager,
         bind_addr: StrSocketAddr,
-        bootstrap: &[NodeInfo],
-        persist_path: Option<PathBuf>,
+        bootstrap: &[node_protocol::latest::NodeInfo],
+        persistent_path: &Path,
     ) -> Result<Node, loga::Error> {
-        let log = log.fork(ea!(sys = "node"));
-        let do_bootstrap;
-        let initial_dirty;
-        let (own_id, own_secret, initial_buckets) = {
-            let persisted = match es!({
-                if let Some(persist_path) = &persist_path {
-                    let log = log.fork(ea!(path = persist_path.to_string_lossy()));
-                    let b = match fs::read(persist_path) {
-                        Ok(b) => b,
-                        Err(e) => if e.kind() == ErrorKind::NotFound {
-                            return Ok(None);
-                        } else {
-                            return Err(e.into());
-                        },
-                    };
-                    let p = serde_json::from_slice::<Persisted>(&b)?;
-                    let own_identity = p.own_secret.get_identity();
-                    return Ok(
-                        Some(
-                            (
-                                own_identity,
-                                p.own_secret,
-                                <[Vec<NodeState>; HASH_SIZE]>::try_from(
-                                    p.initial_buckets,
-                                ).map_err(
-                                    |e| log.new_err_with(
-                                        "Bucket count mismatch",
-                                        ea!(got = e.len(), want = HASH_SIZE),
-                                    ),
-                                )?,
-                            ),
-                        ),
-                    );
-                } else {
-                    return Ok(None);
-                }
-            }) {
-                Ok(p) => p,
-                Err(e) => {
-                    log.warn_e(e, "Failed to load persisted state", ea!());
-                    None
-                },
-            };
-            if let Some(p) = persisted {
-                initial_dirty = false;
-                do_bootstrap = false;
-                p
-            } else {
-                do_bootstrap = true;
-                initial_dirty = true;
-                let (own_id, own_secret) = NodeIdentity::new();
-                (own_id, own_secret, array_init::array_init(|_| vec![]))
+        let log = &log.fork(ea!(sys = "node"));
+        let mut do_bootstrap = false;
+        let own_id;
+        let own_secret;
+        let mut initial_buckets =
+            array_init::array_init::<_, Vec<node_protocol::latest::NodeState>, HASH_SIZE>(|_| vec![]);
+        let db_pool =
+            setup_db(&persistent_path.join("node.sqlite3"), db::migrate)
+                .await
+                .log_context(log, "Error initializing database")?;
+        let db = db_pool.get().await.log_context(log, "Error getting database connection")?;
+        match db
+            .interact(|conn| db::secret_get(&conn))
+            .await
+            .log_context(log, "Error interacting with database")?
+            .log_context(log, "Error retrieving secret")? {
+            Some(s) => {
+                own_id = s.get_identity();
+                own_secret = s;
+            },
+            None => {
+                (own_id, own_secret) = node_protocol::NodeIdentity::new();
+            },
+        }
+        {
+            let mut no_neighbors = true;
+            for e in db
+                .interact(|conn| db::neighbors_get(&conn))
+                .await
+                .log_context(log, "Error interacting with database")?
+                .log_context(log, "Error retrieving old neighbors")? {
+                initial_buckets[e.bucket as usize].push(match e.neighbor {
+                    node_protocol::NodeState::V1(s) => s,
+                });
+                no_neighbors = false;
             }
-        };
+            if no_neighbors {
+                do_bootstrap = true;
+            }
+        }
         let log = log.fork(ea!(ident = own_id));
         log.info("Starting", ea!());
         let sock = {
@@ -338,11 +297,15 @@ impl Node {
         let (challenge_timeout_write, challenge_timeout_recv) = unbounded::<NextChallengeTimeout>();
         let dir = Node(Arc::new(NodeInner {
             log: log.clone(),
-            own_id: own_id,
-            own_secret: own_secret,
+            own_id: match own_id {
+                node_protocol::NodeIdentity::V1(i) => i,
+            },
+            own_secret: match own_secret {
+                node_protocol::NodeSecret::V1(s) => s,
+            },
             own_id_hash: own_id_hash,
             buckets: Mutex::new(initial_buckets),
-            dirty: AtomicBool::new(initial_dirty),
+            dirty: AtomicBool::new(do_bootstrap),
             store: Mutex::new(HashMap::new()),
             socket: sock,
             next_req_id: AtomicUsize::new(0),
@@ -362,27 +325,41 @@ impl Node {
                 }
             }
         }
-        if let Some(persist_path) = persist_path {
+        {
             // Periodically save
             let tm = tm.clone();
             let dir = dir.clone();
-            let log = log.fork(ea!(path = persist_path.to_string_lossy()));
-            tm.periodic(Duration::from_secs(60 * 10), move || {
+            let log = log.fork(ea!(subsys = "persist_neighbors"));
+            tm.periodic(Duration::from_secs(60 * 10), {
                 let log = log.clone();
                 let dir = dir.clone();
-                let persist_path = persist_path.clone();
-                async move {
-                    if !dir.0.dirty.swap(false, Ordering::Relaxed) {
-                        return;
+                let db_pool = db_pool.clone();
+                move || {
+                    let log = log.clone();
+                    let dir = dir.clone();
+                    let db_pool = db_pool.clone();
+                    async move {
+                        if !dir.0.dirty.swap(false, Ordering::Relaxed) {
+                            return;
+                        }
+                        let db_pool = db_pool.clone();
+                        match async {
+                            db_pool.get().await.context("Error getting db connection")?.interact(move |conn| {
+                                db::secret_ensure(conn, &node_protocol::NodeSecret::V1(dir.0.own_secret.clone()))?;
+                                db::neighbors_clear(conn)?;
+                                for (i, bucket) in dir.0.buckets.lock().unwrap().clone().into_iter().enumerate() {
+                                    for n in bucket {
+                                        db::neighbors_insert(conn, i as u32, &node_protocol::NodeState::V1(n))?;
+                                    }
+                                }
+                                return Ok(()) as Result<_, loga::Error>;
+                            }).await??;
+                            return Ok(()) as Result<_, loga::Error>;
+                        }.await {
+                            Ok(_) => { },
+                            Err(e) => log.warn_e(e, "Failed to persist state", ea!()),
+                        }
                     }
-                    let buckets = dir.0.buckets.lock().unwrap().clone();
-                    match tokio::fs::write(persist_path, &serde_json::to_vec(&Persisted {
-                        own_secret: dir.0.own_secret.clone(),
-                        initial_buckets: buckets.into(),
-                    }).unwrap()).await.context("Failed to write state to file") {
-                        Ok(_) => { },
-                        Err(e) => log.warn_e(e, "Failed to persist state", ea!()),
-                    };
                 }
             });
         }
@@ -438,7 +415,7 @@ impl Node {
                         return true;
                     });
                     for (k, v) in unfresh {
-                        dir.start_find(FindMode::Put(k.clone()), Some(v.value), None).await;
+                        dir.start_find(node_protocol::latest::FindMode::Put(k.clone()), Some(v.value), None).await;
                     }
                 }
             })
@@ -466,7 +443,7 @@ impl Node {
                                     leading_zeros: leading_zeros,
                                 }),
                             };
-                            dir.send(&addr.0, Protocol::V1(Message::Ping)).await;
+                            dir.send(&addr.0, Protocol::V1(node_protocol::latest::Message::Ping)).await;
                             ping_timeout_write.unbounded_send(NextPingTimeout {
                                 end: Instant::now() + REQ_TIMEOUT,
                                 key: (id, req_id),
@@ -555,20 +532,20 @@ impl Node {
                 }
             });
         }
-        dir.start_find(FindMode::Nodes(dir.0.own_id.clone()), None, None).await;
+        dir.start_find(node_protocol::latest::FindMode::Nodes(dir.0.own_id.clone()), None, None).await;
         return Ok(dir);
     }
 
     /// Identity of node
-    pub fn identity(&self) -> NodeIdentity {
+    pub fn identity(&self) -> node_protocol::latest::NodeIdentity {
         return self.0.own_id.clone();
     }
 
     /// Look up a value in the network
-    pub async fn get(&self, key: Identity) -> Option<ValueBody> {
+    pub async fn get(&self, key: Identity) -> Option<node_protocol::latest::ValueBody> {
         let (f, c) = ManualFuture::new();
         let local_value = self.0.store.lock().unwrap().get(&key).map(|v| v.value.clone());
-        self.start_find(FindMode::Get(key), local_value, Some(c)).await;
+        self.start_find(node_protocol::latest::FindMode::Get(key), local_value, Some(c)).await;
         return f.await.map(|v| v.parse().unwrap());
     }
 
@@ -576,14 +553,19 @@ impl Node {
     /// and `signature` is the signature of those bytes using the corresponding
     /// `IdentitySecret`
     pub async fn put(&self, key: Identity, value: ValueArgs) {
-        self.start_find(FindMode::Put(key), Some(Value {
+        self.start_find(node_protocol::latest::FindMode::Put(key), Some(node_protocol::latest::Value {
             message: value.message,
             signature: value.signature,
             expires: Utc::now() + chrono::Duration::hours(24),
         }), None).await;
     }
 
-    fn mark_node_unresponsive(&self, key: NodeIdentity, leading_zeros: usize, unresponsive: bool) {
+    fn mark_node_unresponsive(
+        &self,
+        key: node_protocol::latest::NodeIdentity,
+        leading_zeros: usize,
+        unresponsive: bool,
+    ) {
         let mut buckets = self.0.buckets.lock().unwrap();
         let bucket = &mut buckets[leading_zeros];
         for n in bucket {
@@ -595,7 +577,7 @@ impl Node {
         self.0.dirty.store(true, Ordering::Relaxed);
     }
 
-    async fn start_challenge(&self, id: NodeIdentity, addr: &SocketAddr) {
+    async fn start_challenge(&self, id: node_protocol::latest::NodeIdentity, addr: &SocketAddr) {
         // store state by key, with futures
         let timeout = Instant::now() + REQ_TIMEOUT;
         let (challenge, req_id) = {
@@ -609,16 +591,16 @@ impl Node {
                     (challenge.clone(), e.insert(ChallengeState {
                         challenge: challenge,
                         req_id: self.0.next_req_id.fetch_add(1, Ordering::Relaxed),
-                        node: NodeInfo {
+                        node: node_protocol::latest::NodeInfo {
                             id: id.clone(),
-                            address: SerialAddr(addr.clone()),
+                            address: node_protocol::latest::SerialAddr(addr.clone()),
                         },
                     }))
                 },
             };
             (challenge, state.req_id)
         };
-        self.send(addr, Protocol::V1(Message::Challenge(challenge))).await;
+        self.send(addr, Protocol::V1(node_protocol::latest::Message::Challenge(challenge))).await;
         self.0.challenge_timeouts.unbounded_send(NextChallengeTimeout {
             end: timeout,
             key: (id, req_id),
@@ -627,18 +609,18 @@ impl Node {
 
     async fn start_find(
         &self,
-        mode: FindMode,
-        store: Option<Value>,
-        fut: Option<ManualFutureCompleter<Option<Value>>>,
+        mode: node_protocol::latest::FindMode,
+        store: Option<node_protocol::latest::Value>,
+        fut: Option<ManualFutureCompleter<Option<node_protocol::latest::Value>>>,
     ) {
         // store state by key, with futures
         let timeout = Instant::now() + REQ_TIMEOUT;
         let mut defer = vec![];
         let req_id = {
             let key_hash = match &mode {
-                FindMode::Nodes(k) => hash(k),
-                FindMode::Put(k) => hash(k),
-                FindMode::Get(k) => hash(k),
+                node_protocol::latest::FindMode::Nodes(k) => hash(k),
+                node_protocol::latest::FindMode::Put(k) => hash(k),
+                node_protocol::latest::FindMode::Get(k) => hash(k),
             };
             let mut borrowed_states = self.0.find_states.lock().unwrap();
             let state = match borrowed_states.entry(mode.clone()) {
@@ -691,11 +673,16 @@ impl Node {
             state.req_id
         };
         for d in defer {
-            self.send(&d.addr, Protocol::V1(Message::FindRequest(FindRequest {
-                challenge: d.challenge,
-                mode: mode.clone(),
-                sender: self.0.own_id.clone(),
-            }))).await;
+            self
+                .send(
+                    &d.addr,
+                    Protocol::V1(node_protocol::latest::Message::FindRequest(node_protocol::latest::FindRequest {
+                        challenge: d.challenge,
+                        mode: mode.clone(),
+                        sender: self.0.own_id.clone(),
+                    })),
+                )
+                .await;
         }
         match self.0.find_timeouts.unbounded_send(NextFindTimeout {
             end: timeout,
@@ -717,10 +704,10 @@ impl Node {
 
     async fn complete_state(&self, state: FindState) {
         match state.mode {
-            FindMode::Nodes(_) => {
+            node_protocol::latest::FindMode::Nodes(_) => {
                 // Do nothing, this is just internal initial route population
             },
-            FindMode::Put(k) => {
+            node_protocol::latest::FindMode::Put(k) => {
                 let v = state.value.unwrap();
                 for best in state.best {
                     match best.node {
@@ -732,15 +719,22 @@ impl Node {
                             });
                         },
                         BestNodeEntryNode::Node(node) => {
-                            self.send(&node.address.0, Protocol::V1(Message::Store(StoreRequest {
-                                key: k.clone(),
-                                value: v.clone(),
-                            }))).await;
+                            self
+                                .send(
+                                    &node.address.0,
+                                    Protocol::V1(
+                                        node_protocol::latest::Message::Store(node_protocol::latest::StoreRequest {
+                                            key: k.clone(),
+                                            value: v.clone(),
+                                        }),
+                                    ),
+                                )
+                                .await;
                         },
                     }
                 }
             },
-            FindMode::Get(_) => {
+            node_protocol::latest::FindMode::Get(_) => {
                 for f in state.futures {
                     f.complete(state.value.clone()).await;
                 }
@@ -748,7 +742,7 @@ impl Node {
         }
     }
 
-    async fn handle_challenge_resp(&self, resp: ChallengeResponse) {
+    async fn handle_challenge_resp(&self, resp: node_protocol::latest::ChallengeResponse) {
         let log = self.0.log.fork(ea!(action = "challenge_response", from_ident = resp.sender.dbg_str()));
 
         // Lookup request state
@@ -764,7 +758,7 @@ impl Node {
         let state = state_entry.get();
 
         // Confirm sender is legit routable, add to own routing table
-        match verify_challenge(&resp.sender, TempChallengeSigBody {
+        match verify_challenge(&resp.sender, node_protocol::latest::TempChallengeSigBody {
             challenge: &state.challenge,
             body: &resp.sender,
         }, resp.signature) {
@@ -778,7 +772,7 @@ impl Node {
         self.add_good_node(resp.sender.clone(), Some(state.node));
     }
 
-    async fn handle_find_resp(&self, resp: FindResponse) {
+    async fn handle_find_resp(&self, resp: node_protocol::latest::FindResponse) {
         let log: Log =
             self
                 .0
@@ -820,7 +814,7 @@ impl Node {
             };
 
             // Confirm sender is legit routable, possibly add to own routing table
-            match verify_challenge(&resp.body.sender, TempChallengeSigBody {
+            match verify_challenge(&resp.body.sender, node_protocol::latest::TempChallengeSigBody {
                 challenge: &outstanding_entry.challenge,
                 body: &resp.body,
             }, resp.sig) {
@@ -872,7 +866,7 @@ impl Node {
             // Gather data for response processing (response deferred due to borrow checker
             // issue with mutex guards)
             match resp.body.inner {
-                FindResponseModeBody::Nodes(nodes) => {
+                node_protocol::latest::FindResponseModeBody::Nodes(nodes) => {
                     // Send requests to each of the next hop nodes that are closer than what we've
                     // seen + that don't already have outgoing requests...
                     for n in nodes {
@@ -939,15 +933,15 @@ impl Node {
                         });
                     }
                 },
-                FindResponseModeBody::Value(value) => {
+                node_protocol::latest::FindResponseModeBody::Value(value) => {
                     match &resp.body.mode {
                         // bad response
-                        FindMode::Nodes(_) => { },
+                        node_protocol::latest::FindMode::Nodes(_) => { },
                         // bad response
-                        FindMode::Put(_) => { },
-                        FindMode::Get(k) => loop {
-                            if !k.verify(&log, &value.message, &value.signature) {
-                                log.warn("Got value with bad signature", ea!());
+                        node_protocol::latest::FindMode::Put(_) => { },
+                        node_protocol::latest::FindMode::Get(k) => loop {
+                            if let Err(e) = k.verify(&value.message, &value.signature) {
+                                log.warn("Got value with bad signature", ea!(err = e));
                                 break;
                             }
                             if value.expires < Utc::now() {
@@ -989,28 +983,38 @@ impl Node {
                 store.extend(lock.iter().map(|(k, v)| (k.clone(), v.value.clone())));
             }
             for (k, v) in store.into_iter() {
-                self.send(&addr, Protocol::V1(Message::Store(StoreRequest {
-                    key: k,
-                    value: v,
-                }))).await;
+                self
+                    .send(
+                        &addr,
+                        Protocol::V1(node_protocol::latest::Message::Store(node_protocol::latest::StoreRequest {
+                            key: k,
+                            value: v,
+                        })),
+                    )
+                    .await;
             }
         }
         if let Some(s) = state {
             self.complete_state(s).await;
         }
         for d in defer_next_req {
-            self.send(&d.addr, Protocol::V1(Message::FindRequest(FindRequest {
-                challenge: d.challenge,
-                mode: resp.body.mode.clone(),
-                sender: self.0.own_id.clone(),
-            }))).await;
+            self
+                .send(
+                    &d.addr,
+                    Protocol::V1(node_protocol::latest::Message::FindRequest(node_protocol::latest::FindRequest {
+                        challenge: d.challenge,
+                        mode: resp.body.mode.clone(),
+                        sender: self.0.own_id.clone(),
+                    })),
+                )
+                .await;
         }
     }
 
-    fn get_closest_peers(&self, target_hash: DhtHash, count: usize) -> Vec<NodeInfo> {
+    fn get_closest_peers(&self, target_hash: DhtHash, count: usize) -> Vec<node_protocol::latest::NodeInfo> {
         let buckets = self.0.buckets.lock().unwrap();
         let (leading_zeros, _) = diff(&target_hash, &self.0.own_id_hash);
-        let mut nodes: Vec<NodeInfo> = vec![];
+        let mut nodes: Vec<node_protocol::latest::NodeInfo> = vec![];
         'outer1: for bucket in leading_zeros .. HASH_SIZE {
             for state in &buckets[bucket] {
                 if nodes.len() >= count {
@@ -1037,46 +1041,66 @@ impl Node {
         log.debug("Received", ea!());
         match m {
             Protocol::V1(v1) => match v1 {
-                Message::FindRequest(m) => {
-                    let body = FindResponseBody {
+                node_protocol::latest::Message::FindRequest(m) => {
+                    let body = node_protocol::latest::FindResponseBody {
                         mode: m.mode.clone(),
                         sender: self.0.own_id.clone(),
                         inner: match &m.mode {
-                            FindMode::Nodes(k) => FindResponseModeBody::Nodes(
+                            node_protocol::latest::FindMode::Nodes(k) => node_protocol
+                            ::latest
+                            ::FindResponseModeBody
+                            ::Nodes(
                                 self.get_closest_peers(hash(k), NEIGHBORHOOD),
                             ),
-                            FindMode::Put(k) => FindResponseModeBody::Nodes(
+                            node_protocol::latest::FindMode::Put(k) => node_protocol
+                            ::latest
+                            ::FindResponseModeBody
+                            ::Nodes(
                                 self.get_closest_peers(hash(k), NEIGHBORHOOD),
                             ),
-                            FindMode::Get(k) => match self.0.store.lock().unwrap().entry(k.clone()) {
+                            node_protocol::latest::FindMode::Get(k) => match self
+                                .0
+                                .store
+                                .lock()
+                                .unwrap()
+                                .entry(k.clone()) {
                                 Entry::Occupied(v) => {
-                                    FindResponseModeBody::Value(v.get().value.clone())
+                                    node_protocol::latest::FindResponseModeBody::Value(v.get().value.clone())
                                 },
-                                Entry::Vacant(_) => FindResponseModeBody::Nodes(
+                                Entry::Vacant(_) => node_protocol::latest::FindResponseModeBody::Nodes(
                                     self.get_closest_peers(hash(k), NEIGHBORHOOD),
                                 ),
                             },
                         },
                     };
-                    let sig = sign_challenge(&self.0.own_secret, TempChallengeSigBody {
+                    let sig = sign_challenge(&self.0.own_secret, node_protocol::latest::TempChallengeSigBody {
                         challenge: &m.challenge,
                         body: &body,
                     });
-                    self.send(reply_to, Protocol::V1(Message::FindResponse(FindResponse {
-                        body: body,
-                        sig: sig,
-                    }))).await;
+                    self
+                        .send(
+                            reply_to,
+                            Protocol::V1(
+                                node_protocol::latest::Message::FindResponse(node_protocol::latest::FindResponse {
+                                    body: body,
+                                    sig: sig,
+                                }),
+                            ),
+                        )
+                        .await;
                     if self.add_good_node(m.sender.clone(), None) {
                         self.start_challenge(m.sender, reply_to).await;
                     }
                 },
-                Message::FindResponse(m) => {
+                node_protocol::latest::Message::FindResponse(m) => {
                     self.handle_find_resp(m).await;
                 },
-                Message::Store(m) => {
+                node_protocol::latest::Message::Store(m) => {
                     self.0.log.debug("Storing", ea!(value = m.key.dbg_str()));
-                    if !m.key.verify(&self.0.log, &m.value.message, &m.value.signature) {
-                        return Err(self.0.log.new_err("Store request failed signature validation"))
+                    if let Err(e) = m.key.verify(&m.value.message, &m.value.signature) {
+                        return Err(
+                            self.0.log.new_err_with("Store request failed signature validation", ea!(err = e)),
+                        );
                     };
                     let until_expire = m.value.expires.signed_duration_since(Utc::now());
                     if until_expire > chrono::Duration::hours(24) || until_expire <= chrono::Duration::zero() {
@@ -1102,26 +1126,40 @@ impl Node {
                         },
                     };
                 },
-                Message::Ping => {
-                    self.send(reply_to, Protocol::V1(Message::Pung(self.0.own_id.clone()))).await;
+                node_protocol::latest::Message::Ping => {
+                    self
+                        .send(reply_to, Protocol::V1(node_protocol::latest::Message::Pung(self.0.own_id.clone())))
+                        .await;
                 },
-                Message::Pung(k) => {
+                node_protocol::latest::Message::Pung(k) => {
                     let state = match self.0.ping_states.lock().unwrap().entry(k.clone()) {
                         Entry::Occupied(s) => s.remove(),
                         Entry::Vacant(_) => return Ok(()),
                     };
                     self.mark_node_unresponsive(k, state.leading_zeros, false);
                 },
-                Message::Challenge(challenge) => {
-                    self.send(reply_to, Protocol::V1(Message::ChallengeResponse(ChallengeResponse {
-                        sender: self.0.own_id.clone(),
-                        signature: sign_challenge(&self.0.own_secret, TempChallengeSigBody {
-                            challenge: &challenge,
-                            body: &self.0.own_id,
-                        }),
-                    }))).await;
+                node_protocol::latest::Message::Challenge(challenge) => {
+                    self
+                        .send(
+                            reply_to,
+                            Protocol::V1(
+                                node_protocol::latest::Message::ChallengeResponse(
+                                    node_protocol::latest::ChallengeResponse {
+                                        sender: self.0.own_id.clone(),
+                                        signature: sign_challenge(
+                                            &self.0.own_secret,
+                                            node_protocol::latest::TempChallengeSigBody {
+                                                challenge: &challenge,
+                                                body: &self.0.own_id,
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                        )
+                        .await;
                 },
-                Message::ChallengeResponse(resp) => {
+                node_protocol::latest::Message::ChallengeResponse(resp) => {
                     self.handle_challenge_resp(resp).await;
                 },
             },
@@ -1130,7 +1168,11 @@ impl Node {
     }
 
     /// Add a node, or check if adding a node would be new (returns whether id is new)
-    fn add_good_node(&self, id: NodeIdentity, node: Option<NodeInfo>) -> bool {
+    fn add_good_node(
+        &self,
+        id: node_protocol::latest::NodeIdentity,
+        node: Option<node_protocol::latest::NodeInfo>,
+    ) -> bool {
         let log = self.0.log.fork(ea!(activity = "add_good_node", node = id.dbg_str()));
         if id == self.0.own_id {
             log.info("Own node id, ignoring", ea!());
@@ -1150,7 +1192,7 @@ impl Node {
                         if n.unresponsive {
                             n.unresponsive = false;
                         }
-                        let new_state = NodeState {
+                        let new_state = node_protocol::latest::NodeState {
                             node: node.clone(),
                             unresponsive: false,
                         };
@@ -1171,7 +1213,7 @@ impl Node {
             // Empty slot
             if bucket.len() < NEIGHBORHOOD {
                 if let Some(node) = node {
-                    bucket.insert(0, NodeState {
+                    bucket.insert(0, node_protocol::latest::NodeState {
                         node: node.clone(),
                         unresponsive: false,
                     });
@@ -1185,7 +1227,7 @@ impl Node {
             if let Some(i) = last_unresponsive {
                 if let Some(node) = node {
                     bucket.remove(i);
-                    bucket.push(NodeState {
+                    bucket.push(node_protocol::latest::NodeState {
                         node: node.clone(),
                         unresponsive: false,
                     });

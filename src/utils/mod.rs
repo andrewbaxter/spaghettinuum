@@ -4,17 +4,11 @@ use std::{
         Arc,
         Mutex,
     },
-    net::{
-        IpAddr,
-        ToSocketAddrs,
-    },
-    str::FromStr,
 };
 use futures::{
     stream,
     FutureExt,
     Stream,
-    Future,
 };
 use itertools::Itertools;
 use loga::{
@@ -30,15 +24,20 @@ use poem::{
 };
 use reqwest::{
     Response,
-    Url,
 };
 use serde::Serialize;
 
 #[cfg(feature = "card")]
 pub mod pgp;
 pub mod versioned;
-pub mod misctests;
-pub mod unstableip;
+pub mod misc_tests;
+pub mod ip_util;
+pub mod unstable_ip;
+pub mod local_identity;
+pub mod backed_identity;
+pub mod tls_util;
+pub mod publish_util;
+pub mod db_util;
 
 pub trait BincodeSerializable {
     fn serialize(&self) -> Box<[u8]>;
@@ -95,36 +94,6 @@ impl<T: Clone + Unpin> AsyncBus<T> {
     }
 }
 
-#[inline(always)]
-pub fn err_stop<R, F: FnOnce() -> Result<R, loga::Error>>(f: F) -> Result<R, loga::Error> {
-    f()
-}
-
-#[macro_export]
-macro_rules! es{
-    ($b: expr) => {
-        $crate:: utils:: err_stop(|| $b)
-    };
-}
-
-#[inline(always)]
-pub async fn async_err_stop<
-    R,
-    T: Future<Output = Result<R, loga::Error>>,
-    F: FnOnce() -> T,
->(f: F) -> Result<R, loga::Error> {
-    f().await
-}
-
-#[macro_export]
-macro_rules! aes{
-    ($b: expr) => {
-        $crate:: utils:: async_err_stop(|| async {
-            $b
-        })
-    };
-}
-
 pub enum VisErr {
     Internal(loga::Error),
     External(loga::Error),
@@ -151,24 +120,6 @@ impl<O, E: Into<loga::Error>> ResultVisErr<O> for Result<O, E> {
     }
 }
 
-#[inline(always)]
-pub async fn async_err_stop2<
-    R,
-    T: Future<Output = Result<R, VisErr>>,
-    F: FnOnce() -> T,
->(f: F) -> Result<R, VisErr> {
-    f().await
-}
-
-#[macro_export]
-macro_rules! aes2{
-    ($b: expr) => {
-        $crate:: utils:: async_err_stop2(|| async {
-            $b
-        })
-    };
-}
-
 pub async fn reqwest_get(r: Response, limit: usize) -> Result<Vec<u8>, loga::Error> {
     let status = r.status();
     let mut resp_bytes = r.bytes().await.context("Error reading response body")?;
@@ -185,58 +136,23 @@ pub async fn reqwest_get(r: Response, limit: usize) -> Result<Vec<u8>, loga::Err
     return Ok(resp_bytes);
 }
 
-pub async fn lookup_ip(lookup: &str, ipv4_only: bool, ipv6_only: bool) -> Result<IpAddr, loga::Error> {
-    let lookup =
-        Url::parse(&lookup).context_with("Couldn't parse `advertise_addr` lookup as URL", ea!(lookup = lookup))?;
-    let lookup_host =
-        lookup.host().ok_or_else(|| loga::err("Missing host portion in `advertise_addr` url"))?.to_string();
-    let lookup_port = lookup.port().unwrap_or(match lookup.scheme() {
-        "http" => 80,
-        "https" => 443,
-        _ => return Err(loga::err("Only http/https are supported for ip lookups")),
-    });
-    let ip =
-        reqwest_get(
-            reqwest::ClientBuilder::new()
-                .resolve(
-                    &lookup_host,
-                    format!("{}:{}", lookup_host, lookup_port)
-                        .to_socket_addrs()
-                        .context_with("Failed to look up lookup host", ea!(host = lookup_host))?
-                        .into_iter()
-                        .filter(|a| {
-                            if ipv4_only && !a.is_ipv4() {
-                                return false;
-                            }
-                            if ipv6_only && !a.is_ipv6() {
-                                return false;
-                            }
-                            return true;
-                        })
-                        .next()
-                        .ok_or_else(
-                            || loga::err_with(
-                                "Unable to resolve any addresses (matching ipv4/6 requirements) via lookup",
-                                ea!(lookup = lookup),
-                            ),
-                        )?,
-                )
-                .build()
-                .unwrap()
-                .get(lookup)
-                .send()
-                .await?,
-            10 * 1024,
-        ).await?;
-    let ip =
-        String::from_utf8(
-            ip.clone(),
-        ).context_with("Failed to parse response as utf8", ea!(resp = String::from_utf8_lossy(&ip)))?;
-    let ip = IpAddr::from_str(&ip).context_with("Failed to parse response as socket addr", ea!(ip = ip))?;
-    return Ok(ip);
-}
+pub struct SystemEndpoints(pub BoxEndpoint<'static, poem::Response>);
 
-pub struct SystemEndpoints {
-    pub public: Option<BoxEndpoint<'static, poem::Response>>,
-    pub private: Option<BoxEndpoint<'static, poem::Response>>,
+// Break barrier - remove the footgunishness of using loop for this directly
+#[macro_export]
+macro_rules! bb{
+    ($l: lifetime _; $($t: tt) *) => {
+        $l: loop {
+            #[allow(unreachable_code)] break {
+                $($t) *
+            };
+        }
+    };
+    ($($t: tt) *) => {
+        loop {
+            #[allow(unreachable_code)] break {
+                $($t) *
+            };
+        }
+    };
 }

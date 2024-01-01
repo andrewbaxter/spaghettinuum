@@ -1,14 +1,11 @@
 use std::{
     sync::Arc,
     collections::HashMap,
-    fs,
-    io::ErrorKind,
-    path::PathBuf,
+    path::Path,
     net::{
         SocketAddr,
-        SocketAddrV4,
-        SocketAddrV6,
     },
+    str::FromStr,
 };
 use chrono::{
     Utc,
@@ -16,14 +13,25 @@ use chrono::{
 };
 use deadpool_sqlite::{
     Pool,
-    Runtime,
+};
+use der::{
+    Decode,
+    asn1::{
+        GeneralizedTime,
+        BitString,
+    },
+    Encode,
 };
 use good_ormning_runtime::GoodError;
-use network_interface::{
-    NetworkInterface,
-    NetworkInterfaceConfig,
+use ring::{
+    rand::{
+        SystemRandom,
+    },
+    signature::{
+        ECDSA_P256_SHA256_ASN1_SIGNING,
+        EcdsaKeyPair,
+    },
 };
-use pem::Pem;
 use sha2::{
     Digest,
 };
@@ -34,10 +42,8 @@ use loga::{
 };
 use poem::{
     Server,
-    Endpoint,
     Response,
     async_trait,
-    Request,
     http::{
         StatusCode,
         Uri,
@@ -57,8 +63,8 @@ use poem::{
     web::{
         Json,
         Data,
-        Path,
         Query,
+        self,
     },
     handler,
 };
@@ -67,55 +73,67 @@ use serde::{
     Serialize,
 };
 use sha2::Sha256;
+use signature::{
+    Keypair,
+    Signer,
+};
 use taskmanager::TaskManager;
-use x509_parser::prelude::X509Certificate;
-use crate::{
-    data::{
-        identity::{
-            Identity,
-        },
-        publisher::{
-            ResolveKeyValues,
-            self,
-            public::{
-                InfoResponse,
-                PublishRequestBody,
-                UnpublishRequestBody,
-            },
-            Publish,
-        },
-        utils::StrSocketAddr,
+use x509_cert::{
+    spki::{
+        SubjectPublicKeyInfoOwned,
+        EncodePublicKey,
+        DynSignatureAlgorithmIdentifier,
+        SignatureBitStringEncoding,
     },
+    builder::{
+        CertificateBuilder,
+        Profile,
+        Builder,
+    },
+    name::RdnSequence,
+    serial_number::SerialNumber,
+    time::Time,
+    Certificate,
+};
+use crate::{
     utils::{
-        lookup_ip,
         SystemEndpoints,
         VisErr,
         ResultVisErr,
-        unstableip::{
-            UnstableIpv4,
-            UnstableIpv6,
+        db_util::setup_db,
+        tls_util::{
+            encode_priv_pem,
+            encode_pub_pem,
         },
     },
     node::ValueArgs,
-    aes,
     node::{
         Node,
     },
-    es,
-    aes2,
-};
-use crate::publisher::config::{
-    PublisherConfig,
-};
-use self::{
-    config::{
-        AdvertiseAddrConfig,
-        AdvertiseAddrConfigIpVer,
+    interface::{
+        identity::Identity,
+        spagh_cli::StrSocketAddr,
+        spagh_api::{
+            resolve::{
+                ResolveKeyValues,
+                self,
+            },
+            publish::{
+                self,
+                latest::{
+                    PublishRequestBody,
+                    UnpublishRequestBody,
+                    InfoResponse,
+                },
+            },
+            self,
+        },
+        spagh_internal,
     },
 };
 
+pub mod admin_db;
 pub mod config;
-mod db;
 
 #[derive(Serialize, Deserialize)]
 struct SerialTlsCert {
@@ -123,131 +141,218 @@ struct SerialTlsCert {
     priv_der: Vec<u8>,
 }
 
-pub fn publisher_cert_hash(cert: &X509Certificate) -> Vec<u8> {
-    let mut hash = Sha256::new();
-    hash.update(cert.public_key().raw);
-    return hash.finalize().to_vec();
+pub fn publisher_cert_hash(cert_der: &[u8]) -> Result<Vec<u8>, ()> {
+    return Ok(
+        <Sha256 as Digest>::digest(
+            Certificate::from_der(&cert_der)
+                .map_err(|_| ())?
+                .tbs_certificate
+                .subject_public_key_info
+                .to_der()
+                .map_err(|_| ())?,
+        ).to_vec(),
+    );
 }
 
-/// Start a static publisher in the task manager. In a static publisher, all data
-/// to publish is part of the config.
-pub async fn new_static_publisher(
-    log: &Log,
-    tm: &TaskManager,
-    node: Node,
-    bind_addr: StrSocketAddr,
-    advertise_addr: SocketAddr,
-    cert_path: PathBuf,
-    announcements: HashMap<Identity, crate::data::publisher::announcement::v1::Announcement>,
-    keyvalues: HashMap<Identity, crate::data::publisher::v1::Publish>,
-) -> Result<(), loga::Error> {
-    let certs = get_certs(log, advertise_addr, cert_path)?;
+/// This manages identities/published values for the publisher.  The `DbAdmin`
+/// trait manages them in a persistent database, but you can implement your own if
+/// you want to control them fully programmatically.
+#[async_trait]
+pub trait Admin: Send + Sync {
+    async fn retrieve_certs(&self) -> Result<Option<spagh_internal::latest::PublishCerts>, loga::Error>;
+    async fn store_certs(&self, certs: &spagh_internal::latest::PublishCerts) -> Result<(), loga::Error>;
 
-    struct Inner {
-        keyvalues: HashMap<Identity, crate::data::publisher::v1::Publish>,
+    /// Allow publishing with this identity via the public publish endpoint.
+    async fn allow_identity(&self, identity: &Identity) -> Result<(), loga::Error>;
+    async fn disallow_identity(&self, identity: &Identity) -> Result<(), loga::Error>;
+    async fn is_identity_allowed(&self, identity: &Identity) -> Result<bool, loga::Error>;
+    async fn list_allowed_identities(&self, after: Option<&Identity>) -> Result<Vec<Identity>, loga::Error>;
+
+    /// Make data available to resolvers. This does two things: add it to the database,
+    /// and trigger an initial announcement that this publisher is authoritative for
+    /// the identity.
+    async fn publish(
+        &self,
+        identity: &Identity,
+        announcement: &publish::latest::Announcement,
+        keyvalues: publish::latest::Publish,
+    ) -> Result<(), loga::Error>;
+
+    /// Make data unavailable to publishers and stop announcing authority for this
+    /// identity.
+    async fn unpublish(&self, identity: &Identity) -> Result<(), loga::Error>;
+    async fn list_announcements(
+        &self,
+        after: Option<&Identity>,
+    ) -> Result<Vec<(Identity, spagh_api::publish::Announcement)>, loga::Error>;
+    async fn get_published_data(&self, identity: &Identity) -> Result<Option<publish::Publish>, loga::Error>;
+}
+
+pub struct DbAdmin {
+    db_pool: Pool,
+}
+
+impl DbAdmin {
+    pub async fn new(db_path: &Path) -> Result<DbAdmin, loga::Error> {
+        let db_pool =
+            setup_db(&db_path.join("publisher_admin.sqlite3"), admin_db::migrate)
+                .await
+                .context("Error initializing database")?;
+        return Ok(DbAdmin { db_pool: db_pool });
     }
+}
 
-    struct Outer(Arc<Inner>);
-
-    #[async_trait]
-    impl Endpoint for Outer {
-        type Output = Response;
-
-        async fn call(&self, req: Request) -> poem::Result<Self::Output> {
-            match aes!({
-                let ident =
-                    Identity::from_str(
-                        req.uri().path().get(1..).unwrap_or(""),
-                    ).context("Couldn't parse identity")?;
-                let mut kvs = publisher::v1::ResolveKeyValues(HashMap::new());
-                if let Some(d) = self.0.keyvalues.get(&ident) {
-                    let now = Utc::now();
-                    for k in req.uri().query().unwrap_or("").split(",") {
-                        if let Some(v) = d.data.get(k) {
-                            kvs.0.insert(k.to_string(), publisher::v1::ResolveValue {
-                                expires: now + Duration::minutes(v.ttl as i64),
-                                data: Some(v.data.clone()),
-                            });
-                        } else {
-                            kvs.0.insert(k.to_string(), publisher::v1::ResolveValue {
-                                expires: now + Duration::minutes(d.missing_ttl as i64),
-                                data: None,
-                            });
-                        }
-                    }
-                }
-                return Ok(ResolveKeyValues::V1(kvs));
-            }).await {
-                Ok(kvs) => Ok(
-                    <poem::web::Json<ResolveKeyValues> as IntoResponse>::into_response(poem::web::Json(kvs)),
-                ),
-                Err(e) => {
-                    return Ok(
-                        <String as IntoResponse>::with_status(e.to_string(), StatusCode::BAD_REQUEST).into_response(),
-                    );
-                },
-            }
+#[async_trait]
+impl Admin for DbAdmin {
+    async fn retrieve_certs(&self) -> Result<Option<spagh_internal::latest::PublishCerts>, loga::Error> {
+        let Some(found) = self.db_pool.get().await ?.interact(|conn| admin_db::get_certs(conn)).await ?? else {
+            return Ok(None);
+        };
+        match found {
+            crate::interface::spagh_internal::PublishCerts::V1(v1) => {
+                return Ok(Some(v1));
+            },
         }
     }
 
-    {
-        let log = log.fork(ea!(subsys = "server"));
-        let tm1 = tm.clone();
-        tm.critical_task(async move {
-            match tm1
-                .if_alive(
-                    Server::new(
-                        TcpListener::bind(
-                            bind_addr.1,
-                        ).rustls(
-                            RustlsConfig
-                            ::new().fallback(RustlsCertificate::new().key(certs.priv_pem).cert(certs.pub_pem)),
-                        ),
-                    ).run(get(Outer(Arc::new(Inner { keyvalues: keyvalues })))),
+    async fn store_certs(&self, certs: &spagh_internal::latest::PublishCerts) -> Result<(), loga::Error> {
+        let certs = certs.clone();
+        return Ok(
+            self
+                .db_pool
+                .get()
+                .await?
+                .interact(
+                    move |conn| admin_db::ensure_certs(conn, &spagh_internal::PublishCerts::V1(certs.clone())),
                 )
-                .await {
-                Some(r) => {
-                    return r.log_context(&log, "Exited with error");
-                },
-                None => {
-                    return Ok(())
-                },
-            }
+                .await??,
+        );
+    }
+
+    async fn allow_identity(&self, identity: &Identity) -> Result<(), loga::Error> {
+        let identity = identity.clone();
+        self.db_pool.get().await?.interact(move |db| {
+            admin_db::allow_identity(db, &identity)?;
+            return Ok(()) as Result<(), GoodError>;
+        }).await??;
+        return Ok(());
+    }
+
+    async fn disallow_identity(&self, identity: &Identity) -> Result<(), loga::Error> {
+        let identity = identity.clone();
+        self.db_pool.get().await?.interact(move |db| {
+            admin_db::disallow_identity(db, &identity)?;
+            return Ok(()) as Result<(), GoodError>;
+        }).await??;
+        return Ok(());
+    }
+
+    async fn is_identity_allowed(&self, identity: &Identity) -> Result<bool, loga::Error> {
+        let identity = identity.clone();
+        return Ok(self.db_pool.get().await?.interact(move |db| {
+            return Ok(admin_db::is_identity_allowed(db, &identity)?.is_some()) as Result<bool, GoodError>;
+        }).await??);
+    }
+
+    async fn list_allowed_identities(&self, after: Option<&Identity>) -> Result<Vec<Identity>, loga::Error> {
+        let after = after.cloned();
+        return Ok(match after {
+            None => {
+                self.db_pool.get().await?.interact(|db| admin_db::list_allowed_identities_start(db)).await??
+            },
+            Some(a) => {
+                self
+                    .db_pool
+                    .get()
+                    .await?
+                    .interact(move |db| admin_db::list_allowed_identities_after(db, &a))
+                    .await??
+            },
         });
     }
-    {
-        let announcements = Arc::new(announcements);
-        let node = node.clone();
-        tm.periodic(Duration::hours(4).to_std().unwrap(), move || {
-            let node = node.clone();
-            let announcements = announcements.clone();
-            return async move {
-                for (ident, data) in announcements.as_ref() {
-                    node.put(ident.clone(), crate::node::ValueArgs {
-                        message: data.message.clone(),
-                        signature: data.signature.clone(),
-                    }).await;
-                }
-            };
+
+    async fn publish(
+        &self,
+        identity: &Identity,
+        announcement: &publish::latest::Announcement,
+        keyvalues: publish::latest::Publish,
+    ) -> Result<(), loga::Error> {
+        let identity = identity.clone();
+        let announcement = announcement.clone();
+        self.db_pool.get().await?.interact(move |db| {
+            admin_db::set_announce(db, &identity, &publish::Announcement::V1(announcement))?;
+            admin_db::set_keyvalues(db, &identity, &publish::Publish::V1(keyvalues))
+        }).await??;
+        return Ok(());
+    }
+
+    async fn unpublish(&self, identity: &Identity) -> Result<(), loga::Error> {
+        let identity = identity.clone();
+        self.db_pool.get().await?.interact(move |db| {
+            admin_db::delete_announce(db, &identity)?;
+            admin_db::delete_keyvalues(db, &identity)
+        }).await??;
+        return Ok(());
+    }
+
+    async fn list_announcements(
+        &self,
+        after: Option<&Identity>,
+    ) -> Result<Vec<(Identity, spagh_api::publish::Announcement)>, loga::Error> {
+        let after = after.cloned();
+        return Ok(match after {
+            None => {
+                self
+                    .db_pool
+                    .get()
+                    .await?
+                    .interact(|db| admin_db::list_announce_start(db))
+                    .await??
+                    .into_iter()
+                    .map(|p| (p.identity, p.value))
+                    .collect()
+            },
+            Some(a) => {
+                self
+                    .db_pool
+                    .get()
+                    .await?
+                    .interact(move |db| admin_db::list_announce_after(db, &a))
+                    .await??
+                    .into_iter()
+                    .map(|p| (p.identity, p.value))
+                    .collect()
+            },
         });
     }
-    return Ok(());
+
+    async fn get_published_data(&self, identity: &Identity) -> Result<Option<publish::Publish>, loga::Error> {
+        let identity = identity.clone();
+        return Ok(self.db_pool.get().await?.interact(move |db| {
+            admin_db::get_keyvalues(db, &identity)
+        }).await??);
+    }
 }
 
-struct DynamicPublisherInner {
-    db: Pool,
+struct PublisherInner<A: Admin> {
     log: Log,
     node: Node,
     cert_pub_hash: Vec<u8>,
     advertise_addr: SocketAddr,
+    admin: A,
 }
 
 /// A publisher that stores data it publishes in a sqlite database, with methods
 /// for maintaining this data.
-#[derive(Clone)]
-pub struct DynamicPublisher(Arc<DynamicPublisherInner>);
+pub struct Publisher<A: Admin = DbAdmin>(Arc<PublisherInner<A>>);
 
-impl DynamicPublisher {
+impl<A: Admin> Clone for Publisher<A> {
+    fn clone(&self) -> Self {
+        return Self(self.0.clone());
+    }
+}
+
+impl<A: Admin + 'static> Publisher<A> {
     /// Launch a new dynamic publisher in task manager.
     ///
     /// * `advertise_addr`: The address to use in announcements to the network. This should
@@ -263,28 +368,107 @@ impl DynamicPublisher {
         node: Node,
         bind_addr: StrSocketAddr,
         advertise_addr: SocketAddr,
-        cert_path: PathBuf,
-        db_path: PathBuf,
-    ) -> Result<DynamicPublisher, loga::Error> {
-        let certs = get_certs(log, advertise_addr, cert_path)?;
-        let db = deadpool_sqlite::Config::new(db_path).create_pool(Runtime::Tokio1).unwrap();
-        {
-            let log = log.fork(ea!(action = "db_init"));
-            db.get().await.log_context(&log, "Error getting db instance")?.interact(|db| {
-                db::migrate(db)
-            }).await.log_context(&log, "Pool interaction error")?.log_context(&log, "Migration failed")?;
-        }
-        let core_log = log.fork(ea!(subsys = "server"));
-        let core = DynamicPublisher(Arc::new(DynamicPublisherInner {
-            db: db.clone(),
+        admin: A,
+    ) -> Result<Publisher<A>, loga::Error> {
+        let log = &log.fork(ea!(sys = "publisher"));
+
+        // Prepare publisher certs for publisher-resolver communication
+        let certs = match admin.retrieve_certs().await.log_context(log, "Error looking up certs")? {
+            Some(c) => c,
+            None => {
+                let random = SystemRandom::new();
+                let alg = &ECDSA_P256_SHA256_ASN1_SIGNING;
+                let priv_key_der = EcdsaKeyPair::generate_pkcs8(alg, &random).unwrap().as_ref().to_vec();
+                let self_spki = SubjectPublicKeyInfoOwned::from_der(&priv_key_der).unwrap();
+
+                #[derive(Clone)]
+                pub struct BuilderPubKey(pub SubjectPublicKeyInfoOwned);
+
+                impl EncodePublicKey for BuilderPubKey {
+                    fn to_public_key_der(&self) -> x509_cert::spki::Result<x509_cert::spki::Document> {
+                        return Ok(der::Document::from_der(&self.0.subject_public_key.to_der().unwrap()).unwrap());
+                    }
+                }
+
+                pub struct BuilderSignature(ring::signature::Signature);
+
+                impl SignatureBitStringEncoding for BuilderSignature {
+                    fn to_bitstring(&self) -> der::Result<BitString> {
+                        return Ok(BitString::from_bytes(self.0.as_ref()).unwrap());
+                    }
+                }
+
+                pub struct BuilderSigner {
+                    pub verifying_key: BuilderPubKey,
+                    pub keypair: EcdsaKeyPair,
+                    pub random: SystemRandom,
+                }
+
+                impl Keypair for BuilderSigner {
+                    type VerifyingKey = BuilderPubKey;
+
+                    fn verifying_key(&self) -> Self::VerifyingKey {
+                        return self.verifying_key.clone();
+                    }
+                }
+
+                impl DynSignatureAlgorithmIdentifier for BuilderSigner {
+                    fn signature_algorithm_identifier(
+                        &self,
+                    ) -> x509_cert::spki::Result<x509_cert::spki::AlgorithmIdentifierOwned> {
+                        return Ok(self.verifying_key.0.algorithm.clone());
+                    }
+                }
+
+                impl Signer<BuilderSignature> for BuilderSigner {
+                    fn try_sign(&self, msg: &[u8]) -> Result<BuilderSignature, signature::Error> {
+                        return Ok(BuilderSignature(self.keypair.sign(&self.random, msg).unwrap()));
+                    }
+                }
+
+                let pub_key_der = CertificateBuilder::new(
+                    Profile::Leaf {
+                        issuer: RdnSequence::from_str(&"CN=unused").unwrap(),
+                        enable_key_agreement: true,
+                        enable_key_encipherment: true,
+                    },
+                    // Timestamp, 1h granularity (don't publish two issued within an hour/don't issue
+                    // two within an hour)
+                    SerialNumber::new(&[1u8]).unwrap(),
+                    x509_cert::time::Validity {
+                        not_before: Time::GeneralTime(
+                            GeneralizedTime::from_date_time(der::DateTime::new(1970, 1, 1, 0, 0, 0).unwrap()),
+                        ),
+                        not_after: Time::GeneralTime(GeneralizedTime::from_date_time(der::DateTime::INFINITY)),
+                    },
+                    RdnSequence::from_str(&"CN=unused").unwrap(),
+                    self_spki.clone(),
+                    &BuilderSigner {
+                        verifying_key: BuilderPubKey(self_spki.clone()),
+                        keypair: EcdsaKeyPair::from_pkcs8(alg, &priv_key_der, &random).unwrap(),
+                        random: random.clone(),
+                    },
+                ).unwrap().build().unwrap().to_der().unwrap();
+                let certs = spagh_internal::latest::PublishCerts {
+                    pub_der: pub_key_der,
+                    priv_der: priv_key_der,
+                };
+                admin.store_certs(&certs).await.log_context(log, "Error persisting generated certs")?;
+                certs
+            },
+        };
+        let core = Publisher(Arc::new(PublisherInner {
             node: node.clone(),
-            log: core_log.clone(),
-            cert_pub_hash: certs.pub_hash.clone(),
+            log: log.clone(),
+            cert_pub_hash: publisher_cert_hash(&certs.pub_der).unwrap(),
             advertise_addr: advertise_addr,
+            admin: admin,
         }));
         tm.critical_task({
             let tm1 = tm.clone();
+            let log = log.fork(ea!(subsys = "protocol"));
             async move {
+                let log = &log;
                 match tm1
                     .if_alive(
                         Server::new(
@@ -292,32 +476,34 @@ impl DynamicPublisher {
                                 bind_addr.1,
                             ).rustls(
                                 RustlsConfig
-                                ::new().fallback(RustlsCertificate::new().key(certs.priv_pem).cert(certs.pub_pem)),
+                                ::new().fallback(
+                                    RustlsCertificate::new()
+                                        .key(encode_priv_pem(&certs.priv_der))
+                                        .cert(encode_pub_pem(&certs.pub_der)),
+                                ),
                             ),
                         ).run(get({
                             #[handler]
-                            async fn ep(service: Data<&DynamicPublisher>, uri: &Uri) -> Response {
-                                match aes2!({
+                            async fn ep(service: Data<&Publisher>, uri: &Uri) -> Response {
+                                match async {
                                     let ident =
                                         Identity::from_str(uri.path().get(1..).unwrap_or(""))
                                             .context("Couldn't parse identity")
                                             .err_external()?;
-                                    let mut kvs = publisher::v1::ResolveKeyValues(HashMap::new());
+                                    let mut kvs = resolve::latest::ResolveKeyValues(HashMap::new());
                                     if let Some(found_kvs) =
-                                        service.0.0.db.get().await.err_internal()?.interact(move |db| {
-                                            db::get_keyvalues(db, &ident)
-                                        }).await.err_internal()?.err_internal()? {
+                                        service.0.0.admin.get_published_data(&ident).await.err_internal()? {
                                         let now = Utc::now();
                                         match found_kvs {
-                                            publisher::Publish::V1(mut found) => {
+                                            publish::Publish::V1(mut found) => {
                                                 for k in uri.query().unwrap_or("").split(",") {
                                                     if let Some(v) = found.data.remove(k) {
-                                                        kvs.0.insert(k.to_string(), publisher::v1::ResolveValue {
+                                                        kvs.0.insert(k.to_string(), resolve::latest::ResolveValue {
                                                             expires: now + Duration::minutes(v.ttl as i64),
                                                             data: Some(v.data),
                                                         });
                                                     } else {
-                                                        kvs.0.insert(k.to_string(), publisher::v1::ResolveValue {
+                                                        kvs.0.insert(k.to_string(), resolve::latest::ResolveValue {
                                                             expires: now + Duration::minutes(found.missing_ttl as i64),
                                                             data: None,
                                                         });
@@ -327,7 +513,7 @@ impl DynamicPublisher {
                                         }
                                     }
                                     return Ok(ResolveKeyValues::V1(kvs));
-                                }).await {
+                                }.await {
                                     Ok(kvs) => poem::web::Json(kvs).into_response(),
                                     Err(e) => {
                                         match e {
@@ -351,7 +537,7 @@ impl DynamicPublisher {
                     )
                     .await {
                     Some(r) => {
-                        return r.log_context(&core_log, "Exited with error");
+                        return r.log_context(log, "Exited with error");
                     },
                     None => {
                         return Ok(());
@@ -360,44 +546,37 @@ impl DynamicPublisher {
             }
         });
         tm.periodic(Duration::hours(4).to_std().unwrap(), {
-            let log = log.fork(ea!(sys = "periodic_announce"));
-            let db = db.clone();
+            let log = log.fork(ea!(subsys = "periodic_announce"));
+            let core = core.clone();
             let node = node.clone();
             move || {
+                let core = core.clone();
                 let node = node.clone();
                 let log = log.clone();
-                let db = db.clone();
                 return async move {
-                    match aes!({
-                        let db = db.get().await.context("Error getting db connection")?;
-
-                        // easier than lambda...
-                        macro_rules! announce{
-                            ($pair: expr) => {
-                                let value = match & $pair.value {
-                                    publisher:: announcement:: Announcement:: V1(v) => ValueArgs {
+                    match async {
+                        let mut after = None;
+                        loop {
+                            let announce_pairs = core.0.admin.list_announcements(after.as_ref()).await?;
+                            let count = announce_pairs.len();
+                            if count == 0 {
+                                break;
+                            }
+                            for (i, (identity, announcement)) in announce_pairs.into_iter().enumerate() {
+                                let value = match announcement {
+                                    publish::Announcement::V1(v) => ValueArgs {
                                         message: v.message.clone(),
                                         signature: v.signature.clone(),
                                     },
                                 };
-                                node.put($pair.identity.clone(), value).await;
-                            };
-                        }
-
-                        let announce_pairs = db.interact(|db| db::list_announce_start(db)).await??;
-                        for announce_pair in &announce_pairs {
-                            announce!(announce_pair);
-                        }
-                        let mut prev_ident = announce_pairs.last().map(|i| i.identity.clone());
-                        while let Some(edge) = prev_ident {
-                            let announce_pairs = db.interact(move |db| db::list_announce_after(db, &edge)).await??;
-                            for announce_pair in &announce_pairs {
-                                announce!(announce_pair);
+                                node.put(identity.clone(), value).await;
+                                if i + 1 == count {
+                                    after = Some(identity);
+                                }
                             }
-                            prev_ident = announce_pairs.last().map(|i| i.identity.clone());
                         }
                         return Ok(());
-                    }).await {
+                    }.await {
                         Ok(_) => { },
                         Err(e) => {
                             log.warn_e(e, "Error while re-announcing publishers", ea!());
@@ -409,280 +588,40 @@ impl DynamicPublisher {
         return Ok(core);
     }
 
-    /// Allow publishing with this identity via the public publish endpoint.
-    pub async fn allow_identity(&self, identity: Identity) -> Result<(), loga::Error> {
-        let identity = identity.clone();
-        self.0.db.get().await?.interact(move |db| {
-            db::allow_identity(db, &identity)?;
-            return Ok(()) as Result<(), GoodError>;
-        }).await??;
-        return Ok(());
-    }
-
-    pub async fn disallow_identity(&self, identity: Identity) -> Result<(), loga::Error> {
-        let identity = identity.clone();
-        self.0.db.get().await?.interact(move |db| {
-            db::disallow_identity(db, &identity)?;
-            return Ok(()) as Result<(), GoodError>;
-        }).await??;
-        return Ok(());
-    }
-
-    pub async fn is_identity_allowed(&self, identity: Identity) -> Result<bool, loga::Error> {
-        let identity = identity.clone();
-        return Ok(self.0.db.get().await?.interact(move |db| {
-            return Ok(db::is_identity_allowed(db, &identity)?.is_some()) as Result<bool, GoodError>;
-        }).await??);
-    }
-
-    pub async fn list_allowed_identities(&self, after: Option<Identity>) -> Result<Vec<Identity>, loga::Error> {
-        return Ok(match after {
-            None => {
-                self.0.db.get().await?.interact(|db| db::list_allowed_identities_start(db)).await??
-            },
-            Some(a) => {
-                self.0.db.get().await?.interact(move |db| db::list_allowed_identities_after(db, &a)).await??
-            },
-        });
-    }
-
-    /// Make data available to resolvers. This does two things: add it to the database,
-    /// and trigger an initial announcement that this publisher is authoritative for
-    /// the identity.
     pub async fn publish(
         &self,
-        identity: Identity,
-        announcement: crate::data::publisher::announcement::v1::Announcement,
-        keyvalues: crate::data::publisher::v1::Publish,
+        identity: &Identity,
+        announcement: publish::latest::Announcement,
+        keyvalues: publish::latest::Publish,
     ) -> Result<(), loga::Error> {
-        {
-            let identity = identity.clone();
-            let announcement = announcement.clone();
-            self.0.db.get().await?.interact(move |db| {
-                db::set_announce(db, &identity, &publisher::announcement::Announcement::V1(announcement))?;
-                db::set_keyvalues(db, &identity, &crate::data::publisher::Publish::V1(keyvalues))
-            }).await??;
-        }
-        self.0.node.put(identity, ValueArgs {
+        self.0.admin.publish(identity, &announcement, keyvalues).await?;
+        self.0.node.put(identity.clone(), ValueArgs {
             message: announcement.message,
             signature: announcement.signature,
         }).await;
-        return Ok(());
+        return Ok(())
     }
 
-    /// Make data unavailable to publishers and stop announcing authority for this
-    /// identity.
-    pub async fn unpublish(&self, identity: Identity) -> Result<(), loga::Error> {
-        self.0.db.get().await?.interact(move |db| {
-            db::delete_announce(db, &identity)?;
-            db::delete_keyvalues(db, &identity)
-        }).await??;
-        return Ok(());
-    }
-
-    pub async fn list_announcements(&self, after: Option<Identity>) -> Result<Vec<Identity>, loga::Error> {
-        return Ok(match after {
-            None => {
-                self
-                    .0
-                    .db
-                    .get()
-                    .await?
-                    .interact(|db| db::list_announce_start(db))
-                    .await??
-                    .into_iter()
-                    .map(|p| p.identity)
-                    .collect()
-            },
-            Some(a) => {
-                self
-                    .0
-                    .db
-                    .get()
-                    .await?
-                    .interact(move |db| db::list_announce_after(db, &a))
-                    .await??
-                    .into_iter()
-                    .map(|p| p.identity)
-                    .collect()
-            },
-        });
-    }
-
-    pub async fn get_published_data(&self, identity: Identity) -> Result<Option<Publish>, loga::Error> {
-        return Ok(self.0.db.get().await?.interact(move |db| {
-            db::get_keyvalues(db, &identity)
-        }).await??);
+    pub fn pub_cert_hash(&self) -> Vec<u8> {
+        return self.0.cert_pub_hash.clone();
     }
 }
 
-struct PublisherCerts {
-    pub_pem: String,
-    priv_pem: String,
-    pub_hash: Vec<u8>,
-}
-
-fn get_certs(log: &Log, advertise_addr: SocketAddr, cert_path: PathBuf) -> Result<PublisherCerts, loga::Error> {
-    let (pub_der, priv_der) = 'got_certs : loop {
-        match es!({
-            let bytes = match fs::read(&cert_path) {
-                Err(e) => {
-                    if e.kind() == ErrorKind::NotFound {
-                        return Ok(None);
-                    } else {
-                        return Err(e.into());
-                    }
-                },
-                Ok(b) => b,
-            };
-            let serial_cert: SerialTlsCert = bincode::deserialize(&bytes)?;
-            return Ok(Some((serial_cert.pub_der, serial_cert.priv_der)));
-        }) {
-            Ok(c) => match c {
-                Some(c) => break 'got_certs c,
-                None => { },
-            },
-            Err(e) => {
-                log.warn_e(e, "Error loading serialized publisher cert", ea!());
-            },
-        }
-        let cert = rcgen::generate_simple_self_signed([advertise_addr.ip().to_string()]).unwrap();
-        let pub_der = &(&cert).serialize_der().unwrap();
-        let priv_der = &(&cert).serialize_private_key_der();
-        match fs::write(&cert_path, &bincode::serialize(&SerialTlsCert {
-            pub_der: pub_der.clone(),
-            priv_der: priv_der.clone(),
-        }).unwrap()) {
-            Err(e) => {
-                log.warn_e(e.into(), "Failed to serialize new publisher cert", ea!());
-            },
-            Ok(_) => { },
-        };
-        break (pub_der.clone(), priv_der.clone());
-    };
-    let pub_pem = {
-        let p = Pem::new("CERTIFICATE".to_string(), pub_der.clone());
-        pem::encode(&p)
-    };
-    let priv_pem = {
-        let p = Pem::new("PRIVATE KEY".to_string(), priv_der);
-        pem::encode(&p)
-    };
-    let pub_hash = publisher_cert_hash(&x509_parser::parse_x509_certificate(&pub_der).unwrap().1);
-    return Ok(PublisherCerts {
-        pub_pem: pub_pem,
-        priv_pem: priv_pem,
-        pub_hash: pub_hash,
-    });
-}
-
-async fn resolve_advertise_addr(a: AdvertiseAddrConfig) -> Result<SocketAddr, loga::Error> {
-    match a {
-        AdvertiseAddrConfig::Fixed(a) => return Ok(a),
-        AdvertiseAddrConfig::FromInterface { name, ip_version, port } => {
-            for iface in NetworkInterface::show().context("Failure listing network interfaces")?.iter() {
-                match &name {
-                    Some(n) => {
-                        if n != &iface.name {
-                            continue;
-                        } else {
-                            // pass
-                        }
-                    },
-                    _ => {
-                        // pass
-                    },
-                }
-                for addr in &iface.addr {
-                    match addr.ip() {
-                        std::net::IpAddr::V4(addr) => {
-                            match &ip_version {
-                                Some(v) => {
-                                    if !matches!(v, AdvertiseAddrConfigIpVer::V4) {
-                                        continue;
-                                    } else {
-                                        // pass
-                                    }
-                                },
-                                _ => {
-                                    // pass
-                                },
-                            }
-                            if !addr.unstable_is_global() {
-                                continue;
-                            }
-                            return Ok(SocketAddr::V4(SocketAddrV4::new(addr, port)));
-                        },
-                        std::net::IpAddr::V6(addr) => {
-                            match &ip_version {
-                                Some(v) => {
-                                    if !matches!(v, AdvertiseAddrConfigIpVer::V6) {
-                                        continue;
-                                    } else {
-                                        // pass
-                                    }
-                                },
-                                _ => {
-                                    // pass
-                                },
-                            }
-                            if !addr.unstable_is_global() {
-                                continue;
-                            }
-                            return Ok(SocketAddr::V6(SocketAddrV6::new(addr, port, 0, 0)));
-                        },
-                    }
-                }
-            }
-            return Err(
-                loga::err(
-                    "Couldn't find any interfaces matching specification or configured with a public ip address",
-                ),
-            );
-        },
-        AdvertiseAddrConfig::Lookup(l) => {
-            return Ok(SocketAddr::new(lookup_ip(&l.lookup, l.ipv4_only, l.ipv6_only).await?, l.port));
-        },
-    }
-}
-
-/// Launch a publisher into the task manager and return the API endpoints for
-/// attaching to the user-facing HTTP servers.
-pub async fn start(
-    tm: &TaskManager,
-    log: &Log,
-    config: PublisherConfig,
-    node: Node,
-) -> Result<SystemEndpoints, loga::Error> {
-    let log = log.fork(ea!(sys = "publisher"));
-
-    // Serve server-server
-    let core =
-        DynamicPublisher::new(
-            &log,
-            tm,
-            node,
-            config.bind_addr,
-            resolve_advertise_addr(config.advertise_addr).await?,
-            config.cert_path,
-            config.db_path,
-        ).await?;
-
-    // Build endpoints
-    let public_endpoints = Route::new().at("/publish", post({
+pub fn build_api_endpoints(publisher: &Publisher) -> SystemEndpoints {
+    return SystemEndpoints(Route::new().at("/publish", post({
         #[handler]
-        async fn ep(
-            Data(service): Data<&DynamicPublisher>,
-            Json(body): Json<crate::data::publisher::public::PublishRequest>,
-        ) -> Response {
-            match aes!({
+        async fn ep(Data(service): Data<&Publisher>, Json(body): Json<publish::PublishRequest>) -> Response {
+            let body = match body {
+                publish::PublishRequest::V1(body) => body,
+            };
+            match async {
                 // Before db access, make sure the stated identity actually created the message
-                if !body.identity.verify(&service.0.log, &body.signed.message, &body.signed.signature) {
+                if body.identity.verify(&body.signed.message, &body.signed.signature).is_err() {
                     return Ok(StatusCode::BAD_REQUEST.into_response());
                 }
 
                 // Check the identity is in the list of allowed to publish
-                if !service.is_identity_allowed(body.identity.clone()).await? {
+                if !service.0.admin.is_identity_allowed(&body.identity).await? {
                     return Ok(StatusCode::UNAUTHORIZED.into_response());
                 }
 
@@ -691,9 +630,9 @@ pub async fn start(
                     PublishRequestBody::from_bytes(
                         &body.signed.message,
                     ).log_context(&service.0.log, "Failed to deserialize message")?;
-                service.publish(body.identity, body2.announce, body2.keyvalues).await?;
+                service.publish(&body.identity, body2.announce, body2.keyvalues).await?;
                 return Ok(StatusCode::OK.into_response());
-            }).await {
+            }.await {
                 Ok(r) => {
                     return r;
                 },
@@ -707,18 +646,18 @@ pub async fn start(
         ep
     })).at("/unpublish", post({
         #[handler]
-        async fn ep(
-            Data(service): Data<&DynamicPublisher>,
-            Json(body): Json<crate::data::publisher::public::UnpublishRequest>,
-        ) -> Response {
-            match aes!({
+        async fn ep(Data(service): Data<&Publisher>, Json(body): Json<publish::UnpublishRequest>) -> Response {
+            let body = match body {
+                publish::UnpublishRequest::V1(body) => body,
+            };
+            match async {
                 // Before db access, make sure the stated identity actually created the message
-                if !body.identity.verify(&service.0.log, &body.signed.message, &body.signed.signature) {
+                if body.identity.verify(&body.signed.message, &body.signed.signature).is_err() {
                     return Ok(StatusCode::BAD_REQUEST.into_response());
                 }
 
                 // Check the identity is in the list of allowed to (un)publish
-                if !service.is_identity_allowed(body.identity.clone()).await? {
+                if !service.0.admin.is_identity_allowed(&body.identity).await? {
                     return Ok(StatusCode::UNAUTHORIZED.into_response());
                 }
 
@@ -733,9 +672,9 @@ pub async fn start(
 
                 // The request is by the identity and the identity recently made the request - do
                 // the unpublish.
-                service.unpublish(body.identity.clone()).await?;
+                service.0.admin.unpublish(&body.identity).await?;
                 return Ok(StatusCode::OK.into_response());
-            }).await {
+            }.await {
                 Ok(r) => {
                     return r;
                 },
@@ -749,7 +688,7 @@ pub async fn start(
         ep
     })).at("/info", get({
         #[handler]
-        async fn ep(service: Data<&DynamicPublisher>) -> Response {
+        async fn ep(service: Data<&Publisher>) -> Response {
             return Json(InfoResponse {
                 advertise_addr: service.0.0.advertise_addr,
                 cert_pub_hash: zbase32::encode_full_bytes(&service.0.0.cert_pub_hash).to_string(),
@@ -757,28 +696,23 @@ pub async fn start(
         }
 
         ep
-    })).with(AddData::new(core.clone())).boxed();
-    let private_endpoints = Route::new()
-        // Publishing permissions
-        .at("/allowed_identities", get({
+    })).nest("/admin", Route::new().at("/admin/allowed_identities", get({
             #[derive(Debug, Deserialize)]
             struct Params {
                 after: Option<String>,
             }
 
             #[handler]
-            async fn ep(Data(service): Data<&DynamicPublisher>, query: Query<Params>) -> Response {
-                match aes!({
-                    match &query.after {
+            async fn ep(Data(service): Data<&Publisher>, query: Query<Params>) -> Response {
+                match async {
+                    let after = match &query.after {
                         Some(i) => {
-                            let identity = Identity::from_str(i)?;
-                            return Ok(service.list_allowed_identities(Some(identity)).await?);
+                            Some(Identity::from_str(i)?)
                         },
-                        None => {
-                            return Ok(service.list_allowed_identities(None).await?);
-                        },
-                    }
-                }).await {
+                        None => None,
+                    };
+                    return Ok(service.0.admin.list_allowed_identities(after.as_ref()).await?);
+                }.await {
                     Ok(d) => {
                         return Json(d).into_response();
                     },
@@ -790,13 +724,13 @@ pub async fn start(
             }
 
             ep
-        })).at("/allowed_identities/:identity", post({
+        })).at("/admin/allowed_identities/:identity", post({
             #[handler]
-            async fn ep(Data(service): Data<&DynamicPublisher>, Path(identity): Path<String>) -> Response {
-                match aes!({
+            async fn ep(Data(service): Data<&Publisher>, web::Path(identity): web::Path<String>) -> Response {
+                match async {
                     let identity = Identity::from_str(&identity)?;
-                    return Ok(service.allow_identity(identity).await?);
-                }).await {
+                    return Ok(service.0.admin.allow_identity(&identity).await?);
+                }.await {
                     Ok(d) => {
                         return Json(d).into_response();
                     },
@@ -810,11 +744,11 @@ pub async fn start(
             ep
         }).delete({
             #[handler]
-            async fn ep(Data(service): Data<&DynamicPublisher>, Path(identity): Path<String>) -> Response {
-                match aes!({
+            async fn ep(Data(service): Data<&Publisher>, web::Path(identity): web::Path<String>) -> Response {
+                match async {
                     let identity = Identity::from_str(&identity)?;
-                    return Ok(service.disallow_identity(identity).await?);
-                }).await {
+                    return Ok(service.0.admin.disallow_identity(&identity).await?);
+                }.await {
                     Ok(d) => {
                         return Json(d).into_response();
                     },
@@ -828,25 +762,32 @@ pub async fn start(
             ep
         }))
         // Announced identities
-        .at("/announcements", get({
+        .at("/admin/announcements", get({
             #[derive(Debug, Deserialize)]
             struct Params {
                 after: Option<String>,
             }
 
             #[handler]
-            async fn ep(Data(service): Data<&DynamicPublisher>, query: Query<Params>) -> Response {
-                match aes!({
-                    match &query.after {
+            async fn ep(Data(service): Data<&Publisher>, Query(query): Query<Params>) -> Response {
+                match async {
+                    let after = match query.after {
                         Some(i) => {
-                            let identity = Identity::from_str(i)?;
-                            return Ok(service.list_announcements(Some(identity)).await?);
+                            Some(Identity::from_str(&i)?)
                         },
-                        None => {
-                            return Ok(service.list_announcements(None).await?);
-                        },
-                    }
-                }).await {
+                        None => None,
+                    };
+                    return Ok(
+                        service
+                            .0
+                            .admin
+                            .list_announcements(after.as_ref())
+                            .await?
+                            .into_iter()
+                            .map(|e| e.0)
+                            .collect::<Vec<_>>(),
+                    );
+                }.await {
                     Ok(d) => {
                         return Json(d).into_response();
                     },
@@ -858,13 +799,13 @@ pub async fn start(
             }
 
             ep
-        })).at("/announcements/:identity", get({
+        })).at("/admin/announcements/:identity", get({
             #[handler]
-            async fn ep(Data(service): Data<&DynamicPublisher>, Path(identity): Path<String>) -> Response {
-                match aes!({
+            async fn ep(Data(service): Data<&Publisher>, web::Path(identity): web::Path<String>) -> Response {
+                match async {
                     let identity = Identity::from_str(&identity)?;
-                    return Ok(service.get_published_data(identity).await?);
-                }).await {
+                    return Ok(service.0.admin.get_published_data(&identity).await?);
+                }.await {
                     Ok(d) => {
                         return Json(d).into_response();
                     },
@@ -876,11 +817,5 @@ pub async fn start(
             }
 
             ep
-        }))
-        // Etc
-        .with(AddData::new(core)).boxed();
-    return Ok(SystemEndpoints {
-        public: Some(public_endpoints),
-        private: Some(private_endpoints),
-    });
+        }))).with(AddData::new(publisher.clone())).boxed());
 }

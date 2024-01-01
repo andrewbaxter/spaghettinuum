@@ -8,7 +8,10 @@ pub mod resolver;
 
 /// Publisher service, dynamic publisher API service
 pub mod publisher;
+
+/// Methods for obtaining a `.s` TLS cert
+pub mod self_tls;
 pub mod config;
 
-/// Shared data structures
-pub mod data;
+/// Shared data structures, constants, etc
+pub mod interface;
