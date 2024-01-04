@@ -2,7 +2,6 @@ use chrono::Utc;
 use itertools::Itertools;
 use loga::{
     ea,
-    Log,
     ResultContext,
 };
 use openpgp_card_pcsc::PcscBackend;
@@ -27,7 +26,6 @@ use reqwest::{
     Response,
     header::AUTHORIZATION,
 };
-use ring::rand::SystemRandom;
 use serde_json::json;
 use spaghettinuum::{
     config::{
@@ -52,6 +50,10 @@ use spaghettinuum::{
             encode_priv_pem,
             extract_expiry,
         },
+        ip_util::{
+            local_resolve_global_ip,
+            remote_resolve_global_ip,
+        },
     },
     interface::{
         spagh_cli::{
@@ -63,6 +65,7 @@ use spaghettinuum::{
             ENV_API_ADMIN_TOKEN,
             PORT_PUBLISHER,
             DEFAULT_CERTIFIER_URL,
+            ENV_API_ADMIN_ADDR,
         },
         node_protocol::{
             self,
@@ -86,10 +89,10 @@ use spaghettinuum::{
     },
     self_tls::{
         request_cert,
-        default_generate_cert_keys,
         certifier_url,
     },
 };
+use x509_cert::spki::SubjectPublicKeyInfoOwned;
 use std::{
     collections::HashMap,
     env::{
@@ -116,6 +119,7 @@ mod args {
             },
             spagh_api::publish,
         },
+        config::GlobalAddrConfig,
     };
 
     #[derive(Aargvark)]
@@ -127,7 +131,7 @@ mod args {
     #[derive(Aargvark)]
     pub struct Register {
         /// Private/admin URL of a server with publishing set up. Defaults to the value of
-        /// environment variable `SPAGH_PRIV` or else localhost with the default port.
+        /// environment variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
         pub identity_id: String,
     }
@@ -135,7 +139,7 @@ mod args {
     #[derive(Aargvark)]
     pub struct Unregister {
         /// Private/admin URL of a server with publishing set up. Defaults to the value of
-        /// environment variable `SPAGH_PRIV` or else localhost with the default port.
+        /// environment variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
         pub identity_id: String,
     }
@@ -143,7 +147,7 @@ mod args {
     #[derive(Aargvark)]
     pub struct Publish {
         /// URL of a server with publishing set up. Defaults to the value of environment
-        /// variable `SPAGH` or else localhost with the default port.
+        /// variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
         /// Identity to publish as
         pub identity: BackedIdentityArg,
@@ -155,7 +159,7 @@ mod args {
     #[derive(Aargvark)]
     pub struct PublishDns {
         /// URL of a server with publishing set up. Defaults to the value of environment
-        /// variable `SPAGH` or else localhost with the default port.
+        /// variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
         /// Identity to publish as
         pub identity: BackedIdentityArg,
@@ -169,9 +173,20 @@ mod args {
     }
 
     #[derive(Aargvark)]
+    pub struct SelfPublish {
+        /// URL of a server with publishing set up. Defaults to the value of environment
+        /// variable `SPAGH_ADMIN`.
+        pub server: Option<Uri>,
+        /// How to detect the public ip to publish
+        pub addr: GlobalAddrConfig,
+        /// Identity to publish address under
+        pub identity: BackedIdentityArg,
+    }
+
+    #[derive(Aargvark)]
     pub struct Unpublish {
         /// URL of a server with publishing set up. Defaults to the value of environment
-        /// variable `SPAGH` or else localhost with the default port.
+        /// variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
         pub identity: BackedIdentityArg,
     }
@@ -179,14 +194,14 @@ mod args {
     #[derive(Aargvark)]
     pub struct ListPublisherIdentities {
         /// URL of a server with publishing set up. Defaults to the value of environment
-        /// variable `SPAGH_PRIV` or else localhost with the default port.
+        /// variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
     }
 
     #[derive(Aargvark)]
     pub struct ListPublisherKeyValues {
         /// URL of a server with publishing set up. Defaults to the value of environment
-        /// variable `SPAGH_PRIV` or else localhost with the default port.
+        /// variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
         pub identity: String,
     }
@@ -194,7 +209,7 @@ mod args {
     #[derive(Aargvark)]
     pub struct Query {
         /// URL of a server with the resolver enabled. Defaults to the value of environment
-        /// variable `SPAGH_RESOLVER` or else localhost with the default port.
+        /// variable `SPAGH`.
         pub server: Option<Uri>,
         /// Identity to query
         pub identity: String,
@@ -227,7 +242,7 @@ mod args {
     }
 
     #[derive(Aargvark)]
-    pub enum Args {
+    pub enum Command {
         /// Create a new local (file) identity
         NewLocalIdentity(NewLocalIdentity),
         /// Show the identity for a local identity file
@@ -256,7 +271,16 @@ mod args {
         GenerateDnsKeyValues(GenerateDnsKeyValues),
         /// Get a new `.s` TLS cert from a Spaghettinuum certifier. Returns the certs (pub
         /// and priv) as JSON along with the expiration date.
-        ProvisionCert(BackedIdentityArg),
+        RequestCert(BackedIdentityArg),
+        /// Publish the ip of the host this command runs on using the DNS-equivalent A/AAAA
+        /// records.
+        SelfPublish(SelfPublish),
+    }
+
+    #[derive(Aargvark)]
+    pub struct Args {
+        pub debug: Option<()>,
+        pub command: Command,
     }
 }
 
@@ -338,8 +362,15 @@ fn publisher_priv_client() -> Result<reqwest::Client, loga::Error> {
     }).build().unwrap());
 }
 
-fn api_url(mut url: Option<Uri>) -> Result<Uri, loga::Error> {
-    let env_key = ENV_API_ADDR;
+fn api_url(url: Option<Uri>) -> Result<Uri, loga::Error> {
+    return api_url_(url, ENV_API_ADDR);
+}
+
+fn admin_api_url(url: Option<Uri>) -> Result<Uri, loga::Error> {
+    return api_url_(url, ENV_API_ADMIN_ADDR);
+}
+
+fn api_url_(mut url: Option<Uri>, env_key: &'static str) -> Result<Uri, loga::Error> {
     let default_port = 443;
     if url.is_none() {
         match env::var(env_key) {
@@ -409,6 +440,7 @@ async fn publish(
             "Error parsing info response from publisher as json",
             ea!(body = String::from_utf8_lossy(&info_body)),
         )?;
+    log.debug("Got publisher information", ea!(info = serde_json::to_string_pretty(&info_body).unwrap()));
     let announce_message = node_protocol::latest::ValueBody {
         addr: SerialAddr(info.advertise_addr),
         cert_hash: zbase32::decode_full_bytes_str(
@@ -418,6 +450,7 @@ async fn publish(
         )?,
         published: Utc::now(),
     }.to_bytes();
+    log.debug("Unsigned announce message", ea!(message = serde_json::to_string_pretty(&announce_message).unwrap()));
     let mut signer = get_identity_signer(identity_arg).log_context(&log, "Error constructing signer")?;
     let (identity, request_message_sig) =
         signer.sign(&announce_message).log_context(&log, "Failed to sign announcement")?;
@@ -428,6 +461,7 @@ async fn publish(
         },
         keyvalues: keyvalues,
     }.to_bytes();
+    log.debug("Unsigned request message", ea!(message = serde_json::to_string_pretty(&request_message).unwrap()));
     let request = publish::PublishRequest::V1(publish::latest::PublishRequest {
         identity: identity,
         signed: publish::latest::PublishRequestSigned {
@@ -435,38 +469,37 @@ async fn publish(
             message: request_message,
         },
     });
-    c
-        .post(format!("{}publish/publish", server))
-        .json(&request)
-        .send()
-        .await
-        .check()
-        .await
-        .log_context(log, "Error making publish request")?;
+    let url = format!("{}publish/publish", server);
+    log.debug("Sending publish request", ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()));
+    c.post(url).json(&request).send().await.check().await.log_context(log, "Error making publish request")?;
     return Ok(());
 }
 
 #[tokio::main]
 async fn main() {
-    let log = loga::new(loga::Level::Info);
-
-    async fn inner(log: &Log) -> Result<(), loga::Error> {
-        match aargvark::vark::<args::Args>() {
-            args::Args::NewLocalIdentity(args) => {
+    async fn inner() -> Result<(), loga::Error> {
+        let args = aargvark::vark::<args::Args>();
+        let log = loga::new(match args.debug {
+            Some(_) => loga::Level::Debug,
+            None => loga::Level::Info,
+        });
+        let log = &log;
+        match args.command {
+            args::Command::NewLocalIdentity(args) => {
                 let (ident, secret) = BackedIdentityLocal::new();
                 write_identity(&args.path, &secret).await.log_context(&log, "Error creating local identity")?;
                 println!("{}", serde_json::to_string_pretty(&json!({
                     "identity": ident.to_string()
                 })).unwrap());
             },
-            args::Args::ShowLocalIdentity(p) => {
+            args::Command::ShowLocalIdentity(p) => {
                 let secret = p.value;
                 let identity = secret.identity();
                 println!("{}", serde_json::to_string_pretty(&json!({
                     "identity": identity.to_string()
                 })).unwrap());
             },
-            args::Args::ListCardIdentities => {
+            args::Command::ListCardIdentities => {
                 let mut out = vec![];
                 for card in PcscBackend::cards(None).log_context(log, "Failed to list smart cards")? {
                     let mut card: Card<Open> = card.into();
@@ -496,36 +529,30 @@ async fn main() {
                 }
                 println!("{}", serde_json::to_string_pretty(&out).unwrap());
             },
-            args::Args::Register(config) => {
-                publisher_priv_client()?
-                    .post(format!("{}publish/register/{}", api_url(config.server)?, config.identity_id))
-                    .send()
-                    .await
-                    .check_text()
-                    .await?;
+            args::Command::Register(config) => {
+                let url = format!("{}publish/register/{}", admin_api_url(config.server)?, config.identity_id);
+                log.debug("Sending unregister request (POST)", ea!(url = url));
+                publisher_priv_client()?.post(url).send().await.check_text().await?;
             },
-            args::Args::Unregister(config) => {
-                publisher_priv_client()?
-                    .post(format!("{}publish/unregister/{}", api_url(config.server)?, config.identity_id))
-                    .send()
-                    .await
-                    .check_text()
-                    .await?;
+            args::Command::Unregister(config) => {
+                let url = format!("{}publish/unregister/{}", admin_api_url(config.server)?, config.identity_id);
+                log.debug("Sending unregister request (POST)", ea!(url = url));
+                publisher_priv_client()?.post(url).send().await.check_text().await?;
             },
-            args::Args::Publish(config) => {
+            args::Command::Publish(config) => {
                 publish(
                     log,
                     reqwest::ClientBuilder::new().build().unwrap(),
-                    &api_url(config.server)?,
+                    &admin_api_url(config.server)?,
                     config.identity,
                     config.data.value,
                 ).await?;
             },
-            args::Args::PublishDns(config) => {
+            args::Command::PublishDns(config) => {
                 publish(
                     log,
                     reqwest::ClientBuilder::new().build().unwrap(),
-                    &api_url(config.server)?,
+                    &admin_api_url(config.server)?,
                     config.identity,
                     publish::latest::Publish {
                         missing_ttl: config.ttl,
@@ -599,11 +626,12 @@ async fn main() {
                     },
                 ).await?;
             },
-            args::Args::Unpublish(config) => {
+            args::Command::Unpublish(config) => {
                 let c = reqwest::ClientBuilder::new().build().unwrap();
                 let mut signer =
                     get_identity_signer(config.identity).log_context(&log, "Error constructing signer")?;
                 let request_message = publish::latest::UnpublishRequestBody { now: Utc::now() }.to_bytes();
+                log.debug("Unsigned request message", ea!(message = String::from_utf8_lossy(&request_message)));
                 let (identity, request_message_sig) =
                     signer.sign(&request_message).log_context(&log, "Failed to sign unpublish request")?;
                 let request = publish::UnpublishRequest::V1(publish::latest::UnpublishRequest {
@@ -613,8 +641,13 @@ async fn main() {
                         message: request_message,
                     },
                 });
+                let url = format!("{}publish/unpublish", admin_api_url(config.server)?);
+                log.debug(
+                    "Sending unpublish request",
+                    ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
+                );
                 c
-                    .post(format!("{}publish/unpublish", api_url(config.server)?))
+                    .post(url)
                     .json(&request)
                     .send()
                     .await
@@ -622,10 +655,10 @@ async fn main() {
                     .await
                     .log_context(log, "Error making unpublish request")?;
             },
-            args::Args::ListPublisherIdentities(config) => {
+            args::Command::ListPublisherIdentities(config) => {
                 let mut out = vec![];
                 let c = publisher_priv_client()?;
-                let url = api_url(config.server)?;
+                let url = admin_api_url(config.server)?;
                 let mut res = c.get(format!("{}publish", url)).send().await.check_bytes().await?;
                 loop {
                     let mut identities: Vec<Identity> =
@@ -645,38 +678,32 @@ async fn main() {
                 }
                 println!("{}", serde_json::to_string_pretty(&out).unwrap());
             },
-            args::Args::ListPublisherKeyValues(config) => {
+            args::Command::ListPublisherKeyValues(config) => {
                 println!(
                     "{}",
                     publisher_priv_client()?
-                        .get(format!("{}publish/{}", api_url(config.server)?, config.identity))
+                        .get(format!("{}publish/{}", admin_api_url(config.server)?, config.identity))
                         .send()
                         .await
                         .check_text()
                         .await?
                 );
             },
-            args::Args::Query(config) => {
+            args::Command::Query(config) => {
+                let url =
+                    format!(
+                        "{}v1/{}?{}",
+                        api_url(config.server)?,
+                        config.identity,
+                        config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
+                    );
+                log.debug("Sending query request", ea!(url = url));
                 println!(
                     "{}",
-                    reqwest::ClientBuilder::new()
-                        .build()
-                        .unwrap()
-                        .get(
-                            format!(
-                                "{}v1/{}?{}",
-                                api_url(config.server)?,
-                                config.identity,
-                                config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
-                            ),
-                        )
-                        .send()
-                        .await
-                        .check_text()
-                        .await?
+                    reqwest::ClientBuilder::new().build().unwrap().get(url).send().await.check_text().await?
                 );
             },
-            args::Args::GenerateConfig(config) => {
+            args::Command::GenerateConfig(config) => {
                 let api = config.publisher.is_some() || config.resolver.is_some();
                 let cwd = current_dir().unwrap();
                 let config = Config {
@@ -755,7 +782,7 @@ async fn main() {
                 };
                 println!("{}", serde_json::to_string_pretty(&config).unwrap());
             },
-            args::Args::GenerateDnsKeyValues(config) => {
+            args::Command::GenerateDnsKeyValues(config) => {
                 println!("{}", serde_json::to_string_pretty(&publish::latest::Publish {
                     missing_ttl: config.ttl,
                     data: {
@@ -826,14 +853,14 @@ async fn main() {
                     },
                 }).unwrap());
             },
-            args::Args::ProvisionCert(ident) => {
-                let random = SystemRandom::new();
-                let priv_key = default_generate_cert_keys(&random);
+            args::Command::RequestCert(ident) => {
+                let priv_key = p256::SecretKey::random(&mut rand::thread_rng());
                 let cert_pub =
                     request_cert(
+                        log,
                         &certifier_url(),
+                        &SubjectPublicKeyInfoOwned::from_key(priv_key.public_key()).unwrap(),
                         &mut get_identity_signer(ident).log_context(log, "Error accessing specified identity")?,
-                        &priv_key,
                     )
                         .await
                         .map_err(|e| log.new_err_with("Failed to get certificate", ea!(err = e)))?
@@ -842,14 +869,54 @@ async fn main() {
                 println!("{}", serde_json::to_string_pretty(&json!({
                     "expires_at": expiry,
                     "cert_pub_pem": cert_pub,
-                    "cert_priv_pem": encode_priv_pem(&priv_key)
+                    "cert_priv_pem": encode_priv_pem(&priv_key.to_sec1_der().unwrap())
                 })).unwrap());
+            },
+            args::Command::SelfPublish(config) => {
+                let global_ip = match config.addr {
+                    config::GlobalAddrConfig::Fixed(s) => s,
+                    config::GlobalAddrConfig::FromInterface { name, ip_version } => {
+                        local_resolve_global_ip(name, ip_version)
+                            .await?
+                            .log_context(log, "No global IP found on local interface")?
+                    },
+                    config::GlobalAddrConfig::Lookup(lookup) => {
+                        remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await?
+                    },
+                };
+                publish(
+                    log,
+                    reqwest::ClientBuilder::new().build().unwrap(),
+                    &admin_api_url(config.server)?,
+                    config.identity,
+                    publish::latest::Publish {
+                        missing_ttl: 60 * 24,
+                        data: {
+                            let mut out = HashMap::new();
+                            match global_ip {
+                                std::net::IpAddr::V4(ip) => {
+                                    out.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
+                                        ttl: 60,
+                                        data: ip.to_string(),
+                                    });
+                                },
+                                std::net::IpAddr::V6(ip) => {
+                                    out.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
+                                        ttl: 60,
+                                        data: ip.to_string(),
+                                    });
+                                },
+                            }
+                            out
+                        },
+                    },
+                ).await?;
             },
         }
         return Ok(());
     }
 
-    match inner(&log).await {
+    match inner().await {
         Ok(_) => { },
         Err(e) => {
             loga::fatal(e);

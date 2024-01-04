@@ -22,8 +22,8 @@ rand = "0.8.5"
 generic-array = "0.14.7"
 array-init = "2.1.0"
 futures = "0.3.30"
-serde = { version = "1.0.193", features = ["derive"] }
-sha2 = "0.10.8"
+serde = { version = "1.0.194", features = ["derive"] }
+sha2 = { version = "0.10.8", features = ["oid"] }
 tokio = { version = "1.35.1", features = [
     "macros",
     "rt-multi-thread",
@@ -48,7 +48,7 @@ ed25519-dalek = { version = "2.1.0", features = [
 ] }
 zbase32 = "0.1.2"
 itertools = "0.10.5"
-serde_json = "1.0.108"
+serde_json = "1.0.110"
 taskmanager = "0.1.2"
 loga = "0.1.7"
 aargvark = { version = "0.0.7", features = ["serde_json", "http_types"] }
@@ -71,11 +71,20 @@ rpassword = "7.3.1"
 good-ormning-runtime = { version = "0.1.15", features = ["sqlite", "chrono"] }
 network-interface = "1.1.1"
 schemars = "0.8.16"
-ring = "0.17.7"
 signature = "2.2.0"
 x509-cert = { version = "0.2.5", features = ["builder"] }
 rusqlite = "0.30.0"
 tokio-stream = { version = "0.1.14", features = ["sync"] }
+ecdsa = { version = "0.16.9", features = [
+    "pkcs8",
+    "der",
+    "pem",
+    "signing",
+    "spki",
+    "verifying",
+    "alloc",
+] }
+p256 = "0.13.2"
 
 [target.'cfg(target_env = "musl")'.dependencies]
 # Add feature to transitive dep of rusqlite, working around crates.io obstructive nannying

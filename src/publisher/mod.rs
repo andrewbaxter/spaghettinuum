@@ -18,18 +18,14 @@ use der::{
     Decode,
     asn1::{
         GeneralizedTime,
-        BitString,
     },
     Encode,
 };
 use good_ormning_runtime::GoodError;
-use ring::{
-    rand::{
-        SystemRandom,
-    },
-    signature::{
-        ECDSA_P256_SHA256_ASN1_SIGNING,
-        EcdsaKeyPair,
+use p256::{
+    pkcs8::EncodePrivateKey,
+    ecdsa::{
+        DerSignature,
     },
 };
 use sha2::{
@@ -73,17 +69,10 @@ use serde::{
     Serialize,
 };
 use sha2::Sha256;
-use signature::{
-    Keypair,
-    Signer,
-};
 use taskmanager::TaskManager;
 use x509_cert::{
     spki::{
         SubjectPublicKeyInfoOwned,
-        EncodePublicKey,
-        DynSignatureAlgorithmIdentifier,
-        SignatureBitStringEncoding,
     },
     builder::{
         CertificateBuilder,
@@ -376,56 +365,8 @@ impl<A: Admin + 'static> Publisher<A> {
         let certs = match admin.retrieve_certs().await.log_context(log, "Error looking up certs")? {
             Some(c) => c,
             None => {
-                let random = SystemRandom::new();
-                let alg = &ECDSA_P256_SHA256_ASN1_SIGNING;
-                let priv_key_der = EcdsaKeyPair::generate_pkcs8(alg, &random).unwrap().as_ref().to_vec();
-                let self_spki = SubjectPublicKeyInfoOwned::from_der(&priv_key_der).unwrap();
-
-                #[derive(Clone)]
-                pub struct BuilderPubKey(pub SubjectPublicKeyInfoOwned);
-
-                impl EncodePublicKey for BuilderPubKey {
-                    fn to_public_key_der(&self) -> x509_cert::spki::Result<x509_cert::spki::Document> {
-                        return Ok(der::Document::from_der(&self.0.subject_public_key.to_der().unwrap()).unwrap());
-                    }
-                }
-
-                pub struct BuilderSignature(ring::signature::Signature);
-
-                impl SignatureBitStringEncoding for BuilderSignature {
-                    fn to_bitstring(&self) -> der::Result<BitString> {
-                        return Ok(BitString::from_bytes(self.0.as_ref()).unwrap());
-                    }
-                }
-
-                pub struct BuilderSigner {
-                    pub verifying_key: BuilderPubKey,
-                    pub keypair: EcdsaKeyPair,
-                    pub random: SystemRandom,
-                }
-
-                impl Keypair for BuilderSigner {
-                    type VerifyingKey = BuilderPubKey;
-
-                    fn verifying_key(&self) -> Self::VerifyingKey {
-                        return self.verifying_key.clone();
-                    }
-                }
-
-                impl DynSignatureAlgorithmIdentifier for BuilderSigner {
-                    fn signature_algorithm_identifier(
-                        &self,
-                    ) -> x509_cert::spki::Result<x509_cert::spki::AlgorithmIdentifierOwned> {
-                        return Ok(self.verifying_key.0.algorithm.clone());
-                    }
-                }
-
-                impl Signer<BuilderSignature> for BuilderSigner {
-                    fn try_sign(&self, msg: &[u8]) -> Result<BuilderSignature, signature::Error> {
-                        return Ok(BuilderSignature(self.keypair.sign(&self.random, msg).unwrap()));
-                    }
-                }
-
+                let priv_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+                let self_spki = SubjectPublicKeyInfoOwned::from_key(*priv_key.verifying_key()).unwrap();
                 let pub_key_der = CertificateBuilder::new(
                     Profile::Leaf {
                         issuer: RdnSequence::from_str(&"CN=unused").unwrap(),
@@ -443,15 +384,11 @@ impl<A: Admin + 'static> Publisher<A> {
                     },
                     RdnSequence::from_str(&"CN=unused").unwrap(),
                     self_spki.clone(),
-                    &BuilderSigner {
-                        verifying_key: BuilderPubKey(self_spki.clone()),
-                        keypair: EcdsaKeyPair::from_pkcs8(alg, &priv_key_der, &random).unwrap(),
-                        random: random.clone(),
-                    },
-                ).unwrap().build().unwrap().to_der().unwrap();
+                    &priv_key,
+                ).unwrap().build::<DerSignature>().unwrap().to_der().unwrap();
                 let certs = spagh_internal::latest::PublishCerts {
                     pub_der: pub_key_der,
-                    priv_der: priv_key_der,
+                    priv_der: priv_key.to_pkcs8_der().unwrap().as_bytes().to_vec(),
                 };
                 admin.store_certs(&certs).await.log_context(log, "Error persisting generated certs")?;
                 certs

@@ -15,7 +15,9 @@ use crate::interface::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Announcement {
+    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
     pub message: Vec<u8>,
     pub signature: Vec<u8>,
 }
@@ -104,7 +106,9 @@ impl UnpublishRequestBody {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct UnpublishRequestSigned {
+    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
     pub message: Vec<u8>,
+    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
     pub signature: Vec<u8>,
 }
 

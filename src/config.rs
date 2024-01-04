@@ -4,6 +4,7 @@ use std::{
         IpAddr,
     },
 };
+use aargvark::Aargvark;
 use schemars::JsonSchema;
 use serde::{
     Deserialize,
@@ -21,14 +22,14 @@ use crate::{
     },
 };
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema, Aargvark)]
 #[serde(rename_all = "snake_case")]
 pub enum IpVer {
     V4,
     V6,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema, Aargvark)]
 #[serde(rename_all = "snake_case")]
 pub struct AdvertiseAddrLookupConfig {
     /// Host to look up address on.
@@ -40,7 +41,7 @@ pub struct AdvertiseAddrLookupConfig {
     pub contact_ip_ver: Option<IpVer>,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema, Aargvark)]
 #[serde(rename_all = "snake_case")]
 pub enum GlobalAddrConfig {
     /// Use this if you know the IP address beforehand (ex: in terraform, if you

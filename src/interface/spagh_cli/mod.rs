@@ -28,11 +28,17 @@ use super::identity::Identity;
 pub const ENV_CONFIG: &'static str = "SPAGH_CONFIG";
 
 // Client
+/// SocketAddr (host + port) for resolver.
 pub const ENV_API_ADDR: &'static str = "SPAGH";
+
+/// SocketAddr (host + port) for publisher.
+pub const ENV_API_ADMIN_ADDR: &'static str = "SPAGH_ADMIN";
+
+/// Bearer token for admin operations.
 pub const ENV_API_ADMIN_TOKEN: &'static str = "SPAGH_ADMIN_TOKEN";
 pub const PORT_NODE: u16 = 43890;
 pub const PORT_PUBLISHER: u16 = 43891;
-pub const DEFAULT_CERTIFIER_URL: &'static str = "certipasta.isandrew.com";
+pub const DEFAULT_CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";
 
 #[derive(Clone)]
 pub struct StrSocketAddr(pub String, pub SocketAddr);
@@ -113,6 +119,7 @@ pub enum BackedIdentityArg {
     /// A file containing a generated key
     Local(PathBuf),
     /// PC/SC card with ED25519 key
+    #[cfg(feature = "card")]
     Card {
         /// Card to register, using id per pcscd (not identity id)
         pcsc_id: String,

@@ -25,7 +25,12 @@ use poem::{
 use reqwest::{
     Response,
 };
-use serde::Serialize;
+use serde::{
+    Serialize,
+    Serializer,
+    Deserializer,
+    Deserialize,
+};
 
 #[cfg(feature = "card")]
 pub mod pgp;
@@ -155,4 +160,13 @@ macro_rules! bb{
             };
         }
     };
+}
+
+pub fn as_zbase32<S: Serializer>(v: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+    return serializer.serialize_str(&zbase32::encode_full_bytes(&v));
+}
+
+pub fn from_zbase32<'a, D: Deserializer<'a>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    let s = String::deserialize(deserializer)?;
+    return Ok(zbase32::decode_full_bytes_str(&s).map_err(|err| serde::de::Error::custom(err.to_string()))?);
 }

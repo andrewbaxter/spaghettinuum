@@ -18,7 +18,9 @@ pub struct CertRequest {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct SignedCertRequestParams {
+    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
     pub sig: Vec<u8>,
+    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
     pub text: Vec<u8>,
 }
 
@@ -37,6 +39,7 @@ impl SignedCertRequestParams {
 #[serde(rename_all = "snake_case")]
 pub struct CertRequestParams {
     pub stamp: DateTime<Utc>,
+    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
     pub spki_der: Vec<u8>,
 }
 

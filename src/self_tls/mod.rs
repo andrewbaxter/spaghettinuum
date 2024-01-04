@@ -10,21 +10,12 @@ use chrono::{
 };
 use deadpool_sqlite::Pool;
 use der::{
-    Decode,
     Encode,
 };
 use loga::{
     ea,
     ResultContext,
-};
-use ring::{
-    rand::{
-        SystemRandom,
-    },
-    signature::{
-        ECDSA_P256_SHA256_ASN1_SIGNING,
-        EcdsaKeyPair,
-    },
+    DebugDisplay,
 };
 use taskmanager::TaskManager;
 use tokio::{
@@ -67,51 +58,48 @@ pub fn certifier_url() -> String {
     return env::var("CERTIPASTA").unwrap_or(DEFAULT_CERTIFIER_URL.to_string());
 }
 
-/// Generates a key pair DER which can be serialized as PEM for a SSL server or
-/// from which SPKI can be extracted for a certifier cert request.
-pub fn default_generate_cert_keys(random: &SystemRandom) -> Vec<u8> {
-    let alg = &ECDSA_P256_SHA256_ASN1_SIGNING;
-    return EcdsaKeyPair::generate_pkcs8(alg, random).unwrap().as_ref().to_vec();
-}
-
 /// Requests a TLS public cert from the certifier for the `.s` domain associated
 /// with the provided identity and returns the result as PEM.
 pub async fn request_cert(
+    log: &loga::Log,
     certifier_url: &str,
-    signer: &mut Box<dyn IdentitySigner>,
-    cert_priv_key_pkcs8_der: &[u8],
-) -> Result<latest::CertResponse, String> {
-    let requester_spki = SubjectPublicKeyInfoOwned::from_der(&cert_priv_key_pkcs8_der).unwrap();
+    requester_spki: &SubjectPublicKeyInfoOwned,
+    message_signer: &mut Box<dyn IdentitySigner>,
+) -> Result<latest::CertResponse, loga::Error> {
     let text = serde_json::to_vec(&latest::CertRequestParams {
         stamp: Utc::now(),
         spki_der: requester_spki.to_der().unwrap(),
     }).unwrap();
-    let (ident, signature) = signer.sign(&text).map_err(|e| format!("Error signing payload: {:?}", e))?;
+    log.debug("Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
+    let (ident, signature) = message_signer.sign(&text).context("Error signing cert request params")?;
+    let body = serde_json::to_vec(&CertRequest::V1(latest::CertRequest {
+        identity: ident,
+        params: latest::SignedCertRequestParams {
+            sig: signature,
+            text: text,
+        },
+    })).unwrap();
+    log.debug("Sending cert request body", ea!(url = certifier_url, body = String::from_utf8_lossy(&body)));
     let resp =
         reqwest::Client::builder()
             .build()
             .unwrap()
             .post(certifier_url)
-            .body(serde_json::to_vec(&CertRequest::V1(latest::CertRequest {
-                identity: ident,
-                params: latest::SignedCertRequestParams {
-                    sig: signature,
-                    text: text,
-                },
-            })).unwrap())
+            .body(body)
             .send()
             .await
-            .map_err(|e| format!("Error sending cert request: {}", e))?;
+            .context("Error sending cert request")?;
     let resp_status = resp.status();
-    let body = resp.bytes().await.map_err(|e| format!("Error reading response: {:?}", e))?;
+    let body = resp.bytes().await.context("Error reading cert request response")?;
     if !resp_status.is_success() {
         return Err(
-            format!("Received {:?} from server with body: [[{}]]", resp_status, String::from_utf8_lossy(&body)),
+            loga::err_with(
+                "Received error response",
+                ea!(status = resp_status.dbg_str(), body = String::from_utf8_lossy(&body)),
+            ),
         );
     }
-    return Ok(
-        serde_json::from_slice(&body).map_err(|e| format!("Error reading cert request response body: {}", e))?,
-    );
+    return Ok(serde_json::from_slice(&body).context("Error reading cert request response body")?);
 }
 
 #[derive(Clone)]
@@ -137,17 +125,23 @@ pub async fn request_cert_stream(
     }
 
     async fn update_cert(
+        log: &loga::Log,
         db_pool: &Pool,
         certifier_url: &str,
         identity: &mut Box<dyn IdentitySigner>,
     ) -> Result<CertPair, loga::Error> {
-        let priv_der = default_generate_cert_keys(&SystemRandom::new());
+        let priv_key = p256::SecretKey::random(&mut rand::thread_rng());
         let pub_pem =
-            request_cert(&certifier_url, identity, &priv_der)
+            request_cert(
+                log,
+                &certifier_url,
+                &SubjectPublicKeyInfoOwned::from_key(priv_key.public_key()).unwrap(),
+                identity,
+            )
                 .await
-                .map_err(|e| loga::err_with("Error requesting api server tls cert from certifier", ea!(err = e)))?
+                .context("Error requesting api server tls cert from certifier")?
                 .pub_pem;
-        let priv_pem = encode_priv_pem(&priv_der);
+        let priv_pem = encode_priv_pem(&priv_key.to_sec1_der().unwrap());
         db_pool.get().await?.interact({
             let pub_pem = pub_pem.clone();
             let priv_pem = priv_pem.clone();
@@ -166,7 +160,7 @@ pub async fn request_cert_stream(
             priv_pem: priv_pem,
         },
         _ => {
-            update_cert(&db_pool, certifier_url, &mut signer).await?
+            update_cert(log, &db_pool, certifier_url, &mut signer).await?
         },
     };
     let refresh_at =
@@ -193,7 +187,7 @@ pub async fn request_cert_stream(
                 let certs = bb!{
                     'ok _;
                     for _ in 0 .. max_tries {
-                        match update_cert(&db_pool, &certifier_url, &mut signer).await {
+                        match update_cert(log, &db_pool, &certifier_url, &mut signer).await {
                             Ok(certs) => {
                                 break 'ok Some(certs);
                             },

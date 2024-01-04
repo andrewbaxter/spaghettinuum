@@ -26,7 +26,7 @@ use super::{
 pub async fn local_resolve_global_ip(
     restrict_name: Option<String>,
     restrict_ip_version: Option<IpVer>,
-) -> Result<IpAddr, loga::Error> {
+) -> Result<Option<IpAddr>, loga::Error> {
     for iface in NetworkInterface::show().context("Failure listing network interfaces")?.iter() {
         match &restrict_name {
             Some(n) => {
@@ -58,7 +58,7 @@ pub async fn local_resolve_global_ip(
                     if !addr.unstable_is_global() {
                         continue;
                     }
-                    return Ok(IpAddr::V4(addr));
+                    return Ok(Some(IpAddr::V4(addr)));
                 },
                 std::net::IpAddr::V6(addr) => {
                     match &restrict_ip_version {
@@ -76,14 +76,12 @@ pub async fn local_resolve_global_ip(
                     if !addr.unstable_is_global() {
                         continue;
                     }
-                    return Ok(IpAddr::V6(addr));
+                    return Ok(Some(IpAddr::V6(addr)));
                 },
             }
         }
     }
-    return Err(
-        loga::err("Couldn't find any interfaces matching specification or configured with a public ip address"),
-    );
+    return Ok(None);
 }
 
 pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer>) -> Result<IpAddr, loga::Error> {

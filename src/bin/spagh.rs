@@ -122,7 +122,9 @@ async fn main() {
         let global_ip = match config.global_addr {
             config::GlobalAddrConfig::Fixed(s) => s,
             config::GlobalAddrConfig::FromInterface { name, ip_version } => {
-                local_resolve_global_ip(name, ip_version).await?
+                local_resolve_global_ip(name, ip_version)
+                    .await?
+                    .log_context(log, "No global IP found on local interface")?
             },
             config::GlobalAddrConfig::Lookup(lookup) => {
                 remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await?
