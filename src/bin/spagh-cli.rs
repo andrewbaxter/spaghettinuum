@@ -1,4 +1,7 @@
-use chrono::Utc;
+use chrono::{
+    Utc,
+    DateTime,
+};
 use itertools::Itertools;
 use loga::{
     ea,
@@ -271,7 +274,7 @@ mod args {
         GenerateDnsKeyValues(GenerateDnsKeyValues),
         /// Get a new `.s` TLS cert from a Spaghettinuum certifier. Returns the certs (pub
         /// and priv) as JSON along with the expiration date.
-        RequestCert(BackedIdentityArg),
+        IssueCert(BackedIdentityArg),
         /// Publish the ip of the host this command runs on using the DNS-equivalent A/AAAA
         /// records.
         SelfPublish(SelfPublish),
@@ -853,7 +856,7 @@ async fn main() {
                     },
                 }).unwrap());
             },
-            args::Command::RequestCert(ident) => {
+            args::Command::IssueCert(ident) => {
                 let priv_key = p256::SecretKey::random(&mut rand::thread_rng());
                 let cert_pub =
                     request_cert(
@@ -865,7 +868,7 @@ async fn main() {
                         .await
                         .map_err(|e| log.new_err_with("Failed to get certificate", ea!(err = e)))?
                         .pub_pem;
-                let expiry = extract_expiry(&cert_pub)?;
+                let expiry = <DateTime<Utc>>::from(extract_expiry(&cert_pub)?);
                 println!("{}", serde_json::to_string_pretty(&json!({
                     "expires_at": expiry,
                     "cert_pub_pem": cert_pub,
