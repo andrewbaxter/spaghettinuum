@@ -67,7 +67,6 @@ use spaghettinuum::{
             PORT_NODE,
             ENV_API_ADMIN_TOKEN,
             PORT_PUBLISHER,
-            DEFAULT_CERTIFIER_URL,
             ENV_API_ADMIN_ADDR,
         },
         node_protocol::{
@@ -711,12 +710,15 @@ async fn main() {
                 let cwd = current_dir().unwrap();
                 let config = Config {
                     persistent_dir: cwd.join("spagh_persistent"),
-                    global_addr: GlobalAddrConfig::FromInterface {
+                    global_addrs: vec![GlobalAddrConfig::FromInterface {
+                        name: None,
+                        ip_version: Some(config::IpVer::V4),
+                    }, GlobalAddrConfig::FromInterface {
                         name: None,
                         ip_version: Some(config::IpVer::V6),
-                    },
+                    }],
                     node: NodeConfig {
-                        bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_NODE)),
+                        bind_addr: StrSocketAddr::new_fake(format!("[::]:{}", PORT_NODE)),
                         bootstrap: vec![BootstrapConfig {
                             addr: StrSocketAddr::new_fake(format!("spaghettinuum.isandrew.com:{}", PORT_NODE)),
                             id: NodeIdentity::from_str(
@@ -724,37 +726,15 @@ async fn main() {
                             ).unwrap(),
                         }],
                     },
-                    publisher: if config.publisher.is_some() {
-                        Some(spaghettinuum::publisher::config::PublisherConfig {
-                            bind_addr: StrSocketAddr::new_fake(format!("0.0.0.0:{}", PORT_PUBLISHER)),
-                            advertise_port: PORT_PUBLISHER,
-                        })
-                    } else {
-                        None
-                    },
-                    resolver: if config.resolver.is_some() || config.dns_bridge.is_some() {
-                        Some(spaghettinuum::resolver::config::ResolverConfig {
-                            max_cache: None,
-                            dns_bridge: if config.dns_bridge.is_some() {
-                                Some(spaghettinuum::resolver::config::DnsBridgeConfig {
-                                    upstream: StrSocketAddr::new_fake("1.1.1.1:53".to_string()),
-                                    bind_addr: StrSocketAddr::new_fake("0.0.0.0:53".to_string()),
-                                })
-                            } else {
-                                None
-                            },
-                        })
-                    } else {
-                        None
-                    },
-                    api_bind_addr: if api {
-                        if config.self_identity.is_some() {
-                            Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", 443)))
+                    api_bind_addrs: if api {
+                        let port = if config.self_identity.is_some() {
+                            443
                         } else {
-                            Some(StrSocketAddr::new_fake(format!("0.0.0.0:{}", 8080)))
-                        }
+                            8080
+                        };
+                        vec![StrSocketAddr::new_fake(format!("[::]:{}", port))]
                     } else {
-                        None
+                        vec![]
                     },
                     admin_token: if api {
                         Some(Alphanumeric.sample_string(&mut rand::thread_rng(), 20))
@@ -776,11 +756,37 @@ async fn main() {
                             }
                             Some(SelfIdentityConfig {
                                 identity: i,
-                                self_tls: Some(DEFAULT_CERTIFIER_URL.to_string()),
+                                self_tls: config::SelfTlsConfig::Default,
                                 self_publish: true,
                             })
                         },
                         None => None,
+                    },
+                    resolver: if config.resolver.is_some() || config.dns_bridge.is_some() {
+                        Some(spaghettinuum::resolver::config::ResolverConfig {
+                            max_cache: None,
+                            dns_bridge: if config.dns_bridge.is_some() {
+                                Some(spaghettinuum::resolver::config::DnsBridgeConfig {
+                                    upstream: StrSocketAddr::new_fake("[2606:4700:4700::1111]:853".to_string()),
+                                    upstream_type: None,
+                                    udp_bind_addrs: vec![StrSocketAddr::new_fake("[::]:53".to_string())],
+                                    tcp_bind_addrs: vec![],
+                                    tls_bind_addrs: vec![StrSocketAddr::new_fake("[::]:853".to_string())],
+                                })
+                            } else {
+                                None
+                            },
+                        })
+                    } else {
+                        None
+                    },
+                    publisher: if config.publisher.is_some() {
+                        Some(spaghettinuum::publisher::config::PublisherConfig {
+                            bind_addr: StrSocketAddr::new_fake(format!("[::]:{}", PORT_PUBLISHER)),
+                            advertise_port: PORT_PUBLISHER,
+                        })
+                    } else {
+                        None
                     },
                 };
                 println!("{}", serde_json::to_string_pretty(&config).unwrap());

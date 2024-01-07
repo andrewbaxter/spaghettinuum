@@ -117,7 +117,7 @@ pub async fn request_cert_stream(
 ) -> Result<Receiver<CertPair>, loga::Error> {
     let log = &log.fork(ea!(subsys = "self_cert"));
     let db_pool = setup_db(&persistent_dir.join("self_tls.sqlite3"), db::migrate).await?;
-    db_pool.get().await?.interact(|conn| db::ensure(conn)).await??;
+    db_pool.get().await?.interact(|conn| db::api_certs_setup(conn)).await??;
 
     fn decide_refresh_at(pub_pem: &str) -> Result<SystemTime, loga::Error> {
         let not_after = extract_expiry(pub_pem)?;
@@ -145,7 +145,7 @@ pub async fn request_cert_stream(
         db_pool.get().await?.interact({
             let pub_pem = pub_pem.clone();
             let priv_pem = priv_pem.clone();
-            move |conn| db::set_cert(conn, Some(&pub_pem), Some(&priv_pem))
+            move |conn| db::api_certs_set(conn, Some(&pub_pem), Some(&priv_pem))
         }).await??;
         return Ok(CertPair {
             priv_pem: priv_pem,
@@ -153,7 +153,7 @@ pub async fn request_cert_stream(
         });
     }
 
-    let initial_pair = db_pool.get().await?.interact(|conn| db::get_cert(conn)).await??;
+    let initial_pair = db_pool.get().await?.interact(|conn| db::api_certs_get(conn)).await??;
     let initial_pair = match (initial_pair.pub_pem, initial_pair.priv_pem) {
         (Some(pub_pem), Some(priv_pem)) => CertPair {
             pub_pem: pub_pem,

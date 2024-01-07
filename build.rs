@@ -12,4 +12,5 @@ fn main() {
     build_src::node::build(&root);
     build_src::publisher_admin::build(&root);
     build_src::resolver::build(&root);
+    build_src::resolver_dns::build(&root);
 }

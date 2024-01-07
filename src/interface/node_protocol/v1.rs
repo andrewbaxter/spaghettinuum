@@ -1,16 +1,18 @@
 use serde::Serializer;
+use serde::de::DeserializeOwned;
 use serde::{
     Serialize,
     Deserialize,
 };
 use core::fmt::Debug;
 use std::fmt::Display;
+use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use ed25519_dalek;
-use ed25519_dalek::Signature;
+use ed25519_dalek::Signature as SSignature;
 use sha2::Digest;
 use ed25519_dalek::Signer;
 use ed25519_dalek::SigningKey;
@@ -21,6 +23,14 @@ use rand::rngs::OsRng;
 use crate::interface::identity::Identity;
 use super::NodeIdentityMethods;
 use super::NodeSecretMethods;
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct Signature<T: Serialize + DeserializeOwned, I> {
+    message: Vec<u8>,
+    signature: Vec<u8>,
+    _p: PhantomData<(T, I)>,
+}
 
 // Ed25519
 #[derive(PartialEq, Eq, Clone)]
@@ -71,7 +81,7 @@ impl Ed25519NodeIdentity {
 
 impl NodeIdentityMethods for Ed25519NodeIdentity {
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), loga::Error> {
-        self.0.verify(message, &Signature::from_slice(signature)?)?;
+        self.0.verify(message, &SSignature::from_slice(signature)?)?;
         Ok(())
     }
 }
@@ -186,19 +196,6 @@ impl Hash {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub struct TempChallengeSigBody<'a, B: Serialize> {
-    pub challenge: &'a [u8],
-    pub body: &'a B,
-}
-
-impl<'a, B: Serialize> TempChallengeSigBody<'a, B> {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        return bincode::serialize(self).unwrap();
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum FindMode {
@@ -309,29 +306,12 @@ pub struct ValueBody {
     pub published: chrono::DateTime<chrono::Utc>,
 }
 
-impl ValueBody {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        return bincode::serialize(self).unwrap();
-    }
-
-    pub fn from_bytes(data: &[u8]) -> Result<Self, loga::Error> {
-        return Ok(bincode::deserialize(data)?);
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct Value {
-    pub message: Vec<u8>,
-    pub signature: Vec<u8>,
+    pub signature: Signature<ValueBody, NodeIdentity>,
     // Max 24h
     pub expires: chrono::DateTime<chrono::Utc>,
-}
-
-impl Value {
-    pub fn parse(&self) -> Result<ValueBody, loga::Error> {
-        return ValueBody::from_bytes(&self.message);
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -352,8 +332,8 @@ pub struct FindResponseBody {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct FindResponse {
-    pub body: FindResponseBody,
-    pub sig: Box<[u8]>,
+    pub sender: NodeIdentity,
+    pub signature: Signature<FindResponseBody, NodeIdentity>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

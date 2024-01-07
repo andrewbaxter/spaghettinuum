@@ -50,7 +50,10 @@ use spaghettinuum::{
             },
             self,
         },
-        spagh_cli,
+        spagh_cli::{
+            self,
+            DEFAULT_CERTIFIER_URL,
+        },
         spagh_api::{
             publish,
             resolve::{
@@ -119,16 +122,19 @@ async fn main() {
                 "Error creating persistent dir",
                 ea!(path = config.persistent_dir.to_string_lossy()),
             )?;
-        let global_ip = match config.global_addr {
-            config::GlobalAddrConfig::Fixed(s) => s,
-            config::GlobalAddrConfig::FromInterface { name, ip_version } => {
-                local_resolve_global_ip(name, ip_version)
-                    .await?
-                    .log_context(log, "No global IP found on local interface")?
-            },
-            config::GlobalAddrConfig::Lookup(lookup) => {
-                remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await?
-            },
+        let mut global_ips = vec![];
+        for a in config.global_addrs {
+            global_ips.push(match a {
+                config::GlobalAddrConfig::Fixed(s) => s,
+                config::GlobalAddrConfig::FromInterface { name, ip_version } => {
+                    local_resolve_global_ip(name, ip_version)
+                        .await?
+                        .log_context(log, "No global IP found on local interface")?
+                },
+                config::GlobalAddrConfig::Lookup(lookup) => {
+                    remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await?
+                },
+            })
         };
         let mut identity;
         if let Some(identity_config) = &config.identity {
@@ -152,101 +158,131 @@ async fn main() {
                 },
                 address: SerialAddr(e.addr.1),
             }).collect_vec(), &config.persistent_dir).await?;
-        let mut api_endpoints = Route::new();
         let mut has_api_endpoints = false;
-        if let Some(publisher_config) = config.publisher {
-            let publisher =
-                Publisher::new(
-                    log,
-                    &tm,
-                    node.clone(),
-                    publisher_config.bind_addr,
-                    SocketAddr::new(global_ip, publisher_config.advertise_port),
-                    DbAdmin::new(&config.persistent_dir)
-                        .await
-                        .log_context(log, "Error setting up publisher db-admin")?,
-                )
-                    .await
-                    .log_context(log, "Error setting up publisher")?;
-            has_api_endpoints = true;
-            api_endpoints = api_endpoints.nest("/publish", publisher::build_api_endpoints(&publisher).0);
-            if let Some(identity_config) = &config.identity {
-                if identity_config.self_publish {
-                    let (identity, announcement) =
-                        generate_publish_announce(
-                            identity.as_mut().unwrap(),
-                            SocketAddr::new(global_ip, publisher_config.advertise_port),
-                            &publisher.pub_cert_hash(),
-                        ).map_err(
-                            |e| log.new_err_with(
-                                "Failed to generate announcement for self publication",
-                                ea!(err = e),
-                            ),
-                        )?;
-                    publisher.publish(&identity, announcement, publish::latest::Publish {
-                        missing_ttl: 60 * 24,
-                        data: {
-                            let mut out = HashMap::new();
-                            match global_ip {
-                                std::net::IpAddr::V4(ip) => {
-                                    out.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
-                                        ttl: 60,
-                                        data: ip.to_string(),
-                                    });
-                                },
-                                std::net::IpAddr::V6(ip) => {
-                                    out.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
-                                        ttl: 60,
-                                        data: ip.to_string(),
-                                    });
-                                },
-                            }
-                            out
-                        },
-                    }).await?;
-                }
-            }
-        }
-        if let Some(resolver_config) = config.resolver {
-            let resolver =
-                Resolver::new(log, &tm, node.clone(), resolver_config.max_cache, &config.persistent_dir)
-                    .await
-                    .log_context(log, "Error setting up resolver")?;
-            has_api_endpoints = true;
-            api_endpoints = api_endpoints.nest("/resolve", resolver::build_api_endpoints(&log, &resolver).0);
-            if let Some(dns_config) = resolver_config.dns_bridge {
-                resolver::start_dns_bridge(log, &tm, &resolver, dns_config);
-            }
-        }
-        if has_api_endpoints {
-            let bind_addr =
-                config
-                    .api_bind_addr
-                    .log_context(
+        let publisher = match config.publisher {
+            Some(publisher_config) => {
+                has_api_endpoints = true;
+                let advertise_ip =
+                    *global_ips
+                        .get(0)
+                        .log_context(log, "Running a publisher requires at least one configured global IP")?;
+                let publisher =
+                    Publisher::new(
                         log,
+                        &tm,
+                        node.clone(),
+                        publisher_config.bind_addr,
+                        SocketAddr::new(advertise_ip, publisher_config.advertise_port),
+                        DbAdmin::new(&config.persistent_dir)
+                            .await
+                            .log_context(log, "Error setting up publisher db-admin")?,
+                    )
+                        .await
+                        .log_context(log, "Error setting up publisher")?;
+                if let Some(identity_config) = &config.identity {
+                    if identity_config.self_publish {
+                        let (identity, announcement) =
+                            generate_publish_announce(
+                                identity.as_mut().unwrap(),
+                                SocketAddr::new(advertise_ip, publisher_config.advertise_port),
+                                &publisher.pub_cert_hash(),
+                            ).map_err(
+                                |e| log.new_err_with(
+                                    "Failed to generate announcement for self publication",
+                                    ea!(err = e),
+                                ),
+                            )?;
+                        publisher.publish(&identity, announcement, publish::latest::Publish {
+                            missing_ttl: 60 * 24,
+                            data: {
+                                let mut out = HashMap::new();
+                                match advertise_ip {
+                                    std::net::IpAddr::V4(ip) => {
+                                        out.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
+                                            ttl: 60,
+                                            data: ip.to_string(),
+                                        });
+                                    },
+                                    std::net::IpAddr::V6(ip) => {
+                                        out.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
+                                            ttl: 60,
+                                            data: ip.to_string(),
+                                        });
+                                    },
+                                }
+                                out
+                            },
+                        }).await?;
+                    }
+                }
+                Some(publisher)
+            },
+            None => None,
+        };
+        let resolver = match config.resolver {
+            Some(resolver_config) => {
+                has_api_endpoints = true;
+                let resolver =
+                    Resolver::new(log, &tm, node.clone(), resolver_config.max_cache, &config.persistent_dir)
+                        .await
+                        .log_context(log, "Error setting up resolver")?;
+                if let Some(dns_config) = resolver_config.dns_bridge {
+                    resolver::dns::start_dns_bridge(
+                        log,
+                        &tm,
+                        &resolver,
+                        &global_ips,
+                        dns_config,
+                        &config.persistent_dir,
+                    )
+                        .await
+                        .log_context(log, "Error setting up resolver DNS bridge")?;
+                }
+                Some(resolver)
+            },
+            None => None,
+        };
+        if has_api_endpoints {
+            if config.api_bind_addrs.is_empty() {
+                return Err(
+                    log.new_err(
                         "Configuration defines api http endpoints but no api http bind address present in config",
-                    )?;
-            let server;
+                    ),
+                );
+            }
+            let mut certs_stream_rx = None;
 
             bb!{
-                'prepared_server _;
-                // Certs from spagh certifier
-                bb!{
-                    let Some(identity) = identity else {
+                let Some(identity) = identity else {
+                    break;
+                };
+                let certifier_url = match &config.identity.as_ref().unwrap().self_tls {
+                    config::SelfTlsConfig::None => {
                         break;
-                    };
-                    let Some(certifier_url) = config.identity.unwrap().self_tls else {
-                        break;
-                    };
-                    let certs_stream_rx =
-                        request_cert_stream(log, &tm, &certifier_url, identity, &config.persistent_dir).await?;
-                    server =
+                    },
+                    config::SelfTlsConfig::Default => DEFAULT_CERTIFIER_URL.to_string(),
+                    config::SelfTlsConfig::Certifier(c) => c.clone(),
+                };
+                certs_stream_rx =
+                    Some(request_cert_stream(log, &tm, &certifier_url, identity, &config.persistent_dir).await?);
+            };
+
+            for bind_addr in config.api_bind_addrs {
+                let mut api_endpoints = Route::new();
+                if let Some(resolver) = &resolver {
+                    api_endpoints = api_endpoints.nest("/resolve", resolver::build_api_endpoints(&log, resolver).0);
+                }
+                if let Some(publisher) = &publisher {
+                    api_endpoints = api_endpoints.nest("/publish", publisher::build_api_endpoints(publisher).0);
+                }
+                let server = match &certs_stream_rx {
+                    Some(certs_stream_rx) => {
                         Server::new(
                             TcpListener::bind(
                                 bind_addr.1,
                             ).rustls(
                                 WatchStream::new(
-                                    certs_stream_rx,
+                                    certs_stream_rx.clone(),
                                 ).map(
                                     |p| RustlsConfig
                                     ::new().fallback(RustlsCertificate::new().cert(p.pub_pem).key(p.priv_pem)),
@@ -254,27 +290,27 @@ async fn main() {
                             ),
                         )
                             .run(api_endpoints)
-                            .boxed();
-                    break 'prepared_server;
+                            .boxed()
+                    },
+                    None => {
+                        Server::new(TcpListener::bind(bind_addr.1)).run(api_endpoints).boxed()
+                    },
                 };
-                // Default http server
-                server = Server::new(TcpListener::bind(bind_addr.1)).run(api_endpoints).boxed();
-            };
-
-            tm.critical_task({
-                let log = log.fork(ea!(subsys = "api_http"));
-                let tm1 = tm.clone();
-                async move {
-                    match tm1.if_alive(server).await {
-                        Some(r) => {
-                            return r.log_context_with(&log, "Exited with error", ea!(addr = bind_addr));
-                        },
-                        None => {
-                            return Ok(());
-                        },
+                tm.critical_task({
+                    let log = log.fork(ea!(subsys = "api_http"));
+                    let tm1 = tm.clone();
+                    async move {
+                        match tm1.if_alive(server).await {
+                            Some(r) => {
+                                return r.log_context_with(&log, "Exited with error", ea!(addr = bind_addr));
+                            },
+                            None => {
+                                return Ok(());
+                            },
+                        }
                     }
-                }
-            });
+                });
+            }
         }
         tm.join().await?;
         return Ok(());

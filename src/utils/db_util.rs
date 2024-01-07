@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::{
+    path::Path,
+};
 use deadpool_sqlite::{
     Config,
     Pool,
@@ -10,8 +12,8 @@ use loga::{
     ea,
     ErrContext,
 };
+use poem::async_trait;
 use rusqlite::{
-    Connection,
     Transaction,
 };
 
@@ -29,23 +31,37 @@ pub async fn setup_db(
     return Ok(pool);
 }
 
-pub fn tx<
-    R,
-    F: FnOnce(&mut Transaction) -> Result<R, loga::Error>,
->(dbc: &mut Connection, handler: F) -> Result<R, loga::Error> {
-    let mut tx = dbc.transaction()?;
-    match handler(&mut tx) {
-        Ok(v) => {
-            match tx.commit() {
-                Ok(_) => return Ok(v),
-                Err(e) => return Err(e.context("Failed to commit transaction")),
+#[async_trait]
+pub trait DbTx {
+    async fn tx<
+        R: 'static + Send,
+        F: 'static + Send + FnOnce(&mut Transaction) -> Result<R, loga::Error>,
+    >(&self, handler: F) -> Result<R, loga::Error>;
+}
+
+#[async_trait]
+impl DbTx for Pool {
+    async fn tx<
+        R: 'static + Send,
+        F: 'static + Send + FnOnce(&mut Transaction) -> Result<R, loga::Error>,
+    >(&self, handler: F) -> Result<R, loga::Error> {
+        let db = self.get().await?;
+        return Ok(db.interact(|dbc| {
+            let mut tx = dbc.transaction()?;
+            match handler(&mut tx) {
+                Ok(v) => {
+                    match tx.commit() {
+                        Ok(_) => return Ok(v),
+                        Err(e) => return Err(e.context("Failed to commit transaction")),
+                    }
+                },
+                Err(e) => {
+                    match tx.rollback() {
+                        Ok(_) => return Err(e),
+                        Err(e2) => return Err(e.also(e2.context("Failed to roll back transaction after error"))),
+                    }
+                },
             }
-        },
-        Err(e) => {
-            match tx.rollback() {
-                Ok(_) => return Err(e),
-                Err(e2) => return Err(e.also(e2.context("Failed to roll back transaction after error"))),
-            }
-        },
+        }).await??);
     }
 }
