@@ -40,7 +40,7 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
             if version < 0i64 {
                 {
                     let query =
-                        "create table \"singleton_dot_certs\" ( \"priv_pem\" text , \"pub_pem\" text , \"unique\" integer not null , constraint \"singleton_unique\" primary key ( \"unique\" ) )";
+                        "create table \"singleton\" ( \"priv_pem\" text , \"pub_pem\" text , \"acme_api_key_kid\" text , \"unique\" integer not null , \"acme_api_key\" text , constraint \"singleton_unique\" primary key ( \"unique\" ) )";
                     txn.execute(query, ()).to_good_error_query(query)?
                 };
             }
@@ -83,7 +83,7 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
 
 pub fn dot_certs_setup(db: &rusqlite::Connection) -> Result<(), GoodError> {
     let query =
-        "insert into \"singleton_dot_certs\" ( \"unique\" , \"pub_pem\" , \"priv_pem\" ) values ( 0 , null , null ) on conflict do nothing";
+        "insert into \"singleton\" ( \"unique\" , \"pub_pem\" , \"priv_pem\" , \"acme_api_key\" , \"acme_api_key_kid\" ) values ( 0 , null , null , null , null ) on conflict do nothing";
     db.execute(query, rusqlite::params![]).to_good_error_query(query)?;
     Ok(())
 }
@@ -94,8 +94,7 @@ pub struct DbRes1 {
 }
 
 pub fn dot_certs_get(db: &rusqlite::Connection) -> Result<DbRes1, GoodError> {
-    let query =
-        "select \"singleton_dot_certs\" . \"pub_pem\" , \"singleton_dot_certs\" . \"priv_pem\" from \"singleton_dot_certs\"";
+    let query = "select \"singleton\" . \"pub_pem\" , \"singleton\" . \"priv_pem\" from \"singleton\"";
     let mut stmt = db.prepare(query).to_good_error_query(query)?;
     let mut rows = stmt.query(rusqlite::params![]).to_good_error_query(query)?;
     let r =
@@ -118,9 +117,55 @@ pub fn dot_certs_get(db: &rusqlite::Connection) -> Result<DbRes1, GoodError> {
 }
 
 pub fn dot_certs_set(db: &rusqlite::Connection, pub_: Option<&str>, priv_: Option<&str>) -> Result<(), GoodError> {
-    let query = "update \"singleton_dot_certs\" set \"pub_pem\" = $1 , \"priv_pem\" = $2";
+    let query = "update \"singleton\" set \"pub_pem\" = $1 , \"priv_pem\" = $2";
     db
         .execute(query, rusqlite::params![pub_.map(|pub_| pub_), priv_.map(|priv_| priv_)])
         .to_good_error_query(query)?;
+    Ok(())
+}
+
+pub fn acme_key_get(db: &rusqlite::Connection) -> Result<Option<String>, GoodError> {
+    let query = "select \"singleton\" . \"acme_api_key\" from \"singleton\"";
+    let mut stmt = db.prepare(query).to_good_error_query(query)?;
+    let mut rows = stmt.query(rusqlite::params![]).to_good_error_query(query)?;
+    let r =
+        rows
+            .next()
+            .to_good_error(|| format!("Getting row in query [{}]", query))?
+            .ok_or_else(
+                || GoodError(format!("Expected to return one row but returned no rows in query [{}]", query)),
+            )?;
+    Ok({
+        let x: Option<String> = r.get(0usize).to_good_error(|| format!("Getting result {}", 0usize))?;
+        x
+    })
+}
+
+pub fn acme_key_set(db: &rusqlite::Connection, pub_: Option<&str>) -> Result<(), GoodError> {
+    let query = "update \"singleton\" set \"acme_api_key\" = $1";
+    db.execute(query, rusqlite::params![pub_.map(|pub_| pub_)]).to_good_error_query(query)?;
+    Ok(())
+}
+
+pub fn acme_key_kid_get(db: &rusqlite::Connection) -> Result<Option<String>, GoodError> {
+    let query = "select \"singleton\" . \"acme_api_key_kid\" from \"singleton\"";
+    let mut stmt = db.prepare(query).to_good_error_query(query)?;
+    let mut rows = stmt.query(rusqlite::params![]).to_good_error_query(query)?;
+    let r =
+        rows
+            .next()
+            .to_good_error(|| format!("Getting row in query [{}]", query))?
+            .ok_or_else(
+                || GoodError(format!("Expected to return one row but returned no rows in query [{}]", query)),
+            )?;
+    Ok({
+        let x: Option<String> = r.get(0usize).to_good_error(|| format!("Getting result {}", 0usize))?;
+        x
+    })
+}
+
+pub fn acme_key_kid_set(db: &rusqlite::Connection, pub_: Option<&str>) -> Result<(), GoodError> {
+    let query = "update \"singleton\" set \"acme_api_key_kid\" = $1";
+    db.execute(query, rusqlite::params![pub_.map(|pub_| pub_)]).to_good_error_query(query)?;
     Ok(())
 }

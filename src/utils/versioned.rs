@@ -7,6 +7,12 @@ macro_rules! ver_int_len{
     };
 }
 
+/// Generate a explicitly sized, non-versioned, serializer-independent binary
+/// wrapper for versioned data. This is used for serializing binary data -- bincode
+/// etc might be replaced later, so this outer format remains in our control.
+///
+/// Not necessary for text serialization (json versioning should be relatively
+/// future-proof) or for structures embedded in other structures.
 #[macro_export]
 macro_rules! versioned{
     ($et: ident $(, $dv: ident) *; $(($var: ident, $ver: literal, $t: ty)), *) => {

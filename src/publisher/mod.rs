@@ -67,6 +67,7 @@ use poem::{
 use serde::{
     Deserialize,
     Serialize,
+    de::DeserializeOwned,
 };
 use sha2::Sha256;
 use taskmanager::TaskManager;
@@ -94,8 +95,8 @@ use crate::{
             encode_priv_pem,
             encode_pub_pem,
         },
+        backed_identity::IdentitySigner,
     },
-    node::ValueArgs,
     node::{
         Node,
     },
@@ -110,19 +111,42 @@ use crate::{
             publish::{
                 self,
                 latest::{
-                    PublishRequestBody,
-                    UnpublishRequestBody,
                     InfoResponse,
+                    JsonSignature,
                 },
             },
-            self,
         },
         spagh_internal,
+        node_protocol,
     },
 };
 
 pub mod admin_db;
 pub mod config;
+
+pub trait PublishIdentSignatureMethods<B, I>
+where
+    Self: Sized {
+    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(I, Self), loga::Error>;
+    fn verify(&self, identity: &Identity) -> Result<B, ()>;
+}
+
+impl<B: Serialize + DeserializeOwned> PublishIdentSignatureMethods<B, Identity> for JsonSignature<B, Identity> {
+    fn verify(&self, identity: &Identity) -> Result<B, ()> {
+        identity.verify(self.message.as_bytes(), &self.signature).map_err(|_| ())?;
+        return Ok(serde_json::from_str(&self.message).map_err(|_| ())?);
+    }
+
+    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(Identity, Self), loga::Error> {
+        let message = serde_json::to_string(&body).unwrap();
+        let (ident, signature) = signer.sign(message.as_bytes())?;
+        return Ok((ident, Self {
+            message: message,
+            signature: signature,
+            _p: Default::default(),
+        }));
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct SerialTlsCert {
@@ -163,7 +187,7 @@ pub trait Admin: Send + Sync {
     async fn publish(
         &self,
         identity: &Identity,
-        announcement: &publish::latest::Announcement,
+        announcement: &node_protocol::PublisherAnnouncement,
         keyvalues: publish::latest::Publish,
     ) -> Result<(), loga::Error>;
 
@@ -173,7 +197,7 @@ pub trait Admin: Send + Sync {
     async fn list_announcements(
         &self,
         after: Option<&Identity>,
-    ) -> Result<Vec<(Identity, spagh_api::publish::Announcement)>, loga::Error>;
+    ) -> Result<Vec<(Identity, node_protocol::PublisherAnnouncement)>, loga::Error>;
     async fn get_published_data(&self, identity: &Identity) -> Result<Option<publish::Publish>, loga::Error>;
 }
 
@@ -263,13 +287,13 @@ impl Admin for DbAdmin {
     async fn publish(
         &self,
         identity: &Identity,
-        announcement: &publish::latest::Announcement,
+        announcement: &node_protocol::PublisherAnnouncement,
         keyvalues: publish::latest::Publish,
     ) -> Result<(), loga::Error> {
         let identity = identity.clone();
         let announcement = announcement.clone();
         self.db_pool.get().await?.interact(move |db| {
-            admin_db::set_announce(db, &identity, &publish::Announcement::V1(announcement))?;
+            admin_db::set_announce(db, &identity, &announcement)?;
             admin_db::set_keyvalues(db, &identity, &publish::Publish::V1(keyvalues))
         }).await??;
         return Ok(());
@@ -287,7 +311,7 @@ impl Admin for DbAdmin {
     async fn list_announcements(
         &self,
         after: Option<&Identity>,
-    ) -> Result<Vec<(Identity, spagh_api::publish::Announcement)>, loga::Error> {
+    ) -> Result<Vec<(Identity, node_protocol::PublisherAnnouncement)>, loga::Error> {
         let after = after.cloned();
         return Ok(match after {
             None => {
@@ -501,10 +525,7 @@ impl<A: Admin + 'static> Publisher<A> {
                             }
                             for (i, (identity, announcement)) in announce_pairs.into_iter().enumerate() {
                                 let value = match announcement {
-                                    publish::Announcement::V1(v) => ValueArgs {
-                                        message: v.message.clone(),
-                                        signature: v.signature.clone(),
-                                    },
+                                    node_protocol::PublisherAnnouncement::V1(v) => v,
                                 };
                                 node.put(identity.clone(), value).await;
                                 if i + 1 == count {
@@ -528,13 +549,12 @@ impl<A: Admin + 'static> Publisher<A> {
     pub async fn publish(
         &self,
         identity: &Identity,
-        announcement: publish::latest::Announcement,
+        announcement: node_protocol::PublisherAnnouncement,
         keyvalues: publish::latest::Publish,
     ) -> Result<(), loga::Error> {
         self.0.admin.publish(identity, &announcement, keyvalues).await?;
-        self.0.node.put(identity.clone(), ValueArgs {
-            message: announcement.message,
-            signature: announcement.signature,
+        self.0.node.put(identity.clone(), match announcement {
+            node_protocol::PublisherAnnouncement::V1(v) => v,
         }).await;
         return Ok(())
     }
@@ -547,34 +567,30 @@ impl<A: Admin + 'static> Publisher<A> {
 pub fn build_api_endpoints(publisher: &Publisher) -> SystemEndpoints {
     return SystemEndpoints(Route::new().at("/publish", post({
         #[handler]
-        async fn ep(Data(service): Data<&Publisher>, Json(body): Json<publish::PublishRequest>) -> Response {
-            let body = match body {
-                publish::PublishRequest::V1(body) => body,
+        async fn ep(Data(service): Data<&Publisher>, Json(req): Json<publish::PublishRequest>) -> Response {
+            let req = match req {
+                publish::PublishRequest::V1(r) => r,
             };
             match async {
                 // Before db access, make sure the stated identity actually created the message
-                if body.identity.verify(&body.signed.message, &body.signed.signature).is_err() {
+                let Ok(body) = req.content.verify(&req.identity) else {
                     return Ok(StatusCode::BAD_REQUEST.into_response());
-                }
+                };
 
                 // Check the identity is in the list of allowed to publish
-                if !service.0.admin.is_identity_allowed(&body.identity).await? {
+                if !service.0.admin.is_identity_allowed(&req.identity).await? {
                     return Ok(StatusCode::UNAUTHORIZED.into_response());
                 }
 
                 // Publish it
-                let body2 =
-                    PublishRequestBody::from_bytes(
-                        &body.signed.message,
-                    ).log_context(&service.0.log, "Failed to deserialize message")?;
-                service.publish(&body.identity, body2.announce, body2.keyvalues).await?;
+                service.publish(&req.identity, body.announce, body.keyvalues).await?;
                 return Ok(StatusCode::OK.into_response());
             }.await {
                 Ok(r) => {
                     return r;
                 },
                 Err(e) => {
-                    service.0.log.warn_e(e, "Error publishing key values", ea!());
+                    service.0.log.warn_e(e, "Error publishing key values", ea!(identity = req.identity));
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 },
             }
@@ -584,39 +600,35 @@ pub fn build_api_endpoints(publisher: &Publisher) -> SystemEndpoints {
     })).at("/unpublish", post({
         #[handler]
         async fn ep(Data(service): Data<&Publisher>, Json(body): Json<publish::UnpublishRequest>) -> Response {
-            let body = match body {
+            let req = match body {
                 publish::UnpublishRequest::V1(body) => body,
             };
             match async {
                 // Before db access, make sure the stated identity actually created the message
-                if body.identity.verify(&body.signed.message, &body.signed.signature).is_err() {
+                let Ok(content) = req.content.verify(&req.identity) else {
                     return Ok(StatusCode::BAD_REQUEST.into_response());
-                }
+                };
 
                 // Check the identity is in the list of allowed to (un)publish
-                if !service.0.admin.is_identity_allowed(&body.identity).await? {
+                if !service.0.admin.is_identity_allowed(&req.identity).await? {
                     return Ok(StatusCode::UNAUTHORIZED.into_response());
                 }
 
                 // Check that the message is recent to discourage repeat attacks
-                let body2 =
-                    UnpublishRequestBody::from_bytes(
-                        &body.signed.message,
-                    ).log_context(&service.0.log, "Failed to deserialize message")?;
-                if body2.now + Duration::seconds(10) < Utc::now() {
+                if content.now + Duration::seconds(10) < Utc::now() {
                     return Ok(StatusCode::BAD_REQUEST.into_response());
                 }
 
                 // The request is by the identity and the identity recently made the request - do
                 // the unpublish.
-                service.0.admin.unpublish(&body.identity).await?;
+                service.0.admin.unpublish(&req.identity).await?;
                 return Ok(StatusCode::OK.into_response());
             }.await {
                 Ok(r) => {
                     return r;
                 },
                 Err(e) => {
-                    service.0.log.warn_e(e, "Error deleting published data", ea!(identity = body.identity));
+                    service.0.log.warn_e(e, "Error deleting published data", ea!(identity = req.identity));
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 },
             }
@@ -628,7 +640,7 @@ pub fn build_api_endpoints(publisher: &Publisher) -> SystemEndpoints {
         async fn ep(service: Data<&Publisher>) -> Response {
             return Json(InfoResponse {
                 advertise_addr: service.0.0.advertise_addr,
-                cert_pub_hash: zbase32::encode_full_bytes(&service.0.0.cert_pub_hash).to_string(),
+                cert_pub_hash: service.0.0.cert_pub_hash.clone(),
             }).into_response();
         }
 

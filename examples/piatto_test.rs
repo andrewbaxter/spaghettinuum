@@ -34,8 +34,8 @@ use ipnet::IpAdd;
 use itertools::Itertools;
 use spaghettinuum::{
     node::{
-        ValueArgs,
         Node,
+        IdentSignatureMethods,
     },
     interface::{
         spagh_cli::{
@@ -43,10 +43,13 @@ use spaghettinuum::{
             StrSocketAddr,
             BackedIdentityLocal,
         },
-        node_protocol::latest::{
-            NodeInfo,
-            SerialAddr,
-            ValueBody,
+        node_protocol::{
+            latest::{
+                NodeInfo,
+                SerialAddr,
+                PublisherAnnouncementContent,
+            },
+            self,
         },
     },
 };
@@ -84,17 +87,15 @@ async fn main() {
             prev_node = Some((SerialAddr(addr), node.identity()));
         }
         tm.if_alive(tokio::time::sleep(Duration::seconds(60).to_std().unwrap())).await;
-        let (ident, ident_secret) = BackedIdentityLocal::new();
+        let (ident, mut ident_secret) = BackedIdentityLocal::new();
         let message_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(169, 168, 167, 165), 1111));
-        let message = ValueBody {
-            addr: SerialAddr(message_addr.clone()),
-            cert_hash: vec![],
-            published: Utc::now(),
-        }.to_bytes();
-        match tm.if_alive(nodes.get(0).unwrap().put(ident.clone(), ValueArgs {
-            signature: ident_secret.sign(&message),
-            message: message,
-        })).await {
+        let (_, message_signature) =
+            node_protocol::latest::PublisherAnnouncement::sign(&mut ident_secret, PublisherAnnouncementContent {
+                addr: SerialAddr(message_addr),
+                cert_hash: vec![],
+                published: Utc::now(),
+            }).unwrap();
+        match tm.if_alive(nodes.get(0).unwrap().put(ident.clone(), message_signature)).await {
             None => return Ok(()),
             Some(_) => { },
         };

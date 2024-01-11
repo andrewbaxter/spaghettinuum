@@ -12,6 +12,27 @@ pub enum DnsType {
     Tls,
 }
 
+/// External account binding credentials provided by SSL cert issuer in advance.
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct EabConfig {
+    pub kid: String,
+    pub hmac_b64: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AcmeConfig {
+    /// DNS over TLS, with automatic cert provisioning via ZeroSSL. Certificates are
+    /// issued for each global address identified in the main config.
+    pub bind_addrs: Vec<StrSocketAddr>,
+    /// Ex: `https://acme.zerossl.com/v2/DV90`
+    pub acme_directory_url: String,
+    pub eab: Option<EabConfig>,
+    /// Contacts by which the issuer can reach you if there's an issue.
+    pub contacts: Vec<String>,
+}
+
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct DnsBridgeConfig {
@@ -25,9 +46,8 @@ pub struct DnsBridgeConfig {
     /// TCP for DNS over TLS, but you need to proxy the TLS connection. Can be whatever
     /// (proxy's external port is normally 853).
     pub tcp_bind_addrs: Vec<StrSocketAddr>,
-    /// DNS over TLS, with automatic cert provisioning via ZeroSSL. Certificates are
-    /// issued for each global address identified in the main config.
-    pub tls_bind_addrs: Vec<StrSocketAddr>,
+    /// Self managed DNS over TLS via ACME.
+    pub tls: Option<AcmeConfig>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

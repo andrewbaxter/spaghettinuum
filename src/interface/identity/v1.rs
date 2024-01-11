@@ -17,7 +17,7 @@ use super::{
     hash_for_ed25519,
 };
 
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq, Clone, Copy)]
 pub struct Ed25519Identity(pub VerifyingKey);
 
 impl Serialize for Ed25519Identity {
@@ -73,7 +73,7 @@ impl Ed25519Identity {
 }
 
 // Aggregates
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Identity {
     Ed25519(Ed25519Identity),
 }

@@ -48,7 +48,6 @@ use spaghettinuum::{
                 NodeInfo,
                 SerialAddr,
             },
-            self,
         },
         spagh_cli::{
             self,
@@ -153,9 +152,7 @@ async fn main() {
         let tm = taskmanager::TaskManager::new();
         let node =
             Node::new(log, tm.clone(), config.node.bind_addr, &config.node.bootstrap.into_iter().map(|e| NodeInfo {
-                id: match e.id {
-                    node_protocol::NodeIdentity::V1(i) => i,
-                },
+                id: e.id,
                 address: SerialAddr(e.addr.1),
             }).collect_vec(), &config.persistent_dir).await?;
         let mut has_api_endpoints = false;

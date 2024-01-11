@@ -6,6 +6,7 @@ use itertools::Itertools;
 use loga::{
     ea,
     ResultContext,
+    DebugDisplay,
 };
 use openpgp_card_pcsc::PcscBackend;
 use openpgp_card_sequoia::{
@@ -37,9 +38,12 @@ use spaghettinuum::{
         GlobalAddrConfig,
         self,
     },
-    node::config::{
-        BootstrapConfig,
-        NodeConfig,
+    node::{
+        config::{
+            BootstrapConfig,
+            NodeConfig,
+        },
+        IdentSignatureMethods,
     },
     utils::{
         backed_identity::{
@@ -72,11 +76,11 @@ use spaghettinuum::{
         node_protocol::{
             self,
             latest::SerialAddr,
-            NodeIdentity,
         },
         spagh_api::{
             publish::{
                 self,
+                latest::JsonSignature,
             },
             resolve::{
                 KEY_DNS_MX,
@@ -88,11 +92,13 @@ use spaghettinuum::{
             },
         },
         identity::Identity,
+        node_identity::NodeIdentity,
     },
     self_tls::{
         request_cert,
         certifier_url,
     },
+    publisher::PublishIdentSignatureMethods,
 };
 use x509_cert::spki::SubjectPublicKeyInfoOwned;
 use std::{
@@ -426,6 +432,7 @@ async fn publish(
     identity_arg: BackedIdentityArg,
     keyvalues: publish::latest::Publish,
 ) -> Result<(), loga::Error> {
+    let mut signer = get_identity_signer(identity_arg).log_context(&log, "Error constructing signer")?;
     let info_body =
         c
             .get(format!("{}info", server))
@@ -443,33 +450,33 @@ async fn publish(
             ea!(body = String::from_utf8_lossy(&info_body)),
         )?;
     log.debug("Got publisher information", ea!(info = serde_json::to_string_pretty(&info_body).unwrap()));
-    let announce_message = node_protocol::latest::ValueBody {
+    let announcement_content = node_protocol::latest::PublisherAnnouncementContent {
         addr: SerialAddr(info.advertise_addr),
-        cert_hash: zbase32::decode_full_bytes_str(
-            &info.cert_pub_hash,
-        ).map_err(
-            |e| log.new_err_with("Couldn't parse zbase32 pub cert hash in response from publisher", ea!(text = e)),
-        )?,
+        cert_hash: info.cert_pub_hash,
         published: Utc::now(),
-    }.to_bytes();
-    log.debug("Unsigned announce message", ea!(message = serde_json::to_string_pretty(&announce_message).unwrap()));
-    let mut signer = get_identity_signer(identity_arg).log_context(&log, "Error constructing signer")?;
-    let (identity, request_message_sig) =
-        signer.sign(&announce_message).log_context(&log, "Failed to sign announcement")?;
-    let request_message = publish::latest::PublishRequestBody {
-        announce: publish::latest::Announcement {
-            message: announce_message.clone(),
-            signature: request_message_sig,
-        },
+    };
+    log.debug(
+        "Unsigned publisher announcement",
+        ea!(message = serde_json::to_string_pretty(&announcement_content).unwrap()),
+    );
+    let (identity, signed_announcement_content) =
+        node_protocol::latest::PublisherAnnouncement::sign(
+            signer.as_mut(),
+            announcement_content,
+        ).log_context(&log, "Failed to sign announcement")?;
+    let request_content = publish::latest::PublishRequestContent {
+        announce: node_protocol::PublisherAnnouncement::V1(signed_announcement_content),
         keyvalues: keyvalues,
-    }.to_bytes();
-    log.debug("Unsigned request message", ea!(message = serde_json::to_string_pretty(&request_message).unwrap()));
+    };
+    log.debug("Unsigned request message", ea!(message = serde_json::to_string_pretty(&request_content).unwrap()));
+    let (_, signed_request_content) =
+        JsonSignature::sign(
+            signer.as_mut(),
+            request_content,
+        ).log_context(&log, "Failed to sign publish request content")?;
     let request = publish::PublishRequest::V1(publish::latest::PublishRequest {
         identity: identity,
-        signed: publish::latest::PublishRequestSigned {
-            signature: signer.sign(&request_message).log_context(&log, "Failed to sign publish request")?.1,
-            message: request_message,
-        },
+        content: signed_request_content,
     });
     let url = format!("{}publish/publish", server);
     log.debug("Sending publish request", ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()));
@@ -632,16 +639,16 @@ async fn main() {
                 let c = reqwest::ClientBuilder::new().build().unwrap();
                 let mut signer =
                     get_identity_signer(config.identity).log_context(&log, "Error constructing signer")?;
-                let request_message = publish::latest::UnpublishRequestBody { now: Utc::now() }.to_bytes();
-                log.debug("Unsigned request message", ea!(message = String::from_utf8_lossy(&request_message)));
-                let (identity, request_message_sig) =
-                    signer.sign(&request_message).log_context(&log, "Failed to sign unpublish request")?;
+                let request_message = publish::latest::UnpublishRequestContent { now: Utc::now() };
+                log.debug("Unsigned request message", ea!(message = request_message.dbg_str()));
+                let (identity, signature) =
+                    PublishIdentSignatureMethods::sign(
+                        signer.as_mut(),
+                        request_message,
+                    ).log_context(&log, "Failed to sign unpublish request")?;
                 let request = publish::UnpublishRequest::V1(publish::latest::UnpublishRequest {
                     identity: identity,
-                    signed: publish::latest::UnpublishRequestSigned {
-                        signature: request_message_sig,
-                        message: request_message,
-                    },
+                    content: signature,
                 });
                 let url = format!("{}publish/unpublish", admin_api_url(config.server)?);
                 log.debug(

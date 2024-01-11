@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
+    marker::PhantomData,
 };
 use chrono::{
     Utc,
@@ -9,27 +10,23 @@ use chrono::{
 use serde::{
     Serialize,
     Deserialize,
+    de::DeserializeOwned,
 };
 use crate::interface::{
     identity::Identity,
+    node_protocol::{
+        self,
+    },
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
 #[serde(rename_all = "snake_case")]
-pub struct Announcement {
+pub struct JsonSignature<T: Serialize + DeserializeOwned, I> {
+    pub message: String,
     #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
-    pub message: Vec<u8>,
     pub signature: Vec<u8>,
-}
-
-impl Announcement {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, loga::Error> {
-        return Ok(bincode::deserialize(bytes)?);
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap()
-    }
+    #[serde(skip)]
+    pub _p: PhantomData<(T, I)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -52,48 +49,31 @@ pub struct Publish {
 #[serde(rename_all = "snake_case")]
 pub struct InfoResponse {
     pub advertise_addr: SocketAddr,
-    /// zbase32
-    pub cert_pub_hash: String,
+    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
+    pub cert_pub_hash: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct PublishRequestBody {
-    pub announce: Announcement,
+pub struct PublishRequestContent {
+    pub announce: node_protocol::PublisherAnnouncement,
     pub keyvalues: Publish,
-}
-
-impl PublishRequestBody {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        return bincode::serialize(&self).unwrap();
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, loga::Error> {
-        return Ok(bincode::deserialize(bytes)?);
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct PublishRequestSigned {
-    pub message: Vec<u8>,
-    pub signature: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PublishRequest {
     pub identity: Identity,
-    pub signed: PublishRequestSigned,
+    pub content: JsonSignature<PublishRequestContent, Identity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct UnpublishRequestBody {
+pub struct UnpublishRequestContent {
     pub now: DateTime<Utc>,
 }
 
-impl UnpublishRequestBody {
+impl UnpublishRequestContent {
     pub fn to_bytes(&self) -> Vec<u8> {
         return bincode::serialize(&self).unwrap();
     }
@@ -103,18 +83,9 @@ impl UnpublishRequestBody {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct UnpublishRequestSigned {
-    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
-    pub message: Vec<u8>,
-    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
-    pub signature: Vec<u8>,
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct UnpublishRequest {
     pub identity: Identity,
-    pub signed: UnpublishRequestSigned,
+    pub content: JsonSignature<UnpublishRequestContent, Identity>,
 }

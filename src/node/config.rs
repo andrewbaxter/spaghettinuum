@@ -5,7 +5,7 @@ use serde::{
 };
 use crate::interface::{
     spagh_cli::StrSocketAddr,
-    node_protocol::NodeIdentity,
+    node_identity::NodeIdentity,
 };
 
 #[derive(Deserialize, Serialize, JsonSchema)]

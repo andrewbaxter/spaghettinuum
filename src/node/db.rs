@@ -87,7 +87,7 @@ pub fn migrate(db: &mut rusqlite::Connection) -> Result<(), GoodError> {
 
 pub fn secret_ensure(
     db: &rusqlite::Connection,
-    secret: &crate::interface::node_protocol::NodeSecret,
+    secret: &crate::interface::node_identity::NodeSecret,
 ) -> Result<(), GoodError> {
     let query =
         "insert into \"secret\" ( \"unique\" , \"secret\" ) values ( 0 , $1 ) on conflict do update set \"secret\" = $1";
@@ -95,9 +95,9 @@ pub fn secret_ensure(
         .execute(
             query,
             rusqlite::params![
-                <crate::interface::node_protocol::NodeSecret as good_ormning_runtime
+                <crate::interface::node_identity::NodeSecret as good_ormning_runtime
                 ::sqlite
-                ::GoodOrmningCustomString<crate::interface::node_protocol::NodeSecret>>::to_sql(
+                ::GoodOrmningCustomString<crate::interface::node_identity::NodeSecret>>::to_sql(
                     &secret,
                 )
             ],
@@ -108,7 +108,7 @@ pub fn secret_ensure(
 
 pub fn secret_get(
     db: &rusqlite::Connection,
-) -> Result<Option<crate::interface::node_protocol::NodeSecret>, GoodError> {
+) -> Result<Option<crate::interface::node_identity::NodeSecret>, GoodError> {
     let query = "select \"secret\" . \"secret\" from \"secret\"";
     let mut stmt = db.prepare(query).to_good_error_query(query)?;
     let mut rows = stmt.query(rusqlite::params![]).to_good_error_query(query)?;
@@ -117,9 +117,9 @@ pub fn secret_get(
         return Ok(Some({
             let x: String = r.get(0usize).to_good_error(|| format!("Getting result {}", 0usize))?;
             let x =
-                <crate::interface::node_protocol::NodeSecret as good_ormning_runtime
+                <crate::interface::node_identity::NodeSecret as good_ormning_runtime
                 ::sqlite
-                ::GoodOrmningCustomString<crate::interface::node_protocol::NodeSecret>>::from_sql(
+                ::GoodOrmningCustomString<crate::interface::node_identity::NodeSecret>>::from_sql(
                     x,
                 ).to_good_error(|| format!("Parsing result {}", 0usize))?;
             x

@@ -29,7 +29,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             v,
             "zNNMCRDDB",
             "secret",
-            field_str().custom("crate::interface::node_protocol::NodeSecret").build(),
+            field_str().custom("crate::interface::node_identity::NodeSecret").build(),
         );
     if let Some(queries) = &mut queries {
         queries.push(

@@ -23,6 +23,7 @@ use crate::{
     resolver::{
         config::DnsType,
     },
+    bb,
 };
 use crate::utils::{
     ResultVisErr,
@@ -32,20 +33,38 @@ use chrono::{
     Duration,
     Utc,
 };
-use hickory_proto::rr::{
-    rdata::{
-        CNAME,
-        AAAA,
-        A,
+use futures::StreamExt;
+use hickory_proto::{
+    rr::{
+        rdata::{
+            CNAME,
+            AAAA,
+            A,
+        },
+        LowerName,
     },
-    LowerName,
+    xfer::{
+        DnsHandle,
+        DnsRequest,
+        DnsRequestOptions,
+    },
+    op::{
+        Message,
+        Query,
+    },
 };
 use hickory_resolver::{
     config::{
         NameServerConfig,
+        NameServerConfigGroup,
+        ResolverOpts,
     },
-    name_server::TokioConnectionProvider,
-    AsyncResolver,
+    name_server::{
+        TokioConnectionProvider,
+        NameServerPool,
+        TokioRuntimeProvider,
+        GenericConnector,
+    },
 };
 use itertools::Itertools;
 use loga::{
@@ -60,17 +79,24 @@ use poem::{
         Http01Endpoint,
         Http01TokensMap,
         AcmeClient,
+        create_acme_account,
+        EABCreds,
+        EncodingKey,
+        EcdsaKeyPair,
+        ACME_KEY_ALG,
+        ChallengeTypeParameters,
     },
     RouteScheme,
     Server,
 };
 use rustls::{
     ServerConfig,
-    server::{
-        ResolvesServerCert,
-        ClientHello,
-    },
     sign,
+    pki_types::{
+        CertificateDer,
+        PrivateKeyDer,
+    },
+    crypto::ring::sign::any_ecdsa_type,
 };
 use std::{
     net::{
@@ -124,10 +150,10 @@ use super::{
 
 pub mod db;
 
-struct DotCertHandler(Arc<Mutex<Option<Arc<sign::CertifiedKey>>>>);
+struct DotCertHandler(Arc<Mutex<Option<Arc<rustls_21::sign::CertifiedKey>>>>);
 
-impl ResolvesServerCert for DotCertHandler {
-    fn resolve(&self, _client_hello: ClientHello) -> Option<Arc<sign::CertifiedKey>> {
+impl rustls_21::server::ResolvesServerCert for DotCertHandler {
+    fn resolve(&self, _client_hello: rustls_21::server::ClientHello) -> Option<Arc<rustls_21::sign::CertifiedKey>> {
         return self.0.lock().unwrap().clone();
     }
 }
@@ -149,7 +175,7 @@ pub async fn start_dns_bridge(
     struct HandlerInner {
         log: Log,
         resolver: Resolver,
-        upstream: AsyncResolver<TokioConnectionProvider>,
+        upstream: NameServerPool<TokioConnectionProvider>,
         expect_suffix: LowerName,
     }
 
@@ -392,10 +418,22 @@ pub async fn start_dns_bridge(
                             return Ok(resp?);
                         },
                         None => {
-                            let query = self1.upstream.lookup(request.query().name(), request.query().query_type());
-                            let resp = match query.await {
-                                Ok(r) => r,
-                                Err(e) => {
+                            let resp = self1.upstream.send(DnsRequest::new({
+                                let mut m = Message::new();
+                                m.add_query({
+                                    let mut q =
+                                        Query::query(
+                                            Name::from(request.query().name()),
+                                            request.query().query_type(),
+                                        );
+                                    q.set_query_class(request.query().query_class());
+                                    q
+                                });
+                                m
+                            }, DnsRequestOptions::default())).next().await;
+                            let resp = match resp {
+                                Some(Ok(r)) => r,
+                                Some(Err(e)) => {
                                     self1.log.debug_e(e.into(), "Request failed due to upstream issue", ea!());
                                     return Ok(
                                         response_handle
@@ -407,12 +445,29 @@ pub async fn start_dns_bridge(
                                             .await?,
                                     );
                                 },
+                                None => {
+                                    return Ok(
+                                        response_handle
+                                            .send_response(
+                                                MessageResponseBuilder::from_message_request(
+                                                    request,
+                                                ).build(
+                                                    Header::response_from_request(request.header()),
+                                                    &[],
+                                                    &[],
+                                                    &[],
+                                                    &[],
+                                                ),
+                                            )
+                                            .await?,
+                                    );
+                                },
                             };
                             return Ok(
                                 response_handle
                                     .send_response(MessageResponseBuilder::from_message_request(request).build(
                                         Header::response_from_request(request.header()),
-                                        resp.record_iter().map(|r| r),
+                                        resp.answers(),
                                         // Lies, since lookup doesn't provide additional details atm
                                         &[],
                                         &[],
@@ -464,8 +519,8 @@ pub async fn start_dns_bridge(
     }
 
     let upstream = {
-        let mut config = hickory_resolver::config::ResolverConfig::new();
-        config.add_name_server(
+        let mut name_servers = NameServerConfigGroup::new();
+        name_servers.push(
             NameServerConfig::new(
                 dns_config.upstream.1,
                 match (dns_config.upstream_type, dns_config.upstream.1.port()) {
@@ -486,10 +541,10 @@ pub async fn start_dns_bridge(
                 },
             ),
         );
-        AsyncResolver::new(
-            config,
-            hickory_resolver::config::ResolverOpts::default(),
-            TokioConnectionProvider::default(),
+        NameServerPool::from_config(
+            name_servers,
+            ResolverOpts::default(),
+            GenericConnector::new(TokioRuntimeProvider::new()),
         )
     };
     let mut server = hickory_server::ServerFuture::new(Handler(Arc::new(HandlerInner {
@@ -513,25 +568,29 @@ pub async fn start_dns_bridge(
             Duration::seconds(10).to_std().unwrap(),
         );
     }
-    if !dns_config.tls_bind_addrs.is_empty() {
+    if let Some(tls) = dns_config.tls {
         let log = log.fork(ea!(subsys = "dot-tls-acme", names = global_addrs.dbg_str()));
         let log = &log;
         let cert = Arc::new(Mutex::new(None));
         let names = global_addrs.iter().map(|a| a.to_string()).collect_vec();
+        let eab = tls.eab.map(|config| EABCreds {
+            kid: config.kid,
+            hmac_b64: config.hmac_b64,
+        });
 
-        // Fetch initial cert
+        // Retrieve stored certs
         let initial_certs = db_pool.tx(|txn| {
             return Ok(db::dot_certs_get(txn)?);
         }).await.log_context(log, "Error looking up initial certs")?;
         if let Some((pub_pem, priv_pem)) = initial_certs.pub_pem.zip(initial_certs.priv_pem) {
             (*cert.lock().unwrap()) = Some(
                 Arc::new(
-                    sign::CertifiedKey::new(
+                    rustls_21::sign::CertifiedKey::new(
                         {
                             let mut certs = vec![];
                             for (i, raw) in rustls_pemfile::certs(&mut pub_pem.as_bytes()).enumerate() {
                                 certs.push(
-                                    rustls::Certificate(
+                                    CertificateDer::from(
                                         raw
                                             .log_context_with(
                                                 log,
@@ -544,14 +603,12 @@ pub async fn start_dns_bridge(
                             }
                             certs
                         },
-                        sign::any_ecdsa_type(
-                            &rustls::PrivateKey(
+                        any_ecdsa_type(
+                            &PrivateKeyDer::from(
                                 rustls_pemfile::pkcs8_private_keys(&mut priv_pem.as_bytes())
                                     .next()
                                     .log_context(log, "No private keys in current PEM from database")?
-                                    .log_context(log, "Error parsing private PEM from database")?
-                                    .secret_pkcs8_der()
-                                    .to_vec(),
+                                    .log_context(log, "Error parsing private PEM from database")?,
                             ),
                         ).unwrap(),
                     ),
@@ -567,8 +624,10 @@ pub async fn start_dns_bridge(
             let cert = cert.clone();
             let db_pool = db_pool.clone();
             let tokens = tokens.clone();
+            let mut acme_client0 = None;
+            let mut kid0 = None;
             let mut acme_client =
-                AcmeClient::try_new(&"https://acme.zerossl.com/v2/DV90".parse().unwrap(), vec![])
+                AcmeClient::try_new(&tls.acme_directory_url, tls.contacts)
                     .await
                     .log_context(log, "Failed to set up acme client")?;
             let log = log.clone();
@@ -596,6 +655,57 @@ pub async fn start_dns_bridge(
                     }
 
                     match async {
+                        // Ensure account
+                        let acme_key_pem;
+                        match db_pool.tx(move |txn| Ok(db::acme_key_get(txn)?)).await? {
+                            Some(key) => {
+                                acme_key_pem = key;
+                            },
+                            None => {
+                                let key1 =
+                                    EcdsaKeyPair::generate_pkcs8(ACME_KEY_ALG, &mut SystemRandom::new()).unwrap();
+                                acme_key_pem = Pem::new("PRIVATE KEY", &key1).to_string();
+                                db_pool.tx({
+                                    let acme_key = acme_key_pem.clone();
+                                    move |txn| Ok(db::acme_key_set(txn, Some(&acme_key))?)
+                                }).await?;
+                            },
+                        }
+                        let acme_key =
+                            EncodingKey::from_ec_pem(
+                                acme_key_pem.as_bytes(),
+                            ).log_context(log, "Error loading stored acme key")?;
+                        let acme_client;
+                        match &acme_client0 {
+                            Some(c) => {
+                                acme_client = c;
+                            },
+                            None => {
+                                acme_client0 =
+                                    Some(
+                                        AcmeClient::try_new_with_key(
+                                            &tls.acme_directory_url,
+                                            tls.contacts,
+                                            acme_key,
+                                        ).await?,
+                                    );
+                                acme_client = acme_client0.as_ref().unwrap();
+                            },
+                        }
+                        let kid = bb!{
+                            if let Some(k) = &kid0 {
+                                break k;
+                            }
+                            if let Some(k) = db_pool.tx(move |txn| Ok(db::acme_key_kid_get(txn)?)).await? {
+                                kid0 = Some(k);
+                                break kid0.as_ref().unwrap();
+                            }
+                            let k = create_acme_account(&acme_client, eab.as_ref()).await?;
+                            db_pool.tx(move |txn| Ok(db::acme_key_kid_set(txn, Some(&k))?)).await?;
+                            kid0 = Some(k);
+                            break kid0.as_ref().unwrap();
+                        };
+
                         // Start challenge listener
                         let subtm = tm.sub();
                         for bind_addr in [
@@ -619,14 +729,15 @@ pub async fn start_dns_bridge(
                         }
 
                         // Initiate verification
-                        let res = poem::listener::acme::issue_cert(
-                            &mut acme_client,
-                            // Not used for Http01 verification
-                            &poem::listener::acme::ResolveServerCert::default(),
-                            &names,
-                            poem::listener::acme::ChallengeType::Http01,
-                            Some(&tokens),
-                        ).await.context("Error issuing new cert")?;
+                        let res =
+                            poem::listener::acme::issue_cert(
+                                &mut acme_client,
+                                &kid,
+                                &names,
+                                ChallengeTypeParameters::Http01 { keys_for_http01: &tokens },
+                            )
+                                .await
+                                .context("Error issuing new cert")?;
                         subtm.terminate();
                         if let Err(e) = subtm.join().await {
                             log.warn_e(e, "Error in one of the ACME challenge listeners", ea!());
@@ -660,7 +771,7 @@ pub async fn start_dns_bridge(
                 return Ok(()) as Result<_, loga::Error>;
             }
         });
-        for bind_addr in &dns_config.tls_bind_addrs {
+        for bind_addr in &tls.bind_addrs {
             server
                 .register_tls_listener_with_tls_config(
                     TcpListener::bind(&bind_addr.1)
@@ -668,7 +779,7 @@ pub async fn start_dns_bridge(
                         .log_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr.1))?,
                     Duration::seconds(10).to_std().unwrap(),
                     Arc::new(
-                        ServerConfig::builder()
+                        rustls_21::ServerConfig::builder()
                             .with_safe_defaults()
                             .with_no_client_auth()
                             .with_cert_resolver(Arc::new(DotCertHandler(cert.clone()))),

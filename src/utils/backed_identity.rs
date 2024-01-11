@@ -19,11 +19,9 @@ pub trait IdentitySigner: Send {
     fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error>;
 }
 
-struct LocalIdentitySigner(BackedIdentityLocal);
-
-impl IdentitySigner for LocalIdentitySigner {
+impl IdentitySigner for BackedIdentityLocal {
     fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error> {
-        return Ok((self.0.identity(), self.0.sign(data)));
+        return Ok((self.identity(), BackedIdentityLocal::sign(&self, data)));
     }
 }
 
@@ -103,10 +101,10 @@ pub fn get_identity_signer(ident: BackedIdentityArg) -> Result<Box<dyn IdentityS
         BackedIdentityArg::Local(ident_config) => {
             let log = &loga::new(loga::Level::Info).fork(ea!(path = ident_config.to_string_lossy()));
             let ident_data =
-                serde_json::from_slice(
+                serde_json::from_slice::<BackedIdentityLocal>(
                     &read(&ident_config).log_context(log, "Error reading identity file")?,
                 ).log_context(log, "Error parsing json in identity file")?;
-            return Ok(Box::new(LocalIdentitySigner(ident_data)));
+            return Ok(Box::new(ident_data));
         },
         #[cfg(feature = "card")]
         BackedIdentityArg::Card { pcsc_id, pin } => {

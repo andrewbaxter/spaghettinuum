@@ -113,7 +113,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             v,
             "zZ9J6717C",
             "value",
-            field_str().custom("crate::interface::spagh_api::publish::Announcement").build(),
+            field_str().custom("crate::interface::node_protocol::PublisherAnnouncement").build(),
         );
     announce.index("zDZXPBB1L", "announce_ident", &[&announce_ident]).unique().build(v);
     if let Some(queries) = &mut queries {

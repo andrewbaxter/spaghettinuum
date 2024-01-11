@@ -275,7 +275,7 @@ pub fn list_allowed_identities_after(
 pub fn set_announce(
     db: &rusqlite::Connection,
     ident: &crate::interface::identity::Identity,
-    value: &crate::interface::spagh_api::publish::Announcement,
+    value: &crate::interface::node_protocol::PublisherAnnouncement,
 ) -> Result<(), GoodError> {
     let query =
         "insert into \"announce\" ( \"identity\" , \"value\" ) values ( $1 , $2 ) on conflict do update set \"value\" = $2";
@@ -288,9 +288,9 @@ pub fn set_announce(
                 ::GoodOrmningCustomString<crate::interface::identity::Identity>>::to_sql(
                     &ident,
                 ),
-                <crate::interface::spagh_api::publish::Announcement as good_ormning_runtime
+                <crate::interface::node_protocol::PublisherAnnouncement as good_ormning_runtime
                 ::sqlite
-                ::GoodOrmningCustomString<crate::interface::spagh_api::publish::Announcement>>::to_sql(
+                ::GoodOrmningCustomString<crate::interface::node_protocol::PublisherAnnouncement>>::to_sql(
                     &value,
                 )
             ],
@@ -321,7 +321,7 @@ pub fn delete_announce(
 
 pub struct DbRes1 {
     pub identity: crate::interface::identity::Identity,
-    pub value: crate::interface::spagh_api::publish::Announcement,
+    pub value: crate::interface::node_protocol::PublisherAnnouncement,
 }
 
 pub fn list_announce_start(db: &rusqlite::Connection) -> Result<Vec<DbRes1>, GoodError> {
@@ -345,9 +345,9 @@ pub fn list_announce_start(db: &rusqlite::Connection) -> Result<Vec<DbRes1>, Goo
             value: {
                 let x: String = r.get(1usize).to_good_error(|| format!("Getting result {}", 1usize))?;
                 let x =
-                    <crate::interface::spagh_api::publish::Announcement as good_ormning_runtime
+                    <crate::interface::node_protocol::PublisherAnnouncement as good_ormning_runtime
                     ::sqlite
-                    ::GoodOrmningCustomString<crate::interface::spagh_api::publish::Announcement>>::from_sql(
+                    ::GoodOrmningCustomString<crate::interface::node_protocol::PublisherAnnouncement>>::from_sql(
                         x,
                     ).to_good_error(|| format!("Parsing result {}", 1usize))?;
                 x
@@ -392,9 +392,9 @@ pub fn list_announce_after(
             value: {
                 let x: String = r.get(1usize).to_good_error(|| format!("Getting result {}", 1usize))?;
                 let x =
-                    <crate::interface::spagh_api::publish::Announcement as good_ormning_runtime
+                    <crate::interface::node_protocol::PublisherAnnouncement as good_ormning_runtime
                     ::sqlite
-                    ::GoodOrmningCustomString<crate::interface::spagh_api::publish::Announcement>>::from_sql(
+                    ::GoodOrmningCustomString<crate::interface::node_protocol::PublisherAnnouncement>>::from_sql(
                         x,
                     ).to_good_error(|| format!("Parsing result {}", 1usize))?;
                 x

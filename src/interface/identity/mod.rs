@@ -29,6 +29,7 @@ versioned!(
     PartialEq,
     Eq,
     Clone,
+    Copy,
     Hash;
     (V1, 1, v1::Identity)
 );

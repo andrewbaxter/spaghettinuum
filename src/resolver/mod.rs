@@ -35,11 +35,11 @@ use poem::{
     EndpointExt,
 };
 use rustls::{
-    client::{
-        ServerCertVerified,
+    client::danger::{
         ServerCertVerifier,
+        HandshakeSignatureValid,
     },
-    Certificate,
+    pki_types::CertificateDer,
 };
 use std::{
     collections::HashMap,
@@ -203,6 +203,7 @@ impl Resolver {
         // Request values via publisher
         let log = self.0.log.fork(ea!(url = resp.addr, action = "publisher_request"));
 
+        #[derive(Debug)]
         pub struct SingleKeyVerifier {
             hash: Vec<u8>,
         }
@@ -216,20 +217,55 @@ impl Resolver {
         impl ServerCertVerifier for SingleKeyVerifier {
             fn verify_server_cert(
                 &self,
-                end_entity: &Certificate,
-                _intermediates: &[Certificate],
-                _server_name: &rustls::ServerName,
-                _scts: &mut dyn Iterator<Item = &[u8]>,
+                end_entity: &CertificateDer,
+                _intermediates: &[CertificateDer],
+                _server_name: &rustls::pki_types::ServerName,
                 _ocsp_response: &[u8],
-                _now: std::time::SystemTime,
-            ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+                _now: rustls::pki_types::UnixTime,
+            ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
                 if publisher_cert_hash(
                     &end_entity.0,
                 ).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))? !=
                     self.hash {
                     return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding));
                 }
-                return Ok(ServerCertVerified::assertion());
+                return Ok(rustls::client::danger::ServerCertVerified::assertion());
+            }
+
+            fn verify_tls12_signature(
+                &self,
+                message: &[u8],
+                cert: &CertificateDer<'_>,
+                dss: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+                return Ok(HandshakeSignatureValid::assertion());
+            }
+
+            fn verify_tls13_signature(
+                &self,
+                message: &[u8],
+                cert: &CertificateDer<'_>,
+                dss: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+                return Ok(HandshakeSignatureValid::assertion());
+            }
+
+            fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+                return vec![
+                    rustls::SignatureScheme::RSA_PKCS1_SHA1,
+                    rustls::SignatureScheme::ECDSA_SHA1_Legacy,
+                    rustls::SignatureScheme::RSA_PKCS1_SHA256,
+                    rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                    rustls::SignatureScheme::RSA_PKCS1_SHA384,
+                    rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+                    rustls::SignatureScheme::RSA_PKCS1_SHA512,
+                    rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+                    rustls::SignatureScheme::RSA_PSS_SHA256,
+                    rustls::SignatureScheme::RSA_PSS_SHA384,
+                    rustls::SignatureScheme::RSA_PSS_SHA512,
+                    rustls::SignatureScheme::ED25519,
+                    rustls::SignatureScheme::ED448
+                ];
             }
         }
 
@@ -238,7 +274,7 @@ impl Resolver {
                 reqwest::ClientBuilder::new()
                     .use_preconfigured_tls(
                         rustls::ClientConfig::builder()
-                            .with_safe_defaults()
+                            .dangerous()
                             .with_custom_certificate_verifier(SingleKeyVerifier::new(resp.cert_hash))
                             .with_no_client_auth(),
                     )

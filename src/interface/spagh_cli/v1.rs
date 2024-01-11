@@ -19,7 +19,7 @@ impl Serialize for Ed25519IdentitySecret {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer {
-        return Serialize::serialize(&self.0.to_bytes(), serializer);
+        return Serialize::serialize(&zbase32::encode_full_bytes(&self.0.to_bytes()), serializer);
     }
 }
 
@@ -27,9 +27,14 @@ impl<'de> Deserialize<'de> for Ed25519IdentitySecret {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de> {
+        let t = String::deserialize(deserializer)?;
         return Ok(
             Ed25519IdentitySecret(
-                SigningKey::from_bytes(&<[u8; ed25519_dalek::SECRET_KEY_LENGTH]>::deserialize(deserializer)?),
+                SigningKey::from_bytes(
+                    &<[u8; ed25519_dalek::SECRET_KEY_LENGTH]>::try_from(
+                        zbase32::decode_full_bytes_str(&t).map_err(|e| serde::de::Error::custom(&e.to_string()))?,
+                    ).map_err(|_| serde::de::Error::custom("Wrong secret key length"))?,
+                ),
             ),
         );
     }
