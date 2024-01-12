@@ -778,7 +778,7 @@ async fn main() {
                                     upstream_type: None,
                                     udp_bind_addrs: vec![StrSocketAddr::new_fake("[::]:53".to_string())],
                                     tcp_bind_addrs: vec![],
-                                    tls_bind_addrs: vec![StrSocketAddr::new_fake("[::]:853".to_string())],
+                                    tls: None,
                                 })
                             } else {
                                 None

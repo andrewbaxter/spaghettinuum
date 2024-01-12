@@ -10,8 +10,8 @@ use poem::{
     error::ParseJsonError,
     Request,
     RequestBody,
+    http::StatusCode,
 };
-use reqwest::StatusCode;
 use serde::{
     de::DeserializeOwned,
     Serialize,

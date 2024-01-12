@@ -54,7 +54,7 @@ itertools = "0.10.5"
 serde_json = "1.0.110"
 taskmanager = "0.1.2"
 loga = "0.1.7"
-aargvark = { version = "0.0.7", features = ["serde_json", "http_types"] }
+aargvark = { version = "0.0.8", features = ["serde_json", "http_types", "url"] }
 poem = { version = "2.0.0", features = [
     "rustls",
     "acme-webpki-roots",

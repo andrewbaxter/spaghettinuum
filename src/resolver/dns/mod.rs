@@ -1,7 +1,14 @@
 use crate::{
-    utils::db_util::{
-        DbTx,
-        setup_db,
+    utils::{
+        db_util::{
+            DbTx,
+            setup_db,
+        },
+        tls_util::{
+            encode_priv_pem,
+            load_certified_key,
+            extract_expiry,
+        },
     },
     interface::{
         identity::Identity,
@@ -32,6 +39,7 @@ use crate::utils::{
 use chrono::{
     Duration,
     Utc,
+    DateTime,
 };
 use futures::StreamExt;
 use hickory_proto::{
@@ -81,22 +89,11 @@ use poem::{
         AcmeClient,
         create_acme_account,
         EABCreds,
-        EncodingKey,
-        EcdsaKeyPair,
         ACME_KEY_ALG,
         ChallengeTypeParameters,
     },
     RouteScheme,
     Server,
-};
-use rustls::{
-    ServerConfig,
-    sign,
-    pki_types::{
-        CertificateDer,
-        PrivateKeyDer,
-    },
-    crypto::ring::sign::any_ecdsa_type,
 };
 use std::{
     net::{
@@ -572,6 +569,7 @@ pub async fn start_dns_bridge(
         let log = log.fork(ea!(subsys = "dot-tls-acme", names = global_addrs.dbg_str()));
         let log = &log;
         let cert = Arc::new(Mutex::new(None));
+        let cert_expiry = Arc::new(Mutex::new(None));
         let names = global_addrs.iter().map(|a| a.to_string()).collect_vec();
         let eab = tls.eab.map(|config| EABCreds {
             kid: config.kid,
@@ -583,41 +581,13 @@ pub async fn start_dns_bridge(
             return Ok(db::dot_certs_get(txn)?);
         }).await.log_context(log, "Error looking up initial certs")?;
         if let Some((pub_pem, priv_pem)) = initial_certs.pub_pem.zip(initial_certs.priv_pem) {
-            (*cert.lock().unwrap()) = Some(
-                Arc::new(
-                    rustls_21::sign::CertifiedKey::new(
-                        {
-                            let mut certs = vec![];
-                            for (i, raw) in rustls_pemfile::certs(&mut pub_pem.as_bytes()).enumerate() {
-                                certs.push(
-                                    CertificateDer::from(
-                                        raw
-                                            .log_context_with(
-                                                log,
-                                                "Error parsing public PEM from database",
-                                                ea!(index = i),
-                                            )?
-                                            .to_vec(),
-                                    ),
-                                );
-                            }
-                            certs
-                        },
-                        any_ecdsa_type(
-                            &PrivateKeyDer::from(
-                                rustls_pemfile::pkcs8_private_keys(&mut priv_pem.as_bytes())
-                                    .next()
-                                    .log_context(log, "No private keys in current PEM from database")?
-                                    .log_context(log, "Error parsing private PEM from database")?,
-                            ),
-                        ).unwrap(),
-                    ),
-                ),
-            );
+            (*cert.lock().unwrap()) = Some(load_certified_key(pub_pem.as_bytes(), priv_pem.as_bytes())?);
+            (*cert_expiry.lock().unwrap()) =
+                Some(extract_expiry(&pub_pem).context("Error reading expiry from initial certs")?);
         }
 
         // Start cert refreshing task
-        const NEAR_EXPIRY_THRESH: i64 = 28 * 24 * 60 * 60;
+        let near_expiry_thresh = Duration::hours(7 * 24);
         let tokens = Http01TokensMap::new();
         tm.critical_task({
             let tm = tm.clone();
@@ -626,23 +596,17 @@ pub async fn start_dns_bridge(
             let tokens = tokens.clone();
             let mut acme_client0 = None;
             let mut kid0 = None;
-            let mut acme_client =
-                AcmeClient::try_new(&tls.acme_directory_url, tls.contacts)
-                    .await
-                    .log_context(log, "Failed to set up acme client")?;
             let log = log.clone();
             async move {
                 let log = &log;
                 loop {
                     let until_near_expiry;
-                    if let Some(cert) = cert.lock().unwrap().clone() {
+                    if let Some(cert_expiry) = cert_expiry.lock().unwrap().clone() {
                         until_near_expiry =
-                            Duration::seconds(
-                                poem::listener::acme::seconds_until_expiry(
-                                    cert.as_ref(),
-                                ).saturating_sub(NEAR_EXPIRY_THRESH) +
-                                    4 * 60 * 60,
-                            );
+                            <DateTime<Utc>>::from(cert_expiry)
+                                .signed_duration_since(Utc::now())
+                                .checked_sub(&near_expiry_thresh)
+                                .unwrap();
                     } else {
                         until_near_expiry = Duration::zero();
                     }
@@ -663,8 +627,11 @@ pub async fn start_dns_bridge(
                             },
                             None => {
                                 let key1 =
-                                    EcdsaKeyPair::generate_pkcs8(ACME_KEY_ALG, &mut SystemRandom::new()).unwrap();
-                                acme_key_pem = Pem::new("PRIVATE KEY", &key1).to_string();
+                                    poem::listener::acme::EcdsaKeyPair::generate_pkcs8(
+                                        ACME_KEY_ALG,
+                                        &mut poem::listener::acme::SystemRandom::new(),
+                                    ).unwrap();
+                                acme_key_pem = encode_priv_pem(key1.as_ref());
                                 db_pool.tx({
                                     let acme_key = acme_key_pem.clone();
                                     move |txn| Ok(db::acme_key_set(txn, Some(&acme_key))?)
@@ -672,11 +639,11 @@ pub async fn start_dns_bridge(
                             },
                         }
                         let acme_key =
-                            EncodingKey::from_ec_pem(
+                            poem::listener::acme::EncodingKey::from_ec_pem(
                                 acme_key_pem.as_bytes(),
                             ).log_context(log, "Error loading stored acme key")?;
                         let acme_client;
-                        match &acme_client0 {
+                        match acme_client0.as_mut() {
                             Some(c) => {
                                 acme_client = c;
                             },
@@ -685,11 +652,11 @@ pub async fn start_dns_bridge(
                                     Some(
                                         AcmeClient::try_new_with_key(
                                             &tls.acme_directory_url,
-                                            tls.contacts,
+                                            tls.contacts.clone(),
                                             acme_key,
                                         ).await?,
                                     );
-                                acme_client = acme_client0.as_ref().unwrap();
+                                acme_client = acme_client0.as_mut().unwrap();
                             },
                         }
                         let kid = bb!{
@@ -701,7 +668,10 @@ pub async fn start_dns_bridge(
                                 break kid0.as_ref().unwrap();
                             }
                             let k = create_acme_account(&acme_client, eab.as_ref()).await?;
-                            db_pool.tx(move |txn| Ok(db::acme_key_kid_set(txn, Some(&k))?)).await?;
+                            db_pool.tx({
+                                let k = k.clone();
+                                move |txn| Ok(db::acme_key_kid_set(txn, Some(&k))?)
+                            }).await?;
                             kid0 = Some(k);
                             break kid0.as_ref().unwrap();
                         };
@@ -731,7 +701,7 @@ pub async fn start_dns_bridge(
                         // Initiate verification
                         let res =
                             poem::listener::acme::issue_cert(
-                                &mut acme_client,
+                                acme_client,
                                 &kid,
                                 &names,
                                 ChallengeTypeParameters::Http01 { keys_for_http01: &tokens },
@@ -742,14 +712,26 @@ pub async fn start_dns_bridge(
                         if let Err(e) = subtm.join().await {
                             log.warn_e(e, "Error in one of the ACME challenge listeners", ea!());
                         }
-                        (*cert.lock().unwrap()) = Some(res.rustls_key);
+                        (*cert.lock().unwrap()) =
+                            Some(
+                                load_certified_key(
+                                    &res.public_pem,
+                                    &res.private_pem,
+                                ).log_context(log, "Error loading received new certs")?,
+                            );
                         db_pool.tx(move |txn| {
                             db::dot_certs_set(
                                 txn,
                                 Some(
-                                    &String::from_utf8(res.public_pem).context("Issued pub PEM is invalid utf-8")?,
+                                    &String::from_utf8(
+                                        res.public_pem,
+                                    ).context("Issued public cert PEM is invalid utf-8")?,
                                 ),
-                                Some(&res.private_pem),
+                                Some(
+                                    &String::from_utf8(
+                                        res.private_pem,
+                                    ).context("Issued private key PEM is invalid utf-8")?,
+                                ),
                             )?;
                             return Ok(());
                         }).await?;

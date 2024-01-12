@@ -224,7 +224,7 @@ impl Resolver {
                 _now: rustls::pki_types::UnixTime,
             ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
                 if publisher_cert_hash(
-                    &end_entity.0,
+                    end_entity.as_ref(),
                 ).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))? !=
                     self.hash {
                     return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding));
@@ -234,18 +234,18 @@ impl Resolver {
 
             fn verify_tls12_signature(
                 &self,
-                message: &[u8],
-                cert: &CertificateDer<'_>,
-                dss: &rustls::DigitallySignedStruct,
+                _message: &[u8],
+                _cert: &CertificateDer<'_>,
+                _dss: &rustls::DigitallySignedStruct,
             ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
                 return Ok(HandshakeSignatureValid::assertion());
             }
 
             fn verify_tls13_signature(
                 &self,
-                message: &[u8],
-                cert: &CertificateDer<'_>,
-                dss: &rustls::DigitallySignedStruct,
+                _message: &[u8],
+                _cert: &CertificateDer<'_>,
+                _dss: &rustls::DigitallySignedStruct,
             ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
                 return Ok(HandshakeSignatureValid::assertion());
             }
