@@ -65,9 +65,9 @@ async fn main() {
         let mut prev_node = None;
         for i in 0 .. 1000 {
             let log = &if i == 0 {
-                loga::new(loga::Level::Debug)
+                loga::new().with_level(loga::Level::Debug)
             } else {
-                loga::new(loga::Level::Warn)
+                loga::new().with_level(loga::Level::Warn)
             };
             let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 1, 1).saturating_add(i), PORT_NODE));
             let path = root.join(format!("node_{}", i));

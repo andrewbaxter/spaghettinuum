@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::{
     Deserialize,
@@ -12,25 +13,15 @@ pub enum DnsType {
     Tls,
 }
 
-/// External account binding credentials provided by SSL cert issuer in advance.
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub struct EabConfig {
-    pub kid: String,
-    pub hmac_b64: String,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct AcmeConfig {
-    /// DNS over TLS, with automatic cert provisioning via ZeroSSL. Certificates are
-    /// issued for each global address identified in the main config.
+pub struct TlsConfig {
+    /// DNS over TLS (DoT) socket addresses to bind to.
     pub bind_addrs: Vec<StrSocketAddr>,
-    /// Ex: `https://acme.zerossl.com/v2/DV90`
-    pub acme_directory_url: String,
-    pub eab: Option<EabConfig>,
-    /// Contacts by which the issuer can reach you if there's an issue.
-    pub contacts: Vec<String>,
+    /// Path to public cert PEM file.
+    pub pub_pem_path: PathBuf,
+    /// Path to private cert PEM file.
+    pub priv_pem_path: PathBuf,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -42,12 +33,15 @@ pub struct DnsBridgeConfig {
     #[serde(default)]
     pub upstream_type: Option<DnsType>,
     /// Normal DNS - typically port 53.
+    #[serde(default)]
     pub udp_bind_addrs: Vec<StrSocketAddr>,
     /// TCP for DNS over TLS, but you need to proxy the TLS connection. Can be whatever
     /// (proxy's external port is normally 853).
+    #[serde(default)]
     pub tcp_bind_addrs: Vec<StrSocketAddr>,
-    /// Self managed DNS over TLS via ACME.
-    pub tls: Option<AcmeConfig>,
+    /// Self managed DNS over TLS.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

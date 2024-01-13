@@ -307,7 +307,7 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
             return Err(
-                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+                loga::new_err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
             );
         }
         return Ok(());
@@ -319,7 +319,7 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
             return Err(
-                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+                loga::new_err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
             );
         }
         return Ok(
@@ -338,7 +338,7 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
             return Err(
-                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+                loga::new_err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
             );
         }
         return Ok(body);
@@ -393,7 +393,7 @@ fn api_url_(mut url: Option<Uri>, env_key: &'static str) -> Result<Uri, loga::Er
                     env::VarError::NotPresent => { },
                     env::VarError::NotUnicode(e) => {
                         return Err(
-                            loga::err_with(
+                            loga::new_err_with(
                                 "Environment variable isn't valid unicode",
                                 ea!(env = env_key, value = e.to_string_lossy()),
                             ),
@@ -488,7 +488,7 @@ async fn publish(
 async fn main() {
     async fn inner() -> Result<(), loga::Error> {
         let args = aargvark::vark::<args::Args>();
-        let log = loga::new(match args.debug {
+        let log = loga::new().with_level(match args.debug {
             Some(_) => loga::Level::Debug,
             None => loga::Level::Info,
         });
@@ -614,7 +614,7 @@ async fn main() {
                                         v
                                             .split_once("/")
                                             .ok_or_else(
-                                                || loga::err_with(
+                                                || loga::new_err_with(
                                                     "Incorrect mx record specification, must be like `PRIORITY/NAME`",
                                                     ea!(entry = v),
                                                 ),
@@ -729,7 +729,7 @@ async fn main() {
                         bootstrap: vec![BootstrapConfig {
                             addr: StrSocketAddr::new_fake(format!("spaghettinuum.isandrew.com:{}", PORT_NODE)),
                             id: NodeIdentity::from_str(
-                                "yryyyyyyyb3jndem1w1e4f56cfhu3di3kpj5c6n8emk4bkye3ien388tj1thg",
+                                "yryyyyyyyy88hprzytfsni9zqf9pp41ttnps4ics8kwc7ye743qd9cj4yxzi1",
                             ).unwrap(),
                         }],
                     },
@@ -850,7 +850,7 @@ async fn main() {
                                     v
                                         .split_once("/")
                                         .ok_or_else(
-                                            || loga::err_with(
+                                            || loga::new_err_with(
                                                 "Incorrect mx record specification, must be like `PRIORITY/NAME`",
                                                 ea!(entry = v),
                                             ),

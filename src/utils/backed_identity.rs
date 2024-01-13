@@ -80,7 +80,7 @@ mod card {
                     },
                     _ => (),
                 };
-                return Err(loga::err("Unsupported key type - must be Ed25519"));
+                return Err(loga::new_err("Unsupported key type - must be Ed25519"));
             }
             return Ok(
                 (
@@ -88,7 +88,7 @@ mod card {
                     extract_pgp_ed25519_sig(
                         &signer
                             .sign(HashAlgorithm::SHA512, &identity::hash_for_ed25519(data))
-                            .map_err(|e| loga::err_with("Card signature failed", ea!(err = e)))?,
+                            .map_err(|e| loga::new_err_with("Card signature failed", ea!(err = e)))?,
                     ).to_vec(),
                 ),
             );
@@ -99,7 +99,7 @@ mod card {
 pub fn get_identity_signer(ident: BackedIdentityArg) -> Result<Box<dyn IdentitySigner>, loga::Error> {
     match ident {
         BackedIdentityArg::Local(ident_config) => {
-            let log = &loga::new(loga::Level::Info).fork(ea!(path = ident_config.to_string_lossy()));
+            let log = &loga::new().fork(ea!(path = ident_config.to_string_lossy()));
             let ident_data =
                 serde_json::from_slice::<BackedIdentityLocal>(
                     &read(&ident_config).log_context(log, "Error reading identity file")?,

@@ -21,7 +21,7 @@ pub async fn setup_db(
     p: &Path,
     migrate: fn(&mut rusqlite::Connection) -> Result<(), GoodError>,
 ) -> Result<Pool, loga::Error> {
-    let log = &loga::new(loga::Level::Info).fork(ea!(path = p.to_string_lossy()));
+    let log = &loga::new().fork(ea!(path = p.to_string_lossy()));
     let pool = Config::new(p).create_pool(Runtime::Tokio1).log_context(log, "Error constructing db pool")?;
     let conn = pool.get().await.log_context(log, "Error getting db connection from pool")?;
     conn.interact(move |conn| {

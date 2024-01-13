@@ -16,41 +16,22 @@ pub const KEY_DNS_A: &'static str = "dsf9oyfz83fatqpscp9yt8wkuw";
 pub const KEY_DNS_AAAA: &'static str = "wwfukygd6tykiqrmi3jp6qnoiw";
 pub const KEY_DNS_CNAME: &'static str = "gi3saqn8pfn7tmwbd4pxj3tour";
 pub const KEY_DNS_MX: &'static str = "zm5zzaotiib4bbqg9befbr1kro";
-pub const KEY_DNS_NS: &'static str = "ic6hcun6zjnqtxe5ft8i6wox4w";
-pub const KEY_DNS_PTR: &'static str = "t7ou17qiefnozbe1uef7ym5hih";
-pub const KEY_DNS_SOA: &'static str = "371z1qxg5jnftcjr3g9x7ihzdo";
-pub const KEY_DNS_SRV: &'static str = "pyte8mamfbgijefzc8a47gcq4h";
 pub const KEY_DNS_TXT: &'static str = "rht6tfoc4pnbipesgjejkzeeta";
-pub const KEY_DNS_NSEC: &'static str = "o5qooyyh4pfo7pm8j8z5aaxtwo";
-pub const KEY_DNS_NSEC3: &'static str = "x18s8kzedpgy9k9yhm46gxjdky";
-pub const KEY_DNS_NSEC3PARAM: &'static str = "k1qkz4rn5p8gp8qmurt7ohijuy";
-pub const KEY_DNS_RRSIG: &'static str = "xdgo9zk4p7ntxjuk1tomoqpfja";
-pub const KEY_DNS_TLSA: &'static str = "75raif7nhtf87gxqf7h4binmdr";
-pub const KEY_DNS_DNSKEY: &'static str = "wngk1zrw4p8ojbkbpxzdqk6wwy";
-pub const KEY_DNS_DS: &'static str = "wjfjjd8ysiyb5xdgmmm514e64c";
-pub const KEY_DNS_CDNSKEY: &'static str = "5m9p4wwsjprtxpzkp7s4ctk3hh";
-pub const COMMON_KEYS_DNS: &[&'static str] =
-    &[
-        KEY_DNS_A,
-        KEY_DNS_AAAA,
-        KEY_DNS_CNAME,
-        KEY_DNS_MX,
-        KEY_DNS_NS,
-        KEY_DNS_PTR,
-        KEY_DNS_SOA,
-        KEY_DNS_SRV,
-        KEY_DNS_TXT,
-        KEY_DNS_NSEC,
-        KEY_DNS_NSEC3,
-        KEY_DNS_NSEC3PARAM,
-        KEY_DNS_RRSIG,
-        KEY_DNS_TLSA,
-        KEY_DNS_DNSKEY,
-        KEY_DNS_DS,
-        KEY_DNS_CDNSKEY,
-    ];
+pub const COMMON_KEYS_DNS: &[&'static str] = &[KEY_DNS_A, KEY_DNS_AAAA, KEY_DNS_CNAME, KEY_DNS_MX, KEY_DNS_TXT];
 
 // Not yet supported
+//. pub const KEY_DNS_NS: &'static str = "ic6hcun6zjnqtxe5ft8i6wox4w";
+//. pub const KEY_DNS_SOA: &'static str = "371z1qxg5jnftcjr3g9x7ihzdo";
+//. pub const KEY_DNS_PTR: &'static str = "t7ou17qiefnozbe1uef7ym5hih";
+//. pub const KEY_DNS_SRV: &'static str = "pyte8mamfbgijefzc8a47gcq4h";
+//. pub const KEY_DNS_NSEC: &'static str = "o5qooyyh4pfo7pm8j8z5aaxtwo";
+//. pub const KEY_DNS_NSEC3: &'static str = "x18s8kzedpgy9k9yhm46gxjdky";
+//. pub const KEY_DNS_NSEC3PARAM: &'static str = "k1qkz4rn5p8gp8qmurt7ohijuy";
+//. pub const KEY_DNS_RRSIG: &'static str = "xdgo9zk4p7ntxjuk1tomoqpfja";
+//. pub const KEY_DNS_TLSA: &'static str = "75raif7nhtf87gxqf7h4binmdr";
+//. pub const KEY_DNS_DNSKEY: &'static str = "wngk1zrw4p8ojbkbpxzdqk6wwy";
+//. pub const KEY_DNS_DS: &'static str = "wjfjjd8ysiyb5xdgmmm514e64c";
+//. pub const KEY_DNS_CDNSKEY: &'static str = "5m9p4wwsjprtxpzkp7s4ctk3hh";
 //. pub const KEY_DNS_AFSDB: &'static str = "3dmm7eocsjbnmy1jokcban5bre";
 //. pub const KEY_DNS_APL: &'static str = "74yih9nx63gd5e5ea9u77bswjc";
 //. pub const KEY_DNS_CAA: &'static str = "mkt18be4ebyzjd9ushujkdgd3w";

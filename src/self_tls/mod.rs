@@ -93,7 +93,7 @@ pub async fn request_cert(
     let body = resp.bytes().await.context("Error reading cert request response")?;
     if !resp_status.is_success() {
         return Err(
-            loga::err_with(
+            loga::new_err_with(
                 "Received error response",
                 ea!(status = resp_status.dbg_str(), body = String::from_utf8_lossy(&body)),
             ),

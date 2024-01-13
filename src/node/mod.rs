@@ -35,7 +35,6 @@ use loga::{
     ea,
     ResultContext,
     DebugDisplay,
-    ErrContext,
 };
 use manual_future::ManualFuture;
 use manual_future::ManualFutureCompleter;

@@ -23,5 +23,6 @@ pub struct NodeConfig {
     /// The address the node will listen on (UDP).
     pub bind_addr: StrSocketAddr,
     /// A list of peers to use to bootstrap the connection.
+    #[serde(default)]
     pub bootstrap: Vec<BootstrapConfig>,
 }

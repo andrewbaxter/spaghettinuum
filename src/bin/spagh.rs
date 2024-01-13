@@ -88,7 +88,7 @@ struct Args {
 async fn main() {
     async fn inner() -> Result<(), loga::Error> {
         let args = aargvark::vark::<Args>();
-        let log = &loga::new(if args.debug.is_some() {
+        let log = &loga::new().with_level(if args.debug.is_some() {
             loga::Level::Debug
         } else {
             loga::Level::Info
@@ -100,7 +100,9 @@ async fn main() {
             Err(e) => match e {
                 std::env::VarError::NotPresent => None,
                 std::env::VarError::NotUnicode(_) => {
-                    return Err(loga::err_with("Error parsing env var as unicode", ea!(env = spagh_cli::ENV_CONFIG)))
+                    return Err(
+                        loga::new_err_with("Error parsing env var as unicode", ea!(env = spagh_cli::ENV_CONFIG)),
+                    )
                 },
             },
         } {
@@ -218,22 +220,16 @@ async fn main() {
         };
         let resolver = match config.resolver {
             Some(resolver_config) => {
-                has_api_endpoints = true;
                 let resolver =
                     Resolver::new(log, &tm, node.clone(), resolver_config.max_cache, &config.persistent_dir)
                         .await
                         .log_context(log, "Error setting up resolver")?;
                 if let Some(dns_config) = resolver_config.dns_bridge {
-                    resolver::dns::start_dns_bridge(
-                        log,
-                        &tm,
-                        &resolver,
-                        &global_ips,
-                        dns_config,
-                        &config.persistent_dir,
-                    )
+                    resolver::dns::start_dns_bridge(log, &tm, &resolver, &global_ips, dns_config)
                         .await
                         .log_context(log, "Error setting up resolver DNS bridge")?;
+                } else {
+                    has_api_endpoints = true;
                 }
                 Some(resolver)
             },

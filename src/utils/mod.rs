@@ -134,7 +134,7 @@ pub async fn reqwest_get(r: Response, limit: usize) -> Result<Vec<u8>, loga::Err
     let resp_bytes = resp_bytes.to_vec();
     if status.is_client_error() || status.is_server_error() {
         return Err(
-            loga::err_with(
+            loga::new_err_with(
                 "Got response with error code",
                 ea!(status = status, body = String::from_utf8_lossy(&resp_bytes)),
             ),

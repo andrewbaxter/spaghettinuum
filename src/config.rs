@@ -93,6 +93,7 @@ pub struct Config {
     pub persistent_dir: PathBuf,
     /// How to determine the public ip for publisher advertisements and
     /// self-publishing. Publisher advertisements always use the first address.
+    #[serde(default)]
     pub global_addrs: Vec<GlobalAddrConfig>,
     /// Core DHT node config, for publishing and looking up addresses
     pub node: node::config::NodeConfig,
@@ -105,6 +106,7 @@ pub struct Config {
     /// Addresses for client interaction - resolver lookups, publishing, and admin.
     /// Required for publisher and resolver.  This serves both token-protected and
     /// public endpoints.
+    #[serde(default)]
     pub api_bind_addrs: Vec<StrSocketAddr>,
     /// When configuring the publisher, admin endpoints must be accessed with this as a
     /// bearer http authorization token.  Required for publisher.

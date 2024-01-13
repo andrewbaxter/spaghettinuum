@@ -85,14 +85,14 @@ pub async fn local_resolve_global_ip(
 }
 
 pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer>) -> Result<IpAddr, loga::Error> {
-    let log = &loga::new(loga::Level::Info).fork(ea!(lookup = lookup));
+    let log = &loga::new().fork(ea!(lookup = lookup));
     let lookup = Url::parse(&lookup).log_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
     let lookup_host =
-        lookup.host().ok_or_else(|| loga::err("Missing host portion in `advertise_addr` url"))?.to_string();
+        lookup.host().ok_or_else(|| loga::new_err("Missing host portion in `advertise_addr` url"))?.to_string();
     let lookup_port = lookup.port().unwrap_or(match lookup.scheme() {
         "http" => 80,
         "https" => 443,
-        _ => return Err(loga::err("Only http/https are supported for ip lookups")),
+        _ => return Err(loga::new_err("Only http/https are supported for ip lookups")),
     });
     let ip =
         reqwest_get(

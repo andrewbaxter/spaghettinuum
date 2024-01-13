@@ -1,24 +1,10 @@
 use crate::{
-    utils::{
-        db_util::{
-            DbTx,
-            setup_db,
-        },
-        tls_util::{
-            encode_priv_pem,
-            load_certified_key,
-            extract_expiry,
-        },
-    },
     interface::{
         identity::Identity,
         spagh_api::{
             resolve::{
                 self,
                 KEY_DNS_CNAME,
-                KEY_DNS_NS,
-                KEY_DNS_PTR,
-                KEY_DNS_SOA,
                 KEY_DNS_TXT,
                 KEY_DNS_MX,
                 COMMON_KEYS_DNS,
@@ -30,7 +16,6 @@ use crate::{
     resolver::{
         config::DnsType,
     },
-    bb,
 };
 use crate::utils::{
     ResultVisErr,
@@ -39,7 +24,6 @@ use crate::utils::{
 use chrono::{
     Duration,
     Utc,
-    DateTime,
 };
 use futures::StreamExt;
 use hickory_proto::{
@@ -48,8 +32,15 @@ use hickory_proto::{
             CNAME,
             AAAA,
             A,
+            TXT,
+            MX,
         },
         LowerName,
+        RData,
+        RecordType,
+        DNSClass,
+        Record,
+        domain::Label,
     },
     xfer::{
         DnsHandle,
@@ -59,6 +50,9 @@ use hickory_proto::{
     op::{
         Message,
         Query,
+        MessageParts,
+        Header,
+        ResponseCode,
     },
 };
 use hickory_resolver::{
@@ -73,43 +67,27 @@ use hickory_resolver::{
         TokioRuntimeProvider,
         GenericConnector,
     },
+    Name,
 };
-use itertools::Itertools;
 use loga::{
     ea,
     Log,
     ResultContext,
     DebugDisplay,
 };
-use poem::{
-    async_trait,
-    listener::acme::{
-        Http01Endpoint,
-        Http01TokensMap,
-        AcmeClient,
-        create_acme_account,
-        EABCreds,
-        ACME_KEY_ALG,
-        ChallengeTypeParameters,
-    },
-    RouteScheme,
-    Server,
+use poem::async_trait;
+use rustls::{
+    Certificate,
+    PrivateKey,
 };
 use std::{
     net::{
         Ipv4Addr,
         Ipv6Addr,
         IpAddr,
-        SocketAddrV4,
-        SocketAddr,
-        SocketAddrV6,
     },
     str::FromStr,
-    sync::{
-        Arc,
-        Mutex,
-    },
-    path::Path,
+    sync::Arc,
 };
 use taskmanager::TaskManager;
 use tokio::{
@@ -117,24 +95,7 @@ use tokio::{
         UdpSocket,
         TcpListener,
     },
-    select,
-    time::sleep,
-};
-use hickory_client::{
-    op::{
-        Header,
-        ResponseCode,
-    },
-    rr::{
-        rdata::{
-            MX,
-            TXT,
-        },
-        DNSClass,
-        Label,
-        Name,
-        Record,
-    },
+    fs::read,
 };
 use hickory_server::{
     authority::MessageResponseBuilder,
@@ -145,30 +106,13 @@ use super::{
     config::DnsBridgeConfig,
 };
 
-pub mod db;
-
-struct DotCertHandler(Arc<Mutex<Option<Arc<rustls_21::sign::CertifiedKey>>>>);
-
-impl rustls_21::server::ResolvesServerCert for DotCertHandler {
-    fn resolve(&self, _client_hello: rustls_21::server::ClientHello) -> Option<Arc<rustls_21::sign::CertifiedKey>> {
-        return self.0.lock().unwrap().clone();
-    }
-}
-
 pub async fn start_dns_bridge(
     log: &loga::Log,
     tm: &TaskManager,
     resolver: &Resolver,
     global_addrs: &[IpAddr],
     dns_config: DnsBridgeConfig,
-    persistent_dir: &Path,
 ) -> Result<(), loga::Error> {
-    let db_pool =
-        setup_db(&persistent_dir.join("resolver_dns_bridge.sqlite3"), db::migrate)
-            .await
-            .log_context(log, "Error initializing database")?;
-    db_pool.get().await?.interact(|conn| db::dot_certs_setup(conn)).await??;
-
     struct HandlerInner {
         log: Log,
         resolver: Resolver,
@@ -187,19 +131,18 @@ pub async fn start_dns_bridge(
             request: &hickory_server::server::Request,
             mut response_handle: R,
         ) -> hickory_server::server::ResponseInfo {
-            self.0.log.debug("Received", ea!(request = request.dbg_str()));
             let self1 = self.0.clone();
             match async {
-                match async {
-                    if request.query().query_class() != DNSClass::IN {
-                        return Ok(None);
-                    }
-                    if request.query().name().base_name() != self1.expect_suffix {
-                        return Ok(None);
-                    }
+                if false {
+                    // Type assertion
+                    return Err(loga::new_err("")).err_internal() as Result<ResponseInfo, VisErr>;
+                }
+                if request.query().query_class() == DNSClass::IN &&
+                    request.query().name().base_name() == self1.expect_suffix {
+                    self.0.log.debug("Received spagh request", ea!(request = request.dbg_str()));
                     if request.query().name().num_labels() != 2 {
                         return Err(
-                            loga::err_with(
+                            loga::new_err_with(
                                 "Expected two parts in request (id., s.) but got different number",
                                 ea!(name = request.query().name(), count = request.query().name().num_labels()),
                             ),
@@ -209,7 +152,7 @@ pub async fn start_dns_bridge(
                     let ident_part = query_name.iter().next().unwrap();
                     let ident =
                         Identity::from_bytes(&zbase32::decode_full_bytes(ident_part).map_err(|e| {
-                            loga::err_with("Wrong number of parts in request", ea!(ident = e))
+                            loga::new_err_with("Wrong number of parts in request", ea!(ident = e))
                         }).err_external()?)
                             .context_with(
                                 "Couldn't parse ident in request",
@@ -217,30 +160,27 @@ pub async fn start_dns_bridge(
                             )
                             .err_external()?;
                     let (lookup_key, batch_keys) = match request.query().query_type() {
-                        hickory_client::rr::RecordType::A => (KEY_DNS_A, COMMON_KEYS_DNS),
-                        hickory_client::rr::RecordType::AAAA => {
+                        RecordType::A => (KEY_DNS_A, COMMON_KEYS_DNS),
+                        RecordType::AAAA => {
                             (KEY_DNS_AAAA, COMMON_KEYS_DNS)
                         },
-                        hickory_client::rr::RecordType::CNAME => {
+                        RecordType::CNAME => {
                             (KEY_DNS_CNAME, COMMON_KEYS_DNS)
                         },
-                        hickory_client::rr::RecordType::NS => (KEY_DNS_NS, COMMON_KEYS_DNS),
-                        hickory_client::rr::RecordType::PTR => (KEY_DNS_PTR, COMMON_KEYS_DNS),
-                        hickory_client::rr::RecordType::SOA => (KEY_DNS_SOA, COMMON_KEYS_DNS),
-                        hickory_client::rr::RecordType::TXT => (KEY_DNS_TXT, COMMON_KEYS_DNS),
-                        hickory_client::rr::RecordType::MX => (KEY_DNS_MX, COMMON_KEYS_DNS),
+                        RecordType::TXT => (KEY_DNS_TXT, COMMON_KEYS_DNS),
+                        RecordType::MX => (KEY_DNS_MX, COMMON_KEYS_DNS),
                         _ => {
+                            // Unsupported key pairs
                             return Ok(
-                                Some(
-                                    response_handle
-                                        .send_response(
-                                            MessageResponseBuilder::from_message_request(
-                                                request,
-                                            ).build_no_records(Header::response_from_request(request.header())),
-                                        )
-                                        .await
-                                        .context("Error sending response"),
-                                ),
+                                response_handle
+                                    .send_response(
+                                        MessageResponseBuilder::from_message_request(
+                                            request,
+                                        ).build_no_records(Header::response_from_request(request.header())),
+                                    )
+                                    .await
+                                    .context("Error sending response")
+                                    .err_internal()?,
                             );
                         },
                     };
@@ -258,7 +198,7 @@ pub async fn start_dns_bridge(
                             .or_else(|| res.remove(lookup_key).map(filter_some).flatten()) {
                         match serde_json::from_str::<resolve::DnsRecordsetJson>(&data)
                             .context("Failed to parse received record json")
-                            .err_internal()? {
+                            .err_external()? {
                             resolve::DnsRecordsetJson::V1(v) => match v {
                                 resolve::latest::DnsRecordsetJson::A(n) => {
                                     for n in n {
@@ -283,7 +223,7 @@ pub async fn start_dns_bridge(
                                                     .num_seconds()
                                                     .try_into()
                                                     .unwrap_or(i32::MAX as u32),
-                                                hickory_client::rr::RData::A(A(n)),
+                                                RData::A(A(n)),
                                             ),
                                         );
                                     }
@@ -311,7 +251,7 @@ pub async fn start_dns_bridge(
                                                     .num_seconds()
                                                     .try_into()
                                                     .unwrap_or(i32::MAX as u32),
-                                                hickory_client::rr::RData::AAAA(AAAA(n)),
+                                                RData::AAAA(AAAA(n)),
                                             ),
                                         );
                                     }
@@ -339,7 +279,7 @@ pub async fn start_dns_bridge(
                                                     .num_seconds()
                                                     .try_into()
                                                     .unwrap_or(i32::MAX as u32),
-                                                hickory_client::rr::RData::CNAME(CNAME(n)),
+                                                RData::CNAME(CNAME(n)),
                                             ),
                                         );
                                     }
@@ -354,7 +294,7 @@ pub async fn start_dns_bridge(
                                                     .num_seconds()
                                                     .try_into()
                                                     .unwrap_or(i32::MAX as u32),
-                                                hickory_client::rr::RData::TXT(TXT::new(vec![n])),
+                                                RData::TXT(TXT::new(vec![n])),
                                             ),
                                         );
                                     }
@@ -382,7 +322,7 @@ pub async fn start_dns_bridge(
                                                     .num_seconds()
                                                     .try_into()
                                                     .unwrap_or(i32::MAX as u32),
-                                                hickory_client::rr::RData::MX(MX::new(n.0, exchange)),
+                                                RData::MX(MX::new(n.0, exchange)),
                                             ),
                                         );
                                     }
@@ -391,122 +331,126 @@ pub async fn start_dns_bridge(
                         }
                     }
                     return Ok(
-                        Some(
-                            response_handle
-                                .send_response(
-                                    MessageResponseBuilder::from_message_request(
-                                        request,
-                                    ).build(
-                                        Header::response_from_request(request.header()),
-                                        answers.iter().map(|r| r),
-                                        &[],
-                                        &[],
-                                        &[],
-                                    ),
-                                )
-                                .await
-                                .context("Error sending response"),
-                        ),
-                    ) as
-                        Result<Option<Result<ResponseInfo, loga::Error>>, VisErr>;
-                }.await {
-                    Ok(r) => match r {
+                        response_handle
+                            .send_response(
+                                MessageResponseBuilder::from_message_request(
+                                    request,
+                                ).build(
+                                    Header::response_from_request(request.header()),
+                                    answers.iter().map(|r| r),
+                                    &[],
+                                    &[],
+                                    &[],
+                                ),
+                            )
+                            .await
+                            .context("Error sending response")
+                            .err_internal()?,
+                    );
+                } else {
+                    self
+                        .0
+                        .log
+                        .debug("Received non-spagh request, forwarding upstream", ea!(request = request.dbg_str()));
+                    let resp = self1.upstream.send(DnsRequest::new(Message::from(MessageParts {
+                        header: *request.header(),
+                        queries: vec![{
+                            let mut q =
+                                Query::query(Name::from(request.query().name()), request.query().query_type());
+                            q.set_query_class(request.query().query_class());
+                            q
+                        }],
+                        answers: vec![],
+                        name_servers: vec![],
+                        additionals: vec![],
+                        sig0: vec![],
+                        edns: request.edns().cloned(),
+                    }), DnsRequestOptions::default())).next().await;
+                    match resp {
                         Some(resp) => {
-                            return Ok(resp?);
-                        },
-                        None => {
-                            let resp = self1.upstream.send(DnsRequest::new({
-                                let mut m = Message::new();
-                                m.add_query({
-                                    let mut q =
-                                        Query::query(
-                                            Name::from(request.query().name()),
-                                            request.query().query_type(),
-                                        );
-                                    q.set_query_class(request.query().query_class());
-                                    q
-                                });
-                                m
-                            }, DnsRequestOptions::default())).next().await;
-                            let resp = match resp {
-                                Some(Ok(r)) => r,
-                                Some(Err(e)) => {
-                                    self1.log.debug_e(e.into(), "Request failed due to upstream issue", ea!());
-                                    return Ok(
-                                        response_handle
-                                            .send_response(
-                                                MessageResponseBuilder::from_message_request(
-                                                    request,
-                                                ).error_msg(request.header(), ResponseCode::FormErr),
-                                            )
-                                            .await?,
-                                    );
+                            let resp = resp.err_external()?;
+                            let soa = match resp.soa() {
+                                Some(r) => {
+                                    let mut r2 = Record::new();
+                                    r2
+                                        .set_name(r.name().clone())
+                                        .set_rr_type(r.record_type())
+                                        .set_dns_class(r.dns_class())
+                                        .set_ttl(r.ttl())
+                                        .set_data(r.data().map(|x| hickory_proto::rr::RData::SOA(x.clone())));
+                                    Some(r2)
                                 },
-                                None => {
-                                    return Ok(
-                                        response_handle
-                                            .send_response(
-                                                MessageResponseBuilder::from_message_request(
-                                                    request,
-                                                ).build(
-                                                    Header::response_from_request(request.header()),
-                                                    &[],
-                                                    &[],
-                                                    &[],
-                                                    &[],
-                                                ),
-                                            )
-                                            .await?,
-                                    );
-                                },
+                                None => None,
                             };
                             return Ok(
                                 response_handle
-                                    .send_response(MessageResponseBuilder::from_message_request(request).build(
-                                        Header::response_from_request(request.header()),
-                                        resp.answers(),
-                                        // Lies, since lookup doesn't provide additional details atm
-                                        &[],
-                                        &[],
-                                        &[],
-                                    ))
-                                    .await?,
+                                    .send_response(
+                                        MessageResponseBuilder::from_message_request(
+                                            request,
+                                        ).build(
+                                            Header::response_from_request(request.header()),
+                                            resp.answers(),
+                                            resp.name_servers(),
+                                            soa.as_ref(),
+                                            resp.additionals(),
+                                        ),
+                                    )
+                                    .await
+                                    .context("Error forwarding DNS response")
+                                    .err_internal()?,
                             );
                         },
-                    },
-                    Err(e) => match e {
-                        VisErr::External(e) => {
-                            self1.log.debug_e(e, "Request failed due to requester issue", ea!());
+                        None => {
                             return Ok(
                                 response_handle
                                     .send_response(
                                         MessageResponseBuilder::from_message_request(
                                             request,
-                                        ).error_msg(request.header(), ResponseCode::FormErr),
+                                        ).build(Header::response_from_request(request.header()), &[], &[], &[], &[]),
                                     )
-                                    .await?,
+                                    .await
+                                    .context("Error sending empty response")
+                                    .err_internal()?,
                             );
+                        },
+                    };
+                }
+            }.await {
+                Err(e) => {
+                    match e {
+                        VisErr::External(e) => {
+                            self1.log.debug_e(e, "Request failed due to requester issue", ea!());
+                            match response_handle
+                                .send_response(
+                                    MessageResponseBuilder::from_message_request(
+                                        request,
+                                    ).error_msg(request.header(), ResponseCode::FormErr),
+                                )
+                                .await {
+                                Ok(r) => return r,
+                                Err(e) => {
+                                    self1.log.warn_e(e.into(), "Failed to send error response", ea!());
+                                    return ResponseInfo::from(*request.header());
+                                },
+                            };
                         },
                         VisErr::Internal(e) => {
                             self1.log.warn_e(e, "Request failed due to internal issue", ea!());
-                            return Ok(
-                                response_handle
-                                    .send_response(
-                                        MessageResponseBuilder::from_message_request(
-                                            request,
-                                        ).error_msg(request.header(), ResponseCode::ServFail),
-                                    )
-                                    .await?,
-                            );
+                            match response_handle
+                                .send_response(
+                                    MessageResponseBuilder::from_message_request(
+                                        request,
+                                    ).error_msg(request.header(), ResponseCode::ServFail),
+                                )
+                                .await {
+                                Ok(r) => return r,
+                                Err(e) => {
+                                    self1.log.warn_e(e.into(), "Failed to send error response", ea!());
+                                    return ResponseInfo::from(*request.header());
+                                },
+                            };
                         },
-                    },
-                }
-            }.await as Result<ResponseInfo, loga::Error> {
-                Err(e) => {
-                    self1.log.warn_e(e, "Request failed due to internal issue", ea!());
-                    let mut header = Header::new();
-                    header.set_response_code(ResponseCode::ServFail);
-                    return header.into();
+                    }
                 },
                 Ok(info) => {
                     return info;
@@ -517,27 +461,30 @@ pub async fn start_dns_bridge(
 
     let upstream = {
         let mut name_servers = NameServerConfigGroup::new();
-        name_servers.push(
-            NameServerConfig::new(
-                dns_config.upstream.1,
-                match (dns_config.upstream_type, dns_config.upstream.1.port()) {
-                    (Some(DnsType::Udp), _) | (None, 53) => {
-                        hickory_resolver::config::Protocol::Udp
+        name_servers.push({
+            let mut c =
+                NameServerConfig::new(
+                    dns_config.upstream.1,
+                    match (dns_config.upstream_type, dns_config.upstream.1.port()) {
+                        (Some(DnsType::Udp), _) | (None, 53) => {
+                            hickory_resolver::config::Protocol::Udp
+                        },
+                        (Some(DnsType::Tls), _) | (None, 853) => {
+                            hickory_resolver::config::Protocol::Tls
+                        },
+                        _ => {
+                            return Err(
+                                log.new_err_with(
+                                    "Unable to guess upstream DNS protocol from port number, please specify explicitly with `upstream_type`",
+                                    ea!(port = dns_config.upstream.1.port()),
+                                ),
+                            );
+                        },
                     },
-                    (Some(DnsType::Tls), _) | (None, 853) => {
-                        hickory_resolver::config::Protocol::Tls
-                    },
-                    _ => {
-                        return Err(
-                            log.new_err_with(
-                                "Unable to guess upstream DNS protocol from port number, please specify explicitly with `upstream_type`",
-                                ea!(port = dns_config.upstream.1.port()),
-                            ),
-                        );
-                    },
-                },
-            ),
-        );
+                );
+            c.tls_dns_name = Some(dns_config.upstream.1.ip().to_string());
+            c
+        });
         NameServerPool::from_config(
             name_servers,
             ResolverOpts::default(),
@@ -568,191 +515,6 @@ pub async fn start_dns_bridge(
     if let Some(tls) = dns_config.tls {
         let log = log.fork(ea!(subsys = "dot-tls-acme", names = global_addrs.dbg_str()));
         let log = &log;
-        let cert = Arc::new(Mutex::new(None));
-        let cert_expiry = Arc::new(Mutex::new(None));
-        let names = global_addrs.iter().map(|a| a.to_string()).collect_vec();
-        let eab = tls.eab.map(|config| EABCreds {
-            kid: config.kid,
-            hmac_b64: config.hmac_b64,
-        });
-
-        // Retrieve stored certs
-        let initial_certs = db_pool.tx(|txn| {
-            return Ok(db::dot_certs_get(txn)?);
-        }).await.log_context(log, "Error looking up initial certs")?;
-        if let Some((pub_pem, priv_pem)) = initial_certs.pub_pem.zip(initial_certs.priv_pem) {
-            (*cert.lock().unwrap()) = Some(load_certified_key(pub_pem.as_bytes(), priv_pem.as_bytes())?);
-            (*cert_expiry.lock().unwrap()) =
-                Some(extract_expiry(&pub_pem).context("Error reading expiry from initial certs")?);
-        }
-
-        // Start cert refreshing task
-        let near_expiry_thresh = Duration::hours(7 * 24);
-        let tokens = Http01TokensMap::new();
-        tm.critical_task({
-            let tm = tm.clone();
-            let cert = cert.clone();
-            let db_pool = db_pool.clone();
-            let tokens = tokens.clone();
-            let mut acme_client0 = None;
-            let mut kid0 = None;
-            let log = log.clone();
-            async move {
-                let log = &log;
-                loop {
-                    let until_near_expiry;
-                    if let Some(cert_expiry) = cert_expiry.lock().unwrap().clone() {
-                        until_near_expiry =
-                            <DateTime<Utc>>::from(cert_expiry)
-                                .signed_duration_since(Utc::now())
-                                .checked_sub(&near_expiry_thresh)
-                                .unwrap();
-                    } else {
-                        until_near_expiry = Duration::zero();
-                    }
-
-                    select!{
-                        _ = sleep(until_near_expiry.to_std().unwrap()) =>(),
-                        _ = tm.until_terminate() => {
-                            break;
-                        }
-                    }
-
-                    match async {
-                        // Ensure account
-                        let acme_key_pem;
-                        match db_pool.tx(move |txn| Ok(db::acme_key_get(txn)?)).await? {
-                            Some(key) => {
-                                acme_key_pem = key;
-                            },
-                            None => {
-                                let key1 =
-                                    poem::listener::acme::EcdsaKeyPair::generate_pkcs8(
-                                        ACME_KEY_ALG,
-                                        &mut poem::listener::acme::SystemRandom::new(),
-                                    ).unwrap();
-                                acme_key_pem = encode_priv_pem(key1.as_ref());
-                                db_pool.tx({
-                                    let acme_key = acme_key_pem.clone();
-                                    move |txn| Ok(db::acme_key_set(txn, Some(&acme_key))?)
-                                }).await?;
-                            },
-                        }
-                        let acme_key =
-                            poem::listener::acme::EncodingKey::from_ec_pem(
-                                acme_key_pem.as_bytes(),
-                            ).log_context(log, "Error loading stored acme key")?;
-                        let acme_client;
-                        match acme_client0.as_mut() {
-                            Some(c) => {
-                                acme_client = c;
-                            },
-                            None => {
-                                acme_client0 =
-                                    Some(
-                                        AcmeClient::try_new_with_key(
-                                            &tls.acme_directory_url,
-                                            tls.contacts.clone(),
-                                            acme_key,
-                                        ).await?,
-                                    );
-                                acme_client = acme_client0.as_mut().unwrap();
-                            },
-                        }
-                        let kid = bb!{
-                            if let Some(k) = &kid0 {
-                                break k;
-                            }
-                            if let Some(k) = db_pool.tx(move |txn| Ok(db::acme_key_kid_get(txn)?)).await? {
-                                kid0 = Some(k);
-                                break kid0.as_ref().unwrap();
-                            }
-                            let k = create_acme_account(&acme_client, eab.as_ref()).await?;
-                            db_pool.tx({
-                                let k = k.clone();
-                                move |txn| Ok(db::acme_key_kid_set(txn, Some(&k))?)
-                            }).await?;
-                            kid0 = Some(k);
-                            break kid0.as_ref().unwrap();
-                        };
-
-                        // Start challenge listener
-                        let subtm = tm.sub();
-                        for bind_addr in [
-                            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 80)),
-                            SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 80, 0, 0)),
-                        ] {
-                            subtm.critical_task({
-                                let tokens = tokens.clone();
-                                let subtm = subtm.clone();
-                                async move {
-                                    Server::new(poem::listener::TcpListener::bind(bind_addr))
-                                        .run_with_graceful_shutdown(
-                                            RouteScheme::new().http(Http01Endpoint { keys: tokens }),
-                                            subtm.until_terminate(),
-                                            Some(Duration::seconds(60).to_std().unwrap().into()),
-                                        )
-                                        .await?;
-                                    return Ok(()) as Result<_, loga::Error>;
-                                }
-                            });
-                        }
-
-                        // Initiate verification
-                        let res =
-                            poem::listener::acme::issue_cert(
-                                acme_client,
-                                &kid,
-                                &names,
-                                ChallengeTypeParameters::Http01 { keys_for_http01: &tokens },
-                            )
-                                .await
-                                .context("Error issuing new cert")?;
-                        subtm.terminate();
-                        if let Err(e) = subtm.join().await {
-                            log.warn_e(e, "Error in one of the ACME challenge listeners", ea!());
-                        }
-                        (*cert.lock().unwrap()) =
-                            Some(
-                                load_certified_key(
-                                    &res.public_pem,
-                                    &res.private_pem,
-                                ).log_context(log, "Error loading received new certs")?,
-                            );
-                        db_pool.tx(move |txn| {
-                            db::dot_certs_set(
-                                txn,
-                                Some(
-                                    &String::from_utf8(
-                                        res.public_pem,
-                                    ).context("Issued public cert PEM is invalid utf-8")?,
-                                ),
-                                Some(
-                                    &String::from_utf8(
-                                        res.private_pem,
-                                    ).context("Issued private key PEM is invalid utf-8")?,
-                                ),
-                            )?;
-                            return Ok(());
-                        }).await?;
-                        return Ok(()) as Result<_, loga::Error>;
-                    }.await {
-                        Err(e) => {
-                            log.warn_e(e.into(), "Error getting new TLS cert", ea!());
-
-                            select!{
-                                _ = sleep(Duration::minutes(10).to_std().unwrap()) =>(),
-                                _ = tm.until_terminate() => {
-                                    break;
-                                }
-                            }
-                        },
-                        Ok(_) => { },
-                    };
-                }
-                return Ok(()) as Result<_, loga::Error>;
-            }
-        });
         for bind_addr in &tls.bind_addrs {
             server
                 .register_tls_listener_with_tls_config(
@@ -761,10 +523,41 @@ pub async fn start_dns_bridge(
                         .log_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr.1))?,
                     Duration::seconds(10).to_std().unwrap(),
                     Arc::new(
-                        rustls_21::ServerConfig::builder()
+                        rustls::ServerConfig::builder()
                             .with_safe_defaults()
                             .with_no_client_auth()
-                            .with_cert_resolver(Arc::new(DotCertHandler(cert.clone()))),
+                            .with_single_cert(
+                                rustls_pemfile::certs(
+                                    &mut read(&tls.pub_pem_path)
+                                        .await
+                                        .log_context_with(
+                                            log,
+                                            "Unable to read public cert PEM file at",
+                                            ea!(path = tls.pub_pem_path.to_string_lossy()),
+                                        )?
+                                        .as_ref(),
+                                )
+                                    .log_context(log, "Error reading public certs from PEM")?
+                                    .into_iter()
+                                    .map(Certificate)
+                                    .collect(),
+                                rustls_pemfile::pkcs8_private_keys(
+                                    &mut read(&tls.priv_pem_path)
+                                        .await
+                                        .log_context_with(
+                                            log,
+                                            "Unable to read private key PEM file",
+                                            ea!(path = tls.priv_pem_path.to_string_lossy()),
+                                        )?
+                                        .as_ref(),
+                                )
+                                    .log_context(log, "Error reading private certs from PEM")?
+                                    .into_iter()
+                                    .map(PrivateKey)
+                                    .next()
+                                    .log_context(log, "No private key found in private key PEM file")?,
+                            )
+                            .log_context(log, "Error setting up cert for DoT server")?,
                     ),
                 )
                 .log_context_with(log, "Error registering TLS listener", ea!(bind_addr = bind_addr))?;
