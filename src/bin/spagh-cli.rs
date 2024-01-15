@@ -763,7 +763,7 @@ async fn main() {
                             }
                             Some(SelfIdentityConfig {
                                 identity: i,
-                                self_tls: config::SelfTlsConfig::Default,
+                                self_tls: true,
                                 self_publish: true,
                             })
                         },
@@ -790,7 +790,7 @@ async fn main() {
                     publisher: if config.publisher.is_some() {
                         Some(spaghettinuum::publisher::config::PublisherConfig {
                             bind_addr: StrSocketAddr::new_fake(format!("[::]:{}", PORT_PUBLISHER)),
-                            advertise_port: PORT_PUBLISHER,
+                            advertise_port: Some(PORT_PUBLISHER),
                         })
                     } else {
                         None
@@ -892,7 +892,7 @@ async fn main() {
                 let global_ip = match config.addr {
                     config::GlobalAddrConfig::Fixed(s) => s,
                     config::GlobalAddrConfig::FromInterface { name, ip_version } => {
-                        local_resolve_global_ip(name, ip_version)
+                        local_resolve_global_ip(&name, &ip_version)
                             .await?
                             .log_context(log, "No global IP found on local interface")?
                     },

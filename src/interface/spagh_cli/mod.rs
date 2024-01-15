@@ -1,7 +1,17 @@
 pub mod v1;
 
+use loga::{
+    ea,
+    ResultContext,
+};
 pub use v1 as latest;
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        Mutex,
+    },
+};
 use aargvark::Aargvark;
 use schemars::JsonSchema;
 use serde::{
@@ -11,8 +21,6 @@ use serde::{
 use std::net::{
     SocketAddr,
     ToSocketAddrs,
-    SocketAddrV4,
-    Ipv4Addr,
 };
 use schemars::{
     schema::{
@@ -40,24 +48,47 @@ pub const PORT_PUBLISHER: u16 = 43891;
 pub const DEFAULT_CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";
 
 #[derive(Clone)]
-pub struct StrSocketAddr(pub String, pub SocketAddr);
+pub struct StrSocketAddr(pub String, Arc<Mutex<Option<SocketAddr>>>);
 
 impl StrSocketAddr {
     /// Only for serialization, dummy socketaddr with no lookup
     pub fn new_fake(s: String) -> StrSocketAddr {
-        return StrSocketAddr(s, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+        return StrSocketAddr(s, Arc::new(Mutex::new(None)));
+    }
+
+    pub fn resolve(&self) -> Result<SocketAddr, loga::Error> {
+        let mut resolved = self.1.lock().unwrap();
+        match *resolved {
+            Some(v) => return Ok(v),
+            None => {
+                let v =
+                    self
+                        .0
+                        .to_socket_addrs()
+                        .context_with("Error turning socket address into IP", ea!(name = self.0))?
+                        .into_iter()
+                        .next()
+                        .context_with("No address resolved from name", ea!(name = self.0))?;
+                *resolved = Some(v);
+                return Ok(v);
+            },
+        }
     }
 }
 
 impl From<SocketAddr> for StrSocketAddr {
     fn from(value: SocketAddr) -> Self {
-        return StrSocketAddr(value.to_string(), value);
+        return StrSocketAddr(value.to_string(), Arc::new(Mutex::new(Some(value))));
     }
 }
 
 impl std::fmt::Display for StrSocketAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        format!("{} ({})", self.0, self.1).fmt(f)
+        format!(
+            "{} ({})",
+            self.0,
+            self.1.lock().unwrap().map(|x| x.to_string()).unwrap_or("unresolved".to_string())
+        ).fmt(f)
     }
 }
 
@@ -74,21 +105,7 @@ impl<'t> Deserialize<'t> for StrSocketAddr {
     where
         D: serde::Deserializer<'t> {
         let s = String::deserialize(deserializer)?;
-        return Ok(
-            StrSocketAddr(
-                s.clone(),
-                s
-                    .to_socket_addrs()
-                    .map_err(
-                        |e| serde::de::Error::custom(
-                            format!("Error turning socket address [{}] into IP: {}", s, e.to_string()),
-                        ),
-                    )?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| serde::de::Error::custom(format!("No recognizable address in [{}]", s)))?,
-            ),
-        );
+        return Ok(StrSocketAddr(s.clone(), Arc::new(Mutex::new(None))));
     }
 }
 

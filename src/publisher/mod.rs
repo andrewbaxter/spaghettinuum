@@ -434,7 +434,7 @@ impl<A: Admin + 'static> Publisher<A> {
                     .if_alive(
                         Server::new(
                             TcpListener::bind(
-                                bind_addr.1,
+                                bind_addr.resolve()?,
                             ).rustls(
                                 RustlsConfig
                                 ::new().fallback(

@@ -24,11 +24,11 @@ use super::{
 };
 
 pub async fn local_resolve_global_ip(
-    restrict_name: Option<String>,
-    restrict_ip_version: Option<IpVer>,
+    restrict_name: &Option<String>,
+    restrict_ip_version: &Option<IpVer>,
 ) -> Result<Option<IpAddr>, loga::Error> {
     for iface in NetworkInterface::show().context("Failure listing network interfaces")?.iter() {
-        match &restrict_name {
+        match restrict_name {
             Some(n) => {
                 if n != &iface.name {
                     continue;
@@ -43,7 +43,7 @@ pub async fn local_resolve_global_ip(
         for addr in &iface.addr {
             match addr.ip() {
                 std::net::IpAddr::V4(addr) => {
-                    match &restrict_ip_version {
+                    match restrict_ip_version {
                         Some(v) => {
                             if !matches!(v, IpVer::V4) {
                                 continue;
@@ -61,7 +61,7 @@ pub async fn local_resolve_global_ip(
                     return Ok(Some(IpAddr::V4(addr)));
                 },
                 std::net::IpAddr::V6(addr) => {
-                    match &restrict_ip_version {
+                    match restrict_ip_version {
                         Some(v) => {
                             if !matches!(v, IpVer::V6) {
                                 continue;

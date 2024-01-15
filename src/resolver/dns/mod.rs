@@ -395,10 +395,6 @@ pub async fn start_dns_bridge(
                             .err_internal()?,
                     );
                 } else {
-                    self
-                        .0
-                        .log
-                        .debug("Received non-spagh request, forwarding upstream", ea!(request = request.dbg_str()));
                     let resp = self1.upstream.send(DnsRequest::new(Message::from(MessageParts {
                         header: *request.header(),
                         queries: vec![{
@@ -523,29 +519,26 @@ pub async fn start_dns_bridge(
     }
 
     let upstream = {
+        let upstream = dns_config.upstream.resolve()?;
         let mut name_servers = NameServerConfigGroup::new();
         name_servers.push({
-            let mut c =
-                NameServerConfig::new(
-                    dns_config.upstream.1,
-                    match (dns_config.upstream_type, dns_config.upstream.1.port()) {
-                        (Some(DnsType::Udp), _) | (None, 53) => {
-                            hickory_resolver::config::Protocol::Udp
-                        },
-                        (Some(DnsType::Tls), _) | (None, 853) => {
-                            hickory_resolver::config::Protocol::Tls
-                        },
-                        _ => {
-                            return Err(
-                                log.new_err_with(
-                                    "Unable to guess upstream DNS protocol from port number, please specify explicitly with `upstream_type`",
-                                    ea!(port = dns_config.upstream.1.port()),
-                                ),
-                            );
-                        },
-                    },
-                );
-            c.tls_dns_name = Some(dns_config.upstream.1.ip().to_string());
+            let mut c = NameServerConfig::new(upstream, match (dns_config.upstream_type, upstream.port()) {
+                (Some(DnsType::Udp), _) | (None, 53) => {
+                    hickory_resolver::config::Protocol::Udp
+                },
+                (Some(DnsType::Tls), _) | (None, 853) => {
+                    hickory_resolver::config::Protocol::Tls
+                },
+                _ => {
+                    return Err(
+                        log.new_err_with(
+                            "Unable to guess upstream DNS protocol from port number, please specify explicitly with `upstream_type`",
+                            ea!(port = upstream.port()),
+                        ),
+                    );
+                },
+            });
+            c.tls_dns_name = Some(upstream.ip().to_string());
             c
         });
         NameServerPool::from_config(
@@ -561,17 +554,19 @@ pub async fn start_dns_bridge(
         expect_suffix: LowerName::new(&Name::from_labels(&[Label::from_utf8("s").unwrap()]).unwrap()),
     })));
     for bind_addr in &dns_config.udp_bind_addrs {
+        let bind_addr = bind_addr.resolve()?;
         server.register_socket(
-            UdpSocket::bind(&bind_addr.1)
+            UdpSocket::bind(&bind_addr)
                 .await
-                .log_context_with(&log, "Opening UDP listener failed", ea!(socket = bind_addr.1))?,
+                .log_context_with(&log, "Opening UDP listener failed", ea!(socket = bind_addr))?,
         );
     }
     for bind_addr in &dns_config.tcp_bind_addrs {
+        let bind_addr = bind_addr.resolve()?;
         server.register_listener(
-            TcpListener::bind(&bind_addr.1)
+            TcpListener::bind(&bind_addr)
                 .await
-                .log_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr.1))?,
+                .log_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
             Duration::seconds(10).to_std().unwrap(),
         );
     }
@@ -773,11 +768,12 @@ pub async fn start_dns_bridge(
             }
         });
         for bind_addr in &tls.bind_addrs {
+            let bind_addr = bind_addr.resolve()?;
             server
                 .register_tls_listener_with_tls_config(
-                    TcpListener::bind(&bind_addr.1)
+                    TcpListener::bind(&bind_addr)
                         .await
-                        .log_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr.1))?,
+                        .log_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
                     Duration::seconds(10).to_std().unwrap(),
                     Arc::new(
                         rustls_21::ServerConfig::builder()

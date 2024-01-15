@@ -338,7 +338,7 @@ pub fn build_api_endpoints(log: &loga::Log, resolver: &Resolver) -> SystemEndpoi
             }
             match async {
                 let ident_src =
-                    parse_path::V1PathFromRegex::new().parse(req.uri().path()).map_err(|e| loga::Error::from(e))?;
+                    parse_path::V1Path::parser().parse(req.uri().path()).map_err(|e| loga::Error::from(e))?;
                 let kvs =
                     self
                         .0

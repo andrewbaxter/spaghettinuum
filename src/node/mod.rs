@@ -345,7 +345,7 @@ impl Node {
         log.info("Starting", ea!());
         let sock = {
             let log = log.fork(ea!(addr = bind_addr));
-            UdpSocket::bind(bind_addr.1).await.log_context(&log, "Failed to open node UDP port")?
+            UdpSocket::bind(bind_addr.resolve()?).await.log_context(&log, "Failed to open node UDP port")?
         };
         let own_id_hash = hash(&own_id);
         let (find_timeout_write, find_timeout_recv) = unbounded::<NextFindTimeout>();

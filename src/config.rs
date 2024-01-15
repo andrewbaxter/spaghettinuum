@@ -22,7 +22,7 @@ use crate::{
     },
 };
 
-#[derive(Deserialize, Serialize, JsonSchema, Aargvark)]
+#[derive(Deserialize, Serialize, JsonSchema, Aargvark, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum IpVer {
     V4,
@@ -77,9 +77,8 @@ pub enum SelfTlsConfig {
 pub struct SelfIdentityConfig {
     pub identity: BackedIdentityArg,
     /// Retrieve a TLS cert for the identity's domain (`.s`) and configure TLS on the
-    /// public endpoint (https instead of http). Outer option enables, inner option
-    /// chooses an explicit certifier or the default (certipasta.isandrew.com).
-    pub self_tls: SelfTlsConfig,
+    /// public endpoint (https instead of http) via `certipasta.isandrew.com`.
+    pub self_tls: bool,
     /// Wait for a local interface configured with a public ip and publish it using
     /// this server's identity.
     pub self_publish: bool,

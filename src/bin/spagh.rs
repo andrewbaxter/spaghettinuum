@@ -11,8 +11,8 @@ use aargvark::{
     Aargvark,
     AargvarkJson,
 };
+use chrono::Duration;
 use futures::FutureExt;
-use itertools::Itertools;
 use loga::{
     ea,
     ResultContext,
@@ -72,7 +72,10 @@ use spaghettinuum::{
     bb,
     self_tls::request_cert_stream,
 };
-use tokio::fs::create_dir_all;
+use tokio::{
+    fs::create_dir_all,
+    time::sleep,
+};
 use tokio_stream::{
     StreamExt,
     wrappers::WatchStream,
@@ -126,14 +129,37 @@ async fn main() {
         let mut global_ips = vec![];
         for a in config.global_addrs {
             global_ips.push(match a {
-                config::GlobalAddrConfig::Fixed(s) => s,
+                config::GlobalAddrConfig::Fixed(s) => {
+                    log.info("Identified fixed public ip address from config", ea!(addr = s));
+                    s
+                },
                 config::GlobalAddrConfig::FromInterface { name, ip_version } => {
-                    local_resolve_global_ip(name, ip_version)
-                        .await?
-                        .log_context(log, "No global IP found on local interface")?
+                    let res = loop {
+                        if let Some(res) = local_resolve_global_ip(&name, &ip_version).await? {
+                            break res;
+                        }
+                        log.info("Waiting for public ip address on interface", ea!());
+                        sleep(Duration::seconds(10).to_std().unwrap()).await;
+                    };
+                    log.info("Identified public ip address via interface", ea!(addr = res));
+                    res
                 },
                 config::GlobalAddrConfig::Lookup(lookup) => {
-                    remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await?
+                    let res = loop {
+                        match remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await {
+                            Ok(r) => break r,
+                            Err(e) => {
+                                log.info_e(
+                                    e,
+                                    "Error looking up public ip through external service, retrying",
+                                    ea!(),
+                                );
+                            },
+                        }
+                        sleep(Duration::seconds(10).to_std().unwrap()).await;
+                    };
+                    log.info("Identified public ip address via external lookup", ea!(addr = res));
+                    res
                 },
             })
         };
@@ -152,26 +178,37 @@ async fn main() {
             identity = None;
         }
         let tm = taskmanager::TaskManager::new();
-        let node =
-            Node::new(log, tm.clone(), config.node.bind_addr, &config.node.bootstrap.into_iter().map(|e| NodeInfo {
-                id: e.id,
-                address: SerialAddr(e.addr.1),
-            }).collect_vec(), &config.persistent_dir).await?;
+        let node = {
+            let mut bootstrap = vec![];
+            for e in config.node.bootstrap {
+                bootstrap.push(NodeInfo {
+                    id: e.id,
+                    address: SerialAddr(
+                        e.addr.resolve().log_context(log, "Error resolving bootstrap node address")?,
+                    ),
+                });
+            }
+            Node::new(log, tm.clone(), config.node.bind_addr, &bootstrap, &config.persistent_dir).await?
+        };
         let mut has_api_endpoints = false;
         let publisher = match config.publisher {
             Some(publisher_config) => {
+                let bind_addr =
+                    publisher_config.bind_addr.resolve().log_context(log, "Error resolving publisher bind address")?;
                 has_api_endpoints = true;
                 let advertise_ip =
                     *global_ips
                         .get(0)
                         .log_context(log, "Running a publisher requires at least one configured global IP")?;
+                let advertise_port = publisher_config.advertise_port.unwrap_or(bind_addr.port());
+                let advertise_addr = SocketAddr::new(advertise_ip, advertise_port);
                 let publisher =
                     Publisher::new(
                         log,
                         &tm,
                         node.clone(),
                         publisher_config.bind_addr,
-                        SocketAddr::new(advertise_ip, publisher_config.advertise_port),
+                        advertise_addr,
                         DbAdmin::new(&config.persistent_dir)
                             .await
                             .log_context(log, "Error setting up publisher db-admin")?,
@@ -183,7 +220,7 @@ async fn main() {
                         let (identity, announcement) =
                             generate_publish_announce(
                                 identity.as_mut().unwrap(),
-                                SocketAddr::new(advertise_ip, publisher_config.advertise_port),
+                                advertise_addr,
                                 &publisher.pub_cert_hash(),
                             ).map_err(
                                 |e| log.new_err_with(
@@ -257,17 +294,17 @@ async fn main() {
                     break;
                 };
                 let certifier_url = match &config.identity.as_ref().unwrap().self_tls {
-                    config::SelfTlsConfig::None => {
+                    false => {
                         break;
                     },
-                    config::SelfTlsConfig::Default => DEFAULT_CERTIFIER_URL.to_string(),
-                    config::SelfTlsConfig::Certifier(c) => c.clone(),
+                    true => DEFAULT_CERTIFIER_URL.to_string(),
                 };
                 certs_stream_rx =
                     Some(request_cert_stream(log, &tm, &certifier_url, identity, &config.persistent_dir).await?);
             };
 
             for bind_addr in config.api_bind_addrs {
+                let bind_addr = bind_addr.resolve().log_context(log, "Error resolving api bind address")?;
                 let mut api_endpoints = Route::new();
                 if let Some(resolver) = &resolver {
                     api_endpoints = api_endpoints.nest("/resolve", resolver::build_api_endpoints(&log, resolver).0);
@@ -279,7 +316,7 @@ async fn main() {
                     Some(certs_stream_rx) => {
                         Server::new(
                             TcpListener::bind(
-                                bind_addr.1,
+                                bind_addr,
                             ).rustls(
                                 WatchStream::new(
                                     certs_stream_rx.clone(),
@@ -293,7 +330,7 @@ async fn main() {
                             .boxed()
                     },
                     None => {
-                        Server::new(TcpListener::bind(bind_addr.1)).run(api_endpoints).boxed()
+                        Server::new(TcpListener::bind(bind_addr)).run(api_endpoints).boxed()
                     },
                 };
                 tm.critical_task({
