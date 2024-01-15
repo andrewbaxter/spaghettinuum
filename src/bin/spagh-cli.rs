@@ -881,7 +881,7 @@ async fn main() {
                         .await
                         .map_err(|e| log.new_err_with("Failed to get certificate", ea!(err = e)))?
                         .pub_pem;
-                let expiry = <DateTime<Utc>>::from(extract_expiry(&cert_pub)?);
+                let expiry = <DateTime<Utc>>::from(extract_expiry(cert_pub.as_bytes())?);
                 println!("{}", serde_json::to_string_pretty(&json!({
                     "expires_at": expiry,
                     "cert_pub_pem": cert_pub,

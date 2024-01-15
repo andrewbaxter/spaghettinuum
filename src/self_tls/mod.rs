@@ -120,7 +120,7 @@ pub async fn request_cert_stream(
     db_pool.get().await?.interact(|conn| db::api_certs_setup(conn)).await??;
 
     fn decide_refresh_at(pub_pem: &str) -> Result<SystemTime, loga::Error> {
-        let not_after = extract_expiry(pub_pem)?;
+        let not_after = extract_expiry(pub_pem.as_bytes())?;
         return Ok(not_after - std::time::Duration::from_secs(60 * 60 * 24 * 7));
     }
 

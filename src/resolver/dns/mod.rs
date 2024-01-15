@@ -16,6 +16,18 @@ use crate::{
     resolver::{
         config::DnsType,
     },
+    bb,
+    utils::{
+        db_util::{
+            setup_db,
+            DbTx,
+        },
+        tls_util::{
+            load_certified_key,
+            extract_expiry,
+            encode_priv_pem,
+        },
+    },
 };
 use crate::utils::{
     ResultVisErr,
@@ -24,6 +36,7 @@ use crate::utils::{
 use chrono::{
     Duration,
     Utc,
+    DateTime,
 };
 use futures::StreamExt;
 use hickory_proto::{
@@ -75,19 +88,35 @@ use loga::{
     ResultContext,
     DebugDisplay,
 };
-use poem::async_trait;
-use rustls::{
-    Certificate,
-    PrivateKey,
+use poem::{
+    async_trait,
+    listener::acme::{
+        EABCreds,
+        ACME_KEY_ALG,
+        AcmeClient,
+        create_acme_account,
+        Http01Endpoint,
+        ChallengeTypeParameters,
+        Http01TokensMap,
+    },
+    RouteScheme,
+    Server,
 };
 use std::{
     net::{
         Ipv4Addr,
         Ipv6Addr,
         IpAddr,
+        SocketAddr,
+        SocketAddrV4,
+        SocketAddrV6,
     },
     str::FromStr,
-    sync::Arc,
+    sync::{
+        Arc,
+        Mutex,
+    },
+    path::Path,
 };
 use taskmanager::TaskManager;
 use tokio::{
@@ -95,7 +124,8 @@ use tokio::{
         UdpSocket,
         TcpListener,
     },
-    fs::read,
+    select,
+    time::sleep,
 };
 use hickory_server::{
     authority::MessageResponseBuilder,
@@ -106,13 +136,30 @@ use super::{
     config::DnsBridgeConfig,
 };
 
+pub mod db;
+
+struct DotCertHandler(Arc<Mutex<Option<Arc<rustls_21::sign::CertifiedKey>>>>);
+
+impl rustls_21::server::ResolvesServerCert for DotCertHandler {
+    fn resolve(&self, _client_hello: rustls_21::server::ClientHello) -> Option<Arc<rustls_21::sign::CertifiedKey>> {
+        return self.0.lock().unwrap().clone();
+    }
+}
+
 pub async fn start_dns_bridge(
     log: &loga::Log,
     tm: &TaskManager,
     resolver: &Resolver,
     global_addrs: &[IpAddr],
     dns_config: DnsBridgeConfig,
+    persistent_dir: &Path,
 ) -> Result<(), loga::Error> {
+    let db_pool =
+        setup_db(&persistent_dir.join("resolver_dns_bridge.sqlite3"), db::migrate)
+            .await
+            .log_context(log, "Error initializing database")?;
+    db_pool.get().await?.interact(|conn| db::dot_certs_setup(conn)).await??;
+
     struct HandlerInner {
         log: Log,
         resolver: Resolver,
@@ -368,19 +415,35 @@ pub async fn start_dns_bridge(
                     }), DnsRequestOptions::default())).next().await;
                     match resp {
                         Some(resp) => {
-                            let resp = resp.err_external()?;
-                            let soa = match resp.soa() {
-                                Some(r) => {
-                                    let mut r2 = Record::new();
-                                    r2
-                                        .set_name(r.name().clone())
-                                        .set_rr_type(r.record_type())
-                                        .set_dns_class(r.dns_class())
-                                        .set_ttl(r.ttl())
-                                        .set_data(r.data().map(|x| hickory_proto::rr::RData::SOA(x.clone())));
-                                    Some(r2)
+                            let resp = match resp {
+                                Ok(r) => r,
+                                Err(e) => match e.kind() {
+                                    hickory_resolver::error::ResolveErrorKind::NoRecordsFound { soa, .. } => {
+                                        return Ok(
+                                            response_handle
+                                                .send_response(
+                                                    MessageResponseBuilder::from_message_request(
+                                                        request,
+                                                    ).build(
+                                                        Header::response_from_request(request.header()),
+                                                        &[],
+                                                        &[],
+                                                        soa
+                                                            .as_ref()
+                                                            .map(|r| r.clone().into_record_of_rdata())
+                                                            .as_ref(),
+                                                        &[],
+                                                    ),
+                                                )
+                                                .await
+                                                .context("Error returning empty results")
+                                                .err_internal()?,
+                                        );
+                                    },
+                                    _ => {
+                                        return Err(e).err_external();
+                                    },
                                 },
-                                None => None,
                             };
                             return Ok(
                                 response_handle
@@ -391,7 +454,7 @@ pub async fn start_dns_bridge(
                                             Header::response_from_request(request.header()),
                                             resp.answers(),
                                             resp.name_servers(),
-                                            soa.as_ref(),
+                                            resp.soa().map(|r| r.to_owned().into_record_of_rdata()).as_ref(),
                                             resp.additionals(),
                                         ),
                                     )
@@ -515,6 +578,200 @@ pub async fn start_dns_bridge(
     if let Some(tls) = dns_config.tls {
         let log = log.fork(ea!(subsys = "dot-tls-acme", names = global_addrs.dbg_str()));
         let log = &log;
+        let cert = Arc::new(Mutex::new(None));
+        let cert_expiry = Arc::new(Mutex::new(None));
+        let eab = tls.eab.map(|config| EABCreds {
+            kid: config.kid,
+            hmac_b64: config.hmac_b64,
+        });
+
+        // Retrieve stored certs
+        let initial_certs = db_pool.tx(|txn| {
+            return Ok(db::dot_certs_get(txn)?);
+        }).await.log_context(log, "Error looking up initial certs")?;
+        if let Some((pub_pem, priv_pem)) = initial_certs.pub_pem.zip(initial_certs.priv_pem) {
+            let expires_at = extract_expiry(pub_pem.as_bytes()).context("Error reading expiry from initial certs")?;
+            log.debug("Loaded existing cert", ea!(expiry = <DateTime<Utc>>::from(expires_at).to_rfc3339()));
+            (*cert.lock().unwrap()) = Some(load_certified_key(pub_pem.as_bytes(), priv_pem.as_bytes())?);
+            (*cert_expiry.lock().unwrap()) = Some(expires_at);
+        }
+
+        // Start cert refreshing task
+        let near_expiry_thresh = Duration::hours(7 * 24);
+        tm.critical_task({
+            let tm = tm.clone();
+            let cert = cert.clone();
+            let db_pool = db_pool.clone();
+            let names = vec![tls.name.clone()];
+            let mut acme_client0 = None;
+            let mut kid0 = None;
+            let log = log.clone();
+            async move {
+                let log = &log;
+                loop {
+                    let until_near_expiry;
+                    if let Some(cert_expiry) = cert_expiry.lock().unwrap().clone() {
+                        until_near_expiry =
+                            <DateTime<Utc>>::from(cert_expiry)
+                                .signed_duration_since(Utc::now())
+                                .checked_sub(&near_expiry_thresh)
+                                .unwrap();
+                    } else {
+                        until_near_expiry = Duration::zero();
+                    }
+
+                    select!{
+                        _ = sleep(until_near_expiry.to_std().unwrap()) =>(),
+                        _ = tm.until_terminate() => {
+                            break;
+                        }
+                    }
+
+                    log.debug("Refreshing certificate", ea!());
+                    match async {
+                        // Retrieve or create a new key for acme communication
+                        let acme_key_pem;
+                        match db_pool.tx(move |txn| Ok(db::acme_key_get(txn)?)).await? {
+                            Some(key) => {
+                                acme_key_pem = key;
+                            },
+                            None => {
+                                let key1 =
+                                    poem::listener::acme::EcdsaKeyPair::generate_pkcs8(
+                                        ACME_KEY_ALG,
+                                        &mut poem::listener::acme::SystemRandom::new(),
+                                    ).unwrap();
+                                acme_key_pem = encode_priv_pem(key1.as_ref());
+                                db_pool.tx({
+                                    let acme_key = acme_key_pem.clone();
+                                    move |txn| Ok(db::acme_key_set(txn, Some(&acme_key))?)
+                                }).await?;
+                            },
+                        }
+                        let acme_key =
+                            poem::listener::acme::EncodingKey::from_ec_pem(
+                                acme_key_pem.as_bytes(),
+                            ).log_context(log, "Error loading stored acme key")?;
+
+                        // Create acme client with key
+                        let acme_client;
+                        match acme_client0.as_mut() {
+                            Some(c) => {
+                                acme_client = c;
+                            },
+                            None => {
+                                acme_client0 =
+                                    Some(
+                                        AcmeClient::try_new_with_key(
+                                            &tls.acme_directory_url,
+                                            tls.contacts.clone(),
+                                            acme_key,
+                                        ).await?,
+                                    );
+                                acme_client = acme_client0.as_mut().unwrap();
+                            },
+                        }
+
+                        // Retrieve or get a new kid from the acme provider
+                        let kid = bb!{
+                            if let Some(k) = &kid0 {
+                                break k;
+                            }
+                            if let Some(k) = db_pool.tx(move |txn| Ok(db::acme_key_kid_get(txn)?)).await? {
+                                kid0 = Some(k);
+                                break kid0.as_ref().unwrap();
+                            }
+                            let k = create_acme_account(&acme_client, eab.as_ref()).await?;
+                            db_pool.tx({
+                                let k = k.clone();
+                                move |txn| Ok(db::acme_key_kid_set(txn, Some(&k))?)
+                            }).await?;
+                            kid0 = Some(k);
+                            break kid0.as_ref().unwrap();
+                        };
+
+                        // Start challenge listener
+                        let tokens = Http01TokensMap::new();
+                        let subtm = tm.sub();
+                        for bind_addr in [
+                            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 80)),
+                            SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 80, 0, 0)),
+                        ] {
+                            subtm.critical_task({
+                                let tokens = tokens.clone();
+                                let subtm = subtm.clone();
+                                async move {
+                                    Server::new(poem::listener::TcpListener::bind(bind_addr))
+                                        .run_with_graceful_shutdown(
+                                            RouteScheme::new().http(Http01Endpoint { keys: tokens }),
+                                            subtm.until_terminate(),
+                                            Some(Duration::seconds(60).to_std().unwrap().into()),
+                                        )
+                                        .await?;
+                                    return Ok(()) as Result<_, loga::Error>;
+                                }
+                            });
+                        }
+                        sleep(Duration::seconds(1).to_std().unwrap()).await;
+
+                        // Initiate verification
+                        let res =
+                            poem::listener::acme::issue_cert(
+                                acme_client,
+                                &kid,
+                                &names,
+                                ChallengeTypeParameters::Http01 { keys_for_http01: &tokens },
+                            )
+                                .await
+                                .context("Error issuing new cert")?;
+                        subtm.terminate();
+                        if let Err(e) = subtm.join().await {
+                            log.warn_e(e, "Error in one of the ACME challenge listeners", ea!());
+                        }
+                        (*cert.lock().unwrap()) =
+                            Some(
+                                load_certified_key(
+                                    &res.public_pem,
+                                    &res.private_pem,
+                                ).log_context(log, "Error loading received new certs")?,
+                            );
+                        (*cert_expiry.lock().unwrap()) =
+                            Some(extract_expiry(&res.public_pem).context("Error reading expiry from new certs")?);
+                        log.debug("Successfully refreshed certificate", ea!());
+                        db_pool.tx(move |txn| {
+                            db::dot_certs_set(
+                                txn,
+                                Some(
+                                    &String::from_utf8(
+                                        res.public_pem,
+                                    ).context("Issued public cert PEM is invalid utf-8")?,
+                                ),
+                                Some(
+                                    &String::from_utf8(
+                                        res.private_pem,
+                                    ).context("Issued private key PEM is invalid utf-8")?,
+                                ),
+                            )?;
+                            return Ok(());
+                        }).await?;
+                        return Ok(()) as Result<_, loga::Error>;
+                    }.await {
+                        Err(e) => {
+                            log.warn_e(e.into(), "Error getting new TLS cert", ea!());
+
+                            select!{
+                                _ = sleep(Duration::minutes(10).to_std().unwrap()) =>(),
+                                _ = tm.until_terminate() => {
+                                    break;
+                                }
+                            }
+                        },
+                        Ok(_) => { },
+                    };
+                }
+                return Ok(()) as Result<_, loga::Error>;
+            }
+        });
         for bind_addr in &tls.bind_addrs {
             server
                 .register_tls_listener_with_tls_config(
@@ -523,41 +780,10 @@ pub async fn start_dns_bridge(
                         .log_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr.1))?,
                     Duration::seconds(10).to_std().unwrap(),
                     Arc::new(
-                        rustls::ServerConfig::builder()
+                        rustls_21::ServerConfig::builder()
                             .with_safe_defaults()
                             .with_no_client_auth()
-                            .with_single_cert(
-                                rustls_pemfile::certs(
-                                    &mut read(&tls.pub_pem_path)
-                                        .await
-                                        .log_context_with(
-                                            log,
-                                            "Unable to read public cert PEM file at",
-                                            ea!(path = tls.pub_pem_path.to_string_lossy()),
-                                        )?
-                                        .as_ref(),
-                                )
-                                    .log_context(log, "Error reading public certs from PEM")?
-                                    .into_iter()
-                                    .map(Certificate)
-                                    .collect(),
-                                rustls_pemfile::pkcs8_private_keys(
-                                    &mut read(&tls.priv_pem_path)
-                                        .await
-                                        .log_context_with(
-                                            log,
-                                            "Unable to read private key PEM file",
-                                            ea!(path = tls.priv_pem_path.to_string_lossy()),
-                                        )?
-                                        .as_ref(),
-                                )
-                                    .log_context(log, "Error reading private certs from PEM")?
-                                    .into_iter()
-                                    .map(PrivateKey)
-                                    .next()
-                                    .log_context(log, "No private key found in private key PEM file")?,
-                            )
-                            .log_context(log, "Error setting up cert for DoT server")?,
+                            .with_cert_resolver(Arc::new(DotCertHandler(cert.clone()))),
                     ),
                 )
                 .log_context_with(log, "Error registering TLS listener", ea!(bind_addr = bind_addr))?;

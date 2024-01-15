@@ -1,0 +1,6 @@
+[submodule "fork-poem"]
+	path = fork-poem
+	url = https://github.com/andrewbaxter/fork-poem.git
+[submodule "fork-jsonwebtoken"]
+	path = fork-jsonwebtoken
+	url = https://github.com/andrewbaxter/fork-jsonwebtoken.git

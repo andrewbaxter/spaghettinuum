@@ -225,7 +225,14 @@ async fn main() {
                         .await
                         .log_context(log, "Error setting up resolver")?;
                 if let Some(dns_config) = resolver_config.dns_bridge {
-                    resolver::dns::start_dns_bridge(log, &tm, &resolver, &global_ips, dns_config)
+                    resolver::dns::start_dns_bridge(
+                        log,
+                        &tm,
+                        &resolver,
+                        &global_ips,
+                        dns_config,
+                        &config.persistent_dir,
+                    )
                         .await
                         .log_context(log, "Error setting up resolver DNS bridge")?;
                 } else {
