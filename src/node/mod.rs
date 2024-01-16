@@ -341,7 +341,7 @@ impl Node {
                 do_bootstrap = true;
             }
         }
-        let log = log.fork(ea!(ident = own_id));
+        let log = log.fork(ea!(own_node_ident = own_id));
         log.info("Starting", ea!());
         let sock = {
             let log = log.fork(ea!(addr = bind_addr));
@@ -788,7 +788,7 @@ impl Node {
     }
 
     async fn handle_challenge_resp(&self, resp: node_protocol::latest::ChallengeResponse) {
-        let log = self.0.log.fork(ea!(action = "challenge_response", from_ident = resp.sender.dbg_str()));
+        let log = self.0.log.fork(ea!(action = "challenge_response", from_node_ident = resp.sender.dbg_str()));
 
         // Lookup request state
         let mut borrowed_states = self.0.challenge_states.lock().unwrap();
@@ -821,7 +821,11 @@ impl Node {
                 .0
                 .log
                 .fork(
-                    ea!(action = "find_response", from_ident = resp.sender.dbg_str(), mode = &content.mode.dbg_str()),
+                    ea!(
+                        action = "find_response",
+                        from_node_ident = resp.sender.dbg_str(),
+                        mode = &content.mode.dbg_str()
+                    ),
                 );
         let mut defer_next_req = vec![];
         let mut transfer_stored_addr: Option<SocketAddr> = None;
@@ -1273,7 +1277,8 @@ impl Node {
     }
 
     async fn send(&self, addr: &SocketAddr, data: Protocol) {
-        self.0.log.debug("Sending", ea!(to_addr = addr, message = data.dbg_str()));
-        self.0.socket.send_to(&data.to_bytes(), addr).await.unwrap();
+        let bytes = data.to_bytes();
+        self.0.log.debug("Sending", ea!(to_addr = addr, message = data.dbg_str(), size = bytes.len()));
+        self.0.socket.send_to(&bytes, addr).await.unwrap();
     }
 }

@@ -34,13 +34,6 @@ use poem::{
     IntoEndpoint,
     EndpointExt,
 };
-use rustls::{
-    client::danger::{
-        ServerCertVerifier,
-        HandshakeSignatureValid,
-    },
-    pki_types::CertificateDer,
-};
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -209,72 +202,41 @@ impl Resolver {
         }
 
         impl SingleKeyVerifier {
-            pub fn new(hash: Vec<u8>) -> Arc<dyn ServerCertVerifier> {
+            pub fn new(hash: Vec<u8>) -> Arc<dyn reqwest::rustls::client::ServerCertVerifier> {
                 return Arc::new(SingleKeyVerifier { hash });
             }
         }
 
-        impl ServerCertVerifier for SingleKeyVerifier {
+        impl reqwest::rustls::client::ServerCertVerifier for SingleKeyVerifier {
             fn verify_server_cert(
                 &self,
-                end_entity: &CertificateDer,
-                _intermediates: &[CertificateDer],
-                _server_name: &rustls::pki_types::ServerName,
+                end_entity: &reqwest::rustls::Certificate,
+                _intermediates: &[reqwest::rustls::Certificate],
+                _server_name: &reqwest::rustls::ServerName,
+                _scts: &mut dyn Iterator<Item = &[u8]>,
                 _ocsp_response: &[u8],
-                _now: rustls::pki_types::UnixTime,
-            ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+                _now: std::time::SystemTime,
+            ) -> Result<reqwest::rustls::client::ServerCertVerified, reqwest::rustls::Error> {
                 if publisher_cert_hash(
                     end_entity.as_ref(),
-                ).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))? !=
+                ).map_err(
+                    |_| reqwest::rustls::Error::InvalidCertificate(reqwest::rustls::CertificateError::BadEncoding),
+                )? !=
                     self.hash {
-                    return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding));
+                    return Err(
+                        reqwest::rustls::Error::InvalidCertificate(reqwest::rustls::CertificateError::BadEncoding),
+                    );
                 }
-                return Ok(rustls::client::danger::ServerCertVerified::assertion());
-            }
-
-            fn verify_tls12_signature(
-                &self,
-                _message: &[u8],
-                _cert: &CertificateDer<'_>,
-                _dss: &rustls::DigitallySignedStruct,
-            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-                return Ok(HandshakeSignatureValid::assertion());
-            }
-
-            fn verify_tls13_signature(
-                &self,
-                _message: &[u8],
-                _cert: &CertificateDer<'_>,
-                _dss: &rustls::DigitallySignedStruct,
-            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-                return Ok(HandshakeSignatureValid::assertion());
-            }
-
-            fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                return vec![
-                    rustls::SignatureScheme::RSA_PKCS1_SHA1,
-                    rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-                    rustls::SignatureScheme::RSA_PKCS1_SHA256,
-                    rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-                    rustls::SignatureScheme::RSA_PKCS1_SHA384,
-                    rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-                    rustls::SignatureScheme::RSA_PKCS1_SHA512,
-                    rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-                    rustls::SignatureScheme::RSA_PSS_SHA256,
-                    rustls::SignatureScheme::RSA_PSS_SHA384,
-                    rustls::SignatureScheme::RSA_PSS_SHA512,
-                    rustls::SignatureScheme::ED25519,
-                    rustls::SignatureScheme::ED448
-                ];
+                return Ok(reqwest::rustls::client::ServerCertVerified::assertion());
             }
         }
 
         let pub_resp_bytes =
             reqwest_get(
                 reqwest::ClientBuilder::new()
-                    .use_preconfigured_tls(
-                        rustls::ClientConfig::builder()
-                            .dangerous()
+                    .use_preconfigured_rustls(
+                        reqwest::rustls::ClientConfig::builder()
+                            .with_safe_defaults()
                             .with_custom_certificate_verifier(SingleKeyVerifier::new(resp.cert_hash))
                             .with_no_client_auth(),
                     )

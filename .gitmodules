@@ -4,3 +4,6 @@
 [submodule "fork-jsonwebtoken"]
 	path = fork-jsonwebtoken
 	url = https://github.com/andrewbaxter/fork-jsonwebtoken.git
+[submodule "fork-reqwest"]
+	path = fork-reqwest
+	url = https://github.com/andrewbaxter/fork-reqwest.git
