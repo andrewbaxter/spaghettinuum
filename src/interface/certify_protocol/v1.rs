@@ -6,7 +6,10 @@ use serde::{
     Serialize,
     Deserialize,
 };
-use crate::interface::identity::Identity;
+use crate::{
+    interface::identity::Identity,
+    utils::blob::Blob,
+};
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -18,10 +21,8 @@ pub struct CertRequest {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct SignedCertRequestParams {
-    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
-    pub sig: Vec<u8>,
-    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
-    pub text: Vec<u8>,
+    pub sig: Blob,
+    pub text: Blob,
 }
 
 impl SignedCertRequestParams {
@@ -39,8 +40,7 @@ impl SignedCertRequestParams {
 #[serde(rename_all = "snake_case")]
 pub struct CertRequestParams {
     pub stamp: DateTime<Utc>,
-    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
-    pub spki_der: Vec<u8>,
+    pub spki_der: Blob,
 }
 
 #[derive(Serialize, Deserialize)]

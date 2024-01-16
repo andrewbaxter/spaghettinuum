@@ -41,6 +41,7 @@ use crate::{
             encode_priv_pem,
             extract_expiry,
         },
+        blob::ToBlob,
     },
     interface::{
         certify_protocol::{
@@ -68,8 +69,8 @@ pub async fn request_cert(
 ) -> Result<latest::CertResponse, loga::Error> {
     let text = serde_json::to_vec(&latest::CertRequestParams {
         stamp: Utc::now(),
-        spki_der: requester_spki.to_der().unwrap(),
-    }).unwrap();
+        spki_der: requester_spki.to_der().unwrap().blob(),
+    }).unwrap().blob();
     log.debug("Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
     let (ident, signature) = message_signer.sign(&text).context("Error signing cert request params")?;
     let body = serde_json::to_vec(&CertRequest::V1(latest::CertRequest {

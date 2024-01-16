@@ -8,7 +8,10 @@ use schemars::{
         SchemaObject,
     },
 };
-use crate::versioned;
+use crate::{
+    versioned,
+    utils::blob::Blob,
+};
 use std::fmt::Display;
 
 pub mod v1;
@@ -98,11 +101,11 @@ impl NodeSecret {
 }
 
 pub trait NodeSecretMethods {
-    fn sign(&self, message: &[u8]) -> Vec<u8>;
+    fn sign(&self, message: &[u8]) -> Blob;
 }
 
 impl NodeSecretMethods for NodeSecret {
-    fn sign(&self, message: &[u8]) -> Vec<u8> {
+    fn sign(&self, message: &[u8]) -> Blob {
         match self {
             NodeSecret::V1(v) => v.sign(message),
         }

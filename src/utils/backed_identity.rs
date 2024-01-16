@@ -14,13 +14,14 @@ use crate::{
         },
     },
 };
+use super::blob::Blob;
 
 pub trait IdentitySigner: Send {
-    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error>;
+    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Blob), loga::Error>;
 }
 
 impl IdentitySigner for BackedIdentityLocal {
-    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error> {
+    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Blob), loga::Error> {
         return Ok((self.identity(), BackedIdentityLocal::sign(&self, data)));
     }
 }
@@ -44,9 +45,15 @@ mod card {
             Identity,
             self,
         },
-        utils::pgp::{
-            pgp_eddsa_to_identity,
-            extract_pgp_ed25519_sig,
+        utils::{
+            pgp::{
+                pgp_eddsa_to_identity,
+                extract_pgp_ed25519_sig,
+            },
+            blob::{
+                Blob,
+                ToBlob,
+            },
         },
     };
     use super::IdentitySigner;
@@ -58,7 +65,7 @@ mod card {
     }
 
     impl IdentitySigner for CardIdentitySigner {
-        fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error> {
+        fn sign(&mut self, data: &[u8]) -> Result<(Identity, Blob), loga::Error> {
             let mut transaction = self.card.transaction().context("Failed to start card transaction")?;
             transaction
                 .verify_user_for_signing(self.pin.as_bytes())
@@ -89,7 +96,9 @@ mod card {
                         &signer
                             .sign(HashAlgorithm::SHA512, &identity::hash_for_ed25519(data))
                             .map_err(|e| loga::new_err_with("Card signature failed", ea!(err = e)))?,
-                    ).to_vec(),
+                    )
+                        .to_bytes()
+                        .blob(),
                 ),
             );
         }

@@ -1,5 +1,4 @@
 use std::{
-    io::Write,
     sync::{
         Arc,
         Mutex,
@@ -25,11 +24,9 @@ use poem::{
 use reqwest::{
     Response,
 };
-use serde::{
-    Serialize,
-    Serializer,
-    Deserializer,
-    Deserialize,
+use self::blob::{
+    Blob,
+    ToBlob,
 };
 
 #[cfg(feature = "card")]
@@ -45,21 +42,7 @@ pub mod publish_util;
 pub mod db_util;
 pub mod poem_util;
 pub mod time_util;
-
-pub trait BincodeSerializable {
-    fn serialize(&self) -> Box<[u8]>;
-    fn serialize_into(&self, w: &mut dyn Write);
-}
-
-impl<T: Serialize> BincodeSerializable for T {
-    fn serialize(&self) -> Box<[u8]> {
-        return bincode::serialize(self).unwrap().into_boxed_slice();
-    }
-
-    fn serialize_into(&self, w: &mut dyn Write) {
-        bincode::serialize_into(w, self).unwrap();
-    }
-}
+pub mod blob;
 
 #[derive(Clone)]
 pub struct AsyncBus<T: Clone + Unpin>(Arc<Mutex<Vec<ManualFutureCompleter<T>>>>);
@@ -127,11 +110,11 @@ impl<O, E: Into<loga::Error>> ResultVisErr<O> for Result<O, E> {
     }
 }
 
-pub async fn reqwest_get(r: Response, limit: usize) -> Result<Vec<u8>, loga::Error> {
+pub async fn reqwest_get(r: Response, limit: usize) -> Result<Blob, loga::Error> {
     let status = r.status();
     let mut resp_bytes = r.bytes().await.context("Error reading response body")?;
     resp_bytes.truncate(limit);
-    let resp_bytes = resp_bytes.to_vec();
+    let resp_bytes = resp_bytes.blob();
     if status.is_client_error() || status.is_server_error() {
         return Err(
             loga::new_err_with(
@@ -162,13 +145,4 @@ macro_rules! bb{
             };
         }
     };
-}
-
-pub fn as_zbase32<S: Serializer>(v: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-    return serializer.serialize_str(&zbase32::encode_full_bytes(&v));
-}
-
-pub fn from_zbase32<'a, D: Deserializer<'a>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-    let s = String::deserialize(deserializer)?;
-    return Ok(zbase32::decode_full_bytes_str(&s).map_err(|err| serde::de::Error::custom(err.to_string()))?);
 }

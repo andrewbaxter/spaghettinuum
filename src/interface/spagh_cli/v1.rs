@@ -7,9 +7,15 @@ use serde::{
     Serialize,
     Deserialize,
 };
-use crate::interface::identity::{
-    self,
-    hash_for_ed25519,
+use crate::{
+    interface::identity::{
+        self,
+        hash_for_ed25519,
+    },
+    utils::blob::{
+        Blob,
+        ToBlob,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -50,8 +56,8 @@ impl Ed25519IdentitySecret {
         return identity::v1::Ed25519Identity(self.0.verifying_key());
     }
 
-    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
-        return self.0.sign(&hash_for_ed25519(message)).to_bytes().to_vec();
+    pub fn sign(&self, message: &[u8]) -> Blob {
+        return self.0.sign(&hash_for_ed25519(message)).to_bytes().blob();
     }
 }
 
@@ -66,8 +72,8 @@ impl LocalIdentitySecret {
         return Ok(bincode::deserialize(data)?);
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        return bincode::serialize(self).unwrap();
+    pub fn to_bytes(&self) -> Blob {
+        return bincode::serialize(self).unwrap().blob();
     }
 
     pub fn identity(&self) -> identity::v1::Identity {
@@ -85,7 +91,7 @@ impl LocalIdentitySecret {
         return (identity::v1::Identity::Ed25519(ident), Self::Ed25519(sec));
     }
 
-    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+    pub fn sign(&self, message: &[u8]) -> Blob {
         match self {
             LocalIdentitySecret::Ed25519(i) => i.sign(message),
         }

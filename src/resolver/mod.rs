@@ -3,6 +3,7 @@ use crate::{
         reqwest_get,
         SystemEndpoints,
         db_util::setup_db,
+        blob::Blob,
     },
     interface::{
         identity::Identity,
@@ -198,11 +199,11 @@ impl Resolver {
 
         #[derive(Debug)]
         pub struct SingleKeyVerifier {
-            hash: Vec<u8>,
+            hash: Blob,
         }
 
         impl SingleKeyVerifier {
-            pub fn new(hash: Vec<u8>) -> Arc<dyn reqwest::rustls::client::ServerCertVerifier> {
+            pub fn new(hash: Blob) -> Arc<dyn reqwest::rustls::client::ServerCertVerifier> {
                 return Arc::new(SingleKeyVerifier { hash });
             }
         }

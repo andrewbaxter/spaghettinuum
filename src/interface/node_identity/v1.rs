@@ -12,6 +12,8 @@ use ed25519_dalek::Verifier;
 use ed25519_dalek::VerifyingKey;
 use loga::ResultContext;
 use rand::rngs::OsRng;
+use crate::utils::blob::Blob;
+use crate::utils::blob::ToBlob;
 use super::NodeIdentityMethods;
 use super::NodeSecretMethods;
 
@@ -102,8 +104,8 @@ impl<'de> Deserialize<'de> for Ed25519NodeSecret {
 }
 
 impl NodeSecretMethods for Ed25519NodeSecret {
-    fn sign(&self, message: &[u8]) -> Vec<u8> {
-        return self.0.sign(message).to_bytes().to_vec();
+    fn sign(&self, message: &[u8]) -> Blob {
+        return self.0.sign(message).to_bytes().blob();
     }
 }
 
@@ -161,7 +163,7 @@ impl NodeSecret {
 }
 
 impl NodeSecretMethods for NodeSecret {
-    fn sign(&self, message: &[u8]) -> Vec<u8> {
+    fn sign(&self, message: &[u8]) -> Blob {
         match self {
             NodeSecret::Ed25519(i) => i.sign(message),
         }

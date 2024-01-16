@@ -29,6 +29,10 @@ use schemars::{
         InstanceType,
     },
 };
+use crate::utils::blob::{
+    ToBlob,
+    Blob,
+};
 use super::identity::Identity;
 
 // Server
@@ -162,9 +166,9 @@ impl BackedIdentityLocal {
         }
     }
 
-    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+    pub fn sign(&self, message: &[u8]) -> Blob {
         match self {
-            BackedIdentityLocal::V1(v) => v.sign(message),
+            BackedIdentityLocal::V1(v) => v.sign(message).blob(),
         }
     }
 }

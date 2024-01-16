@@ -12,6 +12,10 @@ use ed25519_dalek::{
     Signature,
     Verifier,
 };
+use crate::utils::blob::{
+    Blob,
+    ToBlob,
+};
 use super::{
     IdentityVersionMethods,
     hash_for_ed25519,
@@ -97,8 +101,8 @@ impl Identity {
         return Ok(bincode::deserialize(data)?);
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        return bincode::serialize(self).unwrap();
+    pub fn to_bytes(&self) -> Blob {
+        return bincode::serialize(self).unwrap().blob();
     }
 
     pub fn from_bytes_unsafe(bytes: &[u8]) -> Self {

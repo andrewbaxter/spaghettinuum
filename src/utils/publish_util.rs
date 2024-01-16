@@ -9,7 +9,10 @@ use crate::interface::{
     },
     identity::Identity,
 };
-use super::backed_identity::IdentitySigner;
+use super::{
+    backed_identity::IdentitySigner,
+    blob::ToBlob,
+};
 
 pub fn generate_publish_announce(
     signer: &mut Box<dyn IdentitySigner>,
@@ -18,9 +21,9 @@ pub fn generate_publish_announce(
 ) -> Result<(Identity, node_protocol::PublisherAnnouncement), String> {
     let announce_message = bincode::serialize(&node_protocol::latest::PublisherAnnouncementContent {
         addr: SerialAddr(publisher_advertise_addr),
-        cert_hash: publisher_cert_hash.to_vec(),
+        cert_hash: publisher_cert_hash.blob(),
         published: Utc::now(),
-    }).unwrap();
+    }).unwrap().blob();
     let (identity, request_message_sig) = signer.sign(&announce_message).map_err(|e| e.to_string())?;
     return Ok((identity, node_protocol::PublisherAnnouncement::V1(node_protocol::latest::PublisherAnnouncement {
         message: announce_message,

@@ -132,7 +132,7 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
         ).await?;
     let ip =
         String::from_utf8(
-            ip.clone(),
+            ip.to_vec(),
         ).log_context_with(log, "Failed to parse response as utf8", ea!(resp = String::from_utf8_lossy(&ip)))?;
     let ip = IpAddr::from_str(&ip).log_context_with(log, "Failed to parse response as socket addr", ea!(ip = ip))?;
     return Ok(ip);

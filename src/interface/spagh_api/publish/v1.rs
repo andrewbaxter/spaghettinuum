@@ -12,10 +12,16 @@ use serde::{
     Deserialize,
     de::DeserializeOwned,
 };
-use crate::interface::{
-    identity::Identity,
-    node_protocol::{
-        self,
+use crate::{
+    interface::{
+        identity::Identity,
+        node_protocol::{
+            self,
+        },
+    },
+    utils::blob::{
+        Blob,
+        ToBlob,
     },
 };
 
@@ -23,8 +29,7 @@ use crate::interface::{
 #[serde(rename_all = "snake_case")]
 pub struct JsonSignature<T: Serialize + DeserializeOwned, I> {
     pub message: String,
-    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
-    pub signature: Vec<u8>,
+    pub signature: Blob,
     #[serde(skip)]
     pub _p: PhantomData<(T, I)>,
 }
@@ -49,8 +54,7 @@ pub struct Publish {
 #[serde(rename_all = "snake_case")]
 pub struct InfoResponse {
     pub advertise_addr: SocketAddr,
-    #[serde(serialize_with = "crate::utils::as_zbase32", deserialize_with = "crate::utils::from_zbase32")]
-    pub cert_pub_hash: Vec<u8>,
+    pub cert_pub_hash: Blob,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,8 +78,8 @@ pub struct UnpublishRequestContent {
 }
 
 impl UnpublishRequestContent {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        return bincode::serialize(&self).unwrap();
+    pub fn to_bytes(&self) -> Blob {
+        return bincode::serialize(&self).unwrap().blob();
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, loga::Error> {

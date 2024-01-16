@@ -11,6 +11,10 @@ use sha2::{
 };
 use crate::{
     versioned,
+    utils::blob::{
+        Blob,
+        ToBlob,
+    },
 };
 
 pub mod v1;
@@ -18,10 +22,8 @@ pub mod v1;
 /// For gpg-card compatibility we doubly hash the messages passed in for
 /// signatures.  GPG takes a hash, passes it in as an ed25519 message, and the
 /// ed25519 sign method hashes it again.
-pub fn hash_for_ed25519(data: &[u8]) -> Vec<u8> {
-    let mut hash = Sha512::new();
-    hash.update(data);
-    return hash.finalize().to_vec();
+pub fn hash_for_ed25519(data: &[u8]) -> Blob {
+    return <Sha512 as Digest>::digest(data).blob();
 }
 
 versioned!(

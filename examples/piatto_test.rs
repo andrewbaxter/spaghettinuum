@@ -52,6 +52,7 @@ use spaghettinuum::{
             self,
         },
     },
+    utils::blob::Blob,
 };
 use tokio::fs::create_dir_all;
 
@@ -92,7 +93,7 @@ async fn main() {
         let (_, message_signature) =
             node_protocol::latest::PublisherAnnouncement::sign(&mut ident_secret, PublisherAnnouncementContent {
                 addr: SerialAddr(message_addr),
-                cert_hash: vec![],
+                cert_hash: Blob::new(0),
                 published: Utc::now(),
             }).unwrap();
         match tm.if_alive(nodes.get(0).unwrap().put(ident.clone(), message_signature)).await {

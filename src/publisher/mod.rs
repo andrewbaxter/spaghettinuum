@@ -96,6 +96,10 @@ use crate::{
             encode_pub_pem,
         },
         backed_identity::IdentitySigner,
+        blob::{
+            Blob,
+            ToBlob,
+        },
     },
     node::{
         Node,
@@ -150,11 +154,11 @@ impl<B: Serialize + DeserializeOwned> PublishIdentSignatureMethods<B, Identity> 
 
 #[derive(Serialize, Deserialize)]
 struct SerialTlsCert {
-    pub_der: Vec<u8>,
-    priv_der: Vec<u8>,
+    pub_der: Blob,
+    priv_der: Blob,
 }
 
-pub fn publisher_cert_hash(cert_der: &[u8]) -> Result<Vec<u8>, ()> {
+pub fn publisher_cert_hash(cert_der: &[u8]) -> Result<Blob, ()> {
     return Ok(
         <Sha256 as Digest>::digest(
             Certificate::from_der(&cert_der)
@@ -163,7 +167,7 @@ pub fn publisher_cert_hash(cert_der: &[u8]) -> Result<Vec<u8>, ()> {
                 .subject_public_key_info
                 .to_der()
                 .map_err(|_| ())?,
-        ).to_vec(),
+        ).blob(),
     );
 }
 
@@ -350,7 +354,7 @@ impl Admin for DbAdmin {
 struct PublisherInner<A: Admin> {
     log: Log,
     node: Node,
-    cert_pub_hash: Vec<u8>,
+    cert_pub_hash: Blob,
     advertise_addr: SocketAddr,
     admin: A,
 }
@@ -409,10 +413,10 @@ impl<A: Admin + 'static> Publisher<A> {
                     RdnSequence::from_str(&"CN=unused").unwrap(),
                     self_spki.clone(),
                     &priv_key,
-                ).unwrap().build::<DerSignature>().unwrap().to_der().unwrap();
+                ).unwrap().build::<DerSignature>().unwrap().to_der().unwrap().blob();
                 let certs = spagh_internal::latest::PublishCerts {
                     pub_der: pub_key_der,
-                    priv_der: priv_key.to_pkcs8_der().unwrap().as_bytes().to_vec(),
+                    priv_der: priv_key.to_pkcs8_der().unwrap().as_bytes().blob(),
                 };
                 admin.store_certs(&certs).await.log_context(log, "Error persisting generated certs")?;
                 certs
@@ -559,7 +563,7 @@ impl<A: Admin + 'static> Publisher<A> {
         return Ok(())
     }
 
-    pub fn pub_cert_hash(&self) -> Vec<u8> {
+    pub fn pub_cert_hash(&self) -> Blob {
         return self.0.cert_pub_hash.clone();
     }
 }
@@ -766,5 +770,5 @@ pub fn build_api_endpoints(publisher: &Publisher) -> SystemEndpoints {
             }
 
             ep
-        }))).with(AddData::new(publisher.clone())).boxed());
+        })).with(AddData::new(publisher.clone()))).with(AddData::new(publisher.clone())).boxed());
 }

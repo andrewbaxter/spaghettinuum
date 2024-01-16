@@ -14,24 +14,26 @@ use std::net::SocketAddr;
 use sha2::Digest;
 use crate::interface::identity::Identity;
 use crate::interface::node_identity::NodeIdentity;
+use crate::utils::blob::{
+    Blob,
+    ToBlob,
+};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct BincodeSignature<T: Serialize + DeserializeOwned, I> {
-    pub message: Vec<u8>,
-    pub signature: Vec<u8>,
+    pub message: Blob,
+    pub signature: Blob,
     #[serde(skip)]
     pub _p: PhantomData<(T, I)>,
 }
 
 // Ed25519
-pub struct Hash(Vec<u8>);
+pub struct Hash(Blob);
 
 impl Hash {
     pub fn new(data: &[u8]) -> Self {
-        let mut hash = sha2::Sha256::new();
-        hash.update(data);
-        return Self(hash.finalize().to_vec());
+        return Self(<sha2::Sha256 as Digest>::digest(data).blob());
     }
 }
 
@@ -47,7 +49,7 @@ pub enum FindMode {
 #[serde(rename_all = "snake_case")]
 pub struct FindRequest {
     pub sender: NodeIdentity,
-    pub challenge: Vec<u8>,
+    pub challenge: Blob,
     pub mode: FindMode,
 }
 
@@ -141,7 +143,7 @@ pub struct NodeInfo {
 #[serde(rename_all = "snake_case")]
 pub struct PublisherAnnouncementContent {
     pub addr: SerialAddr,
-    pub cert_hash: Vec<u8>,
+    pub cert_hash: Blob,
     pub published: chrono::DateTime<chrono::Utc>,
 }
 
@@ -157,7 +159,7 @@ pub enum FindResponseModeContent {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct FindResponseContent {
-    pub challenge: Vec<u8>,
+    pub challenge: Blob,
     pub sender: NodeIdentity,
     pub mode: FindMode,
     pub inner: FindResponseModeContent,
@@ -181,7 +183,7 @@ pub struct StoreRequest {
 #[serde(rename_all = "snake_case")]
 pub struct ChallengeResponse {
     pub sender: NodeIdentity,
-    pub signature: Vec<u8>,
+    pub signature: Blob,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -192,7 +194,7 @@ pub enum Message {
     Store(StoreRequest),
     Ping,
     Pung(NodeIdentity),
-    Challenge(Vec<u8>),
+    Challenge(Blob),
     ChallengeResponse(ChallengeResponse),
 }
 
@@ -201,8 +203,8 @@ impl Message {
         return Ok(bincode::deserialize(bytes)?);
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap()
+    pub fn to_bytes(&self) -> Blob {
+        return bincode::serialize(self).unwrap().blob();
     }
 }
 

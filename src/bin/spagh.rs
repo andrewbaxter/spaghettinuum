@@ -177,6 +177,7 @@ async fn main() {
         } else {
             identity = None;
         }
+        sleep(Duration::seconds(60).to_std().unwrap()).await;
         let tm = taskmanager::TaskManager::new();
         let node = {
             let mut bootstrap = vec![];
