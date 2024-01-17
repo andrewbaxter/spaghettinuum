@@ -42,6 +42,11 @@ use crate::{
             extract_expiry,
         },
         blob::ToBlob,
+        log::{
+            Log,
+            DEBUG_OTHER,
+            WARN,
+        },
     },
     interface::{
         certify_protocol::{
@@ -51,6 +56,7 @@ use crate::{
         spagh_cli::DEFAULT_CERTIFIER_URL,
     },
     bb,
+    ta_res,
 };
 
 pub mod db;
@@ -62,7 +68,7 @@ pub fn certifier_url() -> String {
 /// Requests a TLS public cert from the certifier for the `.s` domain associated
 /// with the provided identity and returns the result as PEM.
 pub async fn request_cert(
-    log: &loga::Log,
+    log: &Log,
     certifier_url: &str,
     requester_spki: &SubjectPublicKeyInfoOwned,
     message_signer: &mut Box<dyn IdentitySigner>,
@@ -71,7 +77,7 @@ pub async fn request_cert(
         stamp: Utc::now(),
         spki_der: requester_spki.to_der().unwrap().blob(),
     }).unwrap().blob();
-    log.debug("Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
+    log.log_with(DEBUG_OTHER, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
     let (ident, signature) = message_signer.sign(&text).context("Error signing cert request params")?;
     let body = serde_json::to_vec(&CertRequest::V1(latest::CertRequest {
         identity: ident,
@@ -80,7 +86,11 @@ pub async fn request_cert(
             text: text,
         },
     })).unwrap();
-    log.debug("Sending cert request body", ea!(url = certifier_url, body = String::from_utf8_lossy(&body)));
+    log.log_with(
+        DEBUG_OTHER,
+        "Sending cert request body",
+        ea!(url = certifier_url, body = String::from_utf8_lossy(&body)),
+    );
     let resp =
         reqwest::Client::builder()
             .build()
@@ -94,7 +104,7 @@ pub async fn request_cert(
     let body = resp.bytes().await.context("Error reading cert request response")?;
     if !resp_status.is_success() {
         return Err(
-            loga::new_err_with(
+            loga::err_with(
                 "Received error response",
                 ea!(status = resp_status.dbg_str(), body = String::from_utf8_lossy(&body)),
             ),
@@ -110,7 +120,7 @@ pub struct CertPair {
 }
 
 pub async fn request_cert_stream(
-    log: &loga::Log,
+    log: &Log,
     tm: &TaskManager,
     certifier_url: &str,
     mut signer: Box<dyn IdentitySigner>,
@@ -126,7 +136,7 @@ pub async fn request_cert_stream(
     }
 
     async fn update_cert(
-        log: &loga::Log,
+        log: &Log,
         db_pool: &Pool,
         certifier_url: &str,
         identity: &mut Box<dyn IdentitySigner>,
@@ -173,6 +183,7 @@ pub async fn request_cert_stream(
         let certifier_url = certifier_url.to_string();
         let log = log.clone();
         async move {
+            ta_res!(());
             let mut refresh_at = refresh_at;
             let log = &log;
             loop {
@@ -193,19 +204,19 @@ pub async fn request_cert_stream(
                                 break 'ok Some(certs);
                             },
                             Err(e) => {
-                                log.warn_e(e, "Error getting new certs", ea!());
+                                log.log_err(WARN, e.context("Error getting new certs"));
                                 sleep(backoff).await;
                                 backoff = backoff * 2;
                             },
                         }
                     }
                     break 'ok None;
-                }.log_context_with(log, "Failed to get new cert after retrying", ea!(tries = max_tries))?;
+                }.stack_context_with(log, "Failed to get new cert after retrying", ea!(tries = max_tries))?;
                 refresh_at =
                     decide_refresh_at(&certs.pub_pem).context("Error extracting expiration time from cert pem")?;
                 certs_stream_tx.send(certs).unwrap();
             }
-            return Ok(()) as Result<_, loga::Error>;
+            return Ok(());
         }
     });
     return Ok(certs_stream_rx);

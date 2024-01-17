@@ -46,6 +46,13 @@ use spaghettinuum::{
         IdentSignatureMethods,
     },
     utils::{
+        log::{
+            Flags,
+            NON_DEBUG,
+            DEBUG_OTHER,
+            WARN,
+            Log,
+        },
         backed_identity::{
             get_identity_signer,
         },
@@ -307,7 +314,7 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
             return Err(
-                loga::new_err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
             );
         }
         return Ok(());
@@ -319,7 +326,7 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
             return Err(
-                loga::new_err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
             );
         }
         return Ok(
@@ -338,7 +345,7 @@ impl ReqwestCheck for Result<Response, reqwest::Error> {
         let body = resp.bytes().await?.to_vec();
         if !status.is_success() {
             return Err(
-                loga::new_err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
+                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
             );
         }
         return Ok(body);
@@ -393,7 +400,7 @@ fn api_url_(mut url: Option<Uri>, env_key: &'static str) -> Result<Uri, loga::Er
                     env::VarError::NotPresent => { },
                     env::VarError::NotUnicode(e) => {
                         return Err(
-                            loga::new_err_with(
+                            loga::err_with(
                                 "Environment variable isn't valid unicode",
                                 ea!(env = env_key, value = e.to_string_lossy()),
                             ),
@@ -426,13 +433,13 @@ fn api_url_(mut url: Option<Uri>, env_key: &'static str) -> Result<Uri, loga::Er
 }
 
 async fn publish(
-    log: &loga::Log,
+    log: &Log,
     c: reqwest::Client,
     server: &Uri,
     identity_arg: BackedIdentityArg,
     keyvalues: publish::latest::Publish,
 ) -> Result<(), loga::Error> {
-    let mut signer = get_identity_signer(identity_arg).log_context(&log, "Error constructing signer")?;
+    let mut signer = get_identity_signer(identity_arg).stack_context(&log, "Error constructing signer")?;
     let info_body =
         c
             .get(format!("{}info", server))
@@ -440,22 +447,27 @@ async fn publish(
             .await
             .check_bytes()
             .await
-            .log_context(log, "Error getting publisher info")?;
+            .stack_context(log, "Error getting publisher info")?;
     let info: publish::latest::InfoResponse =
         serde_json::from_slice(
             &info_body,
-        ).log_context_with(
+        ).stack_context_with(
             log,
             "Error parsing info response from publisher as json",
             ea!(body = String::from_utf8_lossy(&info_body)),
         )?;
-    log.debug("Got publisher information", ea!(info = serde_json::to_string_pretty(&info_body).unwrap()));
+    log.log_with(
+        DEBUG_OTHER,
+        "Got publisher information",
+        ea!(info = serde_json::to_string_pretty(&info_body).unwrap()),
+    );
     let announcement_content = node_protocol::latest::PublisherAnnouncementContent {
         addr: SerialAddr(info.advertise_addr),
         cert_hash: info.cert_pub_hash,
         published: Utc::now(),
     };
-    log.debug(
+    log.log_with(
+        DEBUG_OTHER,
         "Unsigned publisher announcement",
         ea!(message = serde_json::to_string_pretty(&announcement_content).unwrap()),
     );
@@ -463,24 +475,32 @@ async fn publish(
         node_protocol::latest::PublisherAnnouncement::sign(
             signer.as_mut(),
             announcement_content,
-        ).log_context(&log, "Failed to sign announcement")?;
+        ).stack_context(&log, "Failed to sign announcement")?;
     let request_content = publish::latest::PublishRequestContent {
         announce: node_protocol::PublisherAnnouncement::V1(signed_announcement_content),
         keyvalues: keyvalues,
     };
-    log.debug("Unsigned request message", ea!(message = serde_json::to_string_pretty(&request_content).unwrap()));
+    log.log_with(
+        DEBUG_OTHER,
+        "Unsigned request message",
+        ea!(message = serde_json::to_string_pretty(&request_content).unwrap()),
+    );
     let (_, signed_request_content) =
         JsonSignature::sign(
             signer.as_mut(),
             request_content,
-        ).log_context(&log, "Failed to sign publish request content")?;
+        ).stack_context(&log, "Failed to sign publish request content")?;
     let request = publish::PublishRequest::V1(publish::latest::PublishRequest {
         identity: identity,
         content: signed_request_content,
     });
     let url = format!("{}publish/publish", server);
-    log.debug("Sending publish request", ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()));
-    c.post(url).json(&request).send().await.check().await.log_context(log, "Error making publish request")?;
+    log.log_with(
+        DEBUG_OTHER,
+        "Sending publish request",
+        ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
+    );
+    c.post(url).json(&request).send().await.check().await.stack_context(log, "Error making publish request")?;
     return Ok(());
 }
 
@@ -488,15 +508,16 @@ async fn publish(
 async fn main() {
     async fn inner() -> Result<(), loga::Error> {
         let args = aargvark::vark::<args::Args>();
-        let log = loga::new().with_level(match args.debug {
-            Some(_) => loga::Level::Debug,
-            None => loga::Level::Info,
-        });
+        match args.debug {
+            Some(_) => loga::init_flags(Flags::all()),
+            None => loga::init_flags(NON_DEBUG),
+        };
+        let log = Log::new();
         let log = &log;
         match args.command {
             args::Command::NewLocalIdentity(args) => {
                 let (ident, secret) = BackedIdentityLocal::new();
-                write_identity(&args.path, &secret).await.log_context(&log, "Error creating local identity")?;
+                write_identity(&args.path, &secret).await.stack_context(&log, "Error creating local identity")?;
                 println!("{}", serde_json::to_string_pretty(&json!({
                     "identity": ident.to_string()
                 })).unwrap());
@@ -510,14 +531,14 @@ async fn main() {
             },
             args::Command::ListCardIdentities => {
                 let mut out = vec![];
-                for card in PcscBackend::cards(None).log_context(log, "Failed to list smart cards")? {
+                for card in PcscBackend::cards(None).stack_context(log, "Failed to list smart cards")? {
                     let mut card: Card<Open> = card.into();
                     let mut transaction =
-                        card.transaction().log_context(log, "Error starting transaction with card")?;
+                        card.transaction().stack_context(log, "Error starting transaction with card")?;
                     let card_id =
                         transaction
                             .application_identifier()
-                            .log_context(log, "Error getting gpg id of card")?
+                            .stack_context(log, "Error getting gpg id of card")?
                             .ident();
                     let identity = match pgp::card_to_ident(&mut transaction) {
                         Ok(i) => match i {
@@ -527,7 +548,10 @@ async fn main() {
                             },
                         },
                         Err(e) => {
-                            log.warn_e(e, "Error getting identity of card", ea!(card = card_id));
+                            log.log_err(
+                                WARN,
+                                e.context_with("Error getting identity of card", ea!(card = card_id)),
+                            );
                             continue;
                         },
                     };
@@ -540,12 +564,12 @@ async fn main() {
             },
             args::Command::Register(config) => {
                 let url = format!("{}publish/register/{}", admin_api_url(config.server)?, config.identity_id);
-                log.debug("Sending unregister request (POST)", ea!(url = url));
+                log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
                 publisher_priv_client()?.post(url).send().await.check_text().await?;
             },
             args::Command::Unregister(config) => {
                 let url = format!("{}publish/unregister/{}", admin_api_url(config.server)?, config.identity_id);
-                log.debug("Sending unregister request (POST)", ea!(url = url));
+                log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
                 publisher_priv_client()?.post(url).send().await.check_text().await?;
             },
             args::Command::Publish(config) => {
@@ -614,7 +638,7 @@ async fn main() {
                                         v
                                             .split_once("/")
                                             .ok_or_else(
-                                                || loga::new_err_with(
+                                                || loga::err_with(
                                                     "Incorrect mx record specification, must be like `PRIORITY/NAME`",
                                                     ea!(entry = v),
                                                 ),
@@ -638,20 +662,21 @@ async fn main() {
             args::Command::Unpublish(config) => {
                 let c = reqwest::ClientBuilder::new().build().unwrap();
                 let mut signer =
-                    get_identity_signer(config.identity).log_context(&log, "Error constructing signer")?;
+                    get_identity_signer(config.identity).stack_context(&log, "Error constructing signer")?;
                 let request_message = publish::latest::UnpublishRequestContent { now: Utc::now() };
-                log.debug("Unsigned request message", ea!(message = request_message.dbg_str()));
+                log.log_with(DEBUG_OTHER, "Unsigned request message", ea!(message = request_message.dbg_str()));
                 let (identity, signature) =
                     PublishIdentSignatureMethods::sign(
                         signer.as_mut(),
                         request_message,
-                    ).log_context(&log, "Failed to sign unpublish request")?;
+                    ).stack_context(&log, "Failed to sign unpublish request")?;
                 let request = publish::UnpublishRequest::V1(publish::latest::UnpublishRequest {
                     identity: identity,
                     content: signature,
                 });
                 let url = format!("{}publish/unpublish", admin_api_url(config.server)?);
-                log.debug(
+                log.log_with(
+                    DEBUG_OTHER,
                     "Sending unpublish request",
                     ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
                 );
@@ -662,7 +687,7 @@ async fn main() {
                     .await
                     .check()
                     .await
-                    .log_context(log, "Error making unpublish request")?;
+                    .stack_context(log, "Error making unpublish request")?;
             },
             args::Command::ListPublisherIdentities(config) => {
                 let mut out = vec![];
@@ -673,7 +698,7 @@ async fn main() {
                     let mut identities: Vec<Identity> =
                         serde_json::from_slice(
                             &res,
-                        ).log_context(log, "Failed to parse response from publisher admin")?;
+                        ).stack_context(log, "Failed to parse response from publisher admin")?;
                     for i in &identities {
                         out.push(json!({
                             "identity": i.to_string()
@@ -706,7 +731,7 @@ async fn main() {
                         config.identity,
                         config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
                     );
-                log.debug("Sending query request", ea!(url = url));
+                log.log_with(DEBUG_OTHER, "Sending query request", ea!(url = url));
                 println!(
                     "{}",
                     reqwest::ClientBuilder::new().build().unwrap().get(url).send().await.check_text().await?
@@ -756,7 +781,7 @@ async fn main() {
                                         let (_, secret) = BackedIdentityLocal::new();
                                         write_identity(l, &secret)
                                             .await
-                                            .log_context(&log, "Error creating local identity")?;
+                                            .stack_context(&log, "Error creating local identity")?;
                                     }
                                 },
                                 _ => { },
@@ -850,7 +875,7 @@ async fn main() {
                                     v
                                         .split_once("/")
                                         .ok_or_else(
-                                            || loga::new_err_with(
+                                            || loga::err_with(
                                                 "Incorrect mx record specification, must be like `PRIORITY/NAME`",
                                                 ea!(entry = v),
                                             ),
@@ -876,10 +901,10 @@ async fn main() {
                         log,
                         &certifier_url(),
                         &SubjectPublicKeyInfoOwned::from_key(priv_key.public_key()).unwrap(),
-                        &mut get_identity_signer(ident).log_context(log, "Error accessing specified identity")?,
+                        &mut get_identity_signer(ident).stack_context(log, "Error accessing specified identity")?,
                     )
                         .await
-                        .map_err(|e| log.new_err_with("Failed to get certificate", ea!(err = e)))?
+                        .map_err(|e| log.err_with("Failed to get certificate", ea!(err = e)))?
                         .pub_pem;
                 let expiry = <DateTime<Utc>>::from(extract_expiry(cert_pub.as_bytes())?);
                 println!("{}", serde_json::to_string_pretty(&json!({
@@ -894,7 +919,7 @@ async fn main() {
                     config::GlobalAddrConfig::FromInterface { name, ip_version } => {
                         local_resolve_global_ip(&name, &ip_version)
                             .await?
-                            .log_context(log, "No global IP found on local interface")?
+                            .stack_context(log, "No global IP found on local interface")?
                     },
                     config::GlobalAddrConfig::Lookup(lookup) => {
                         remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await?

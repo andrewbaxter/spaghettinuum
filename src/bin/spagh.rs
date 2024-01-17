@@ -18,7 +18,6 @@ use loga::{
     ResultContext,
 };
 use poem::{
-    Route,
     Server,
     listener::{
         TcpListener,
@@ -62,6 +61,17 @@ use spaghettinuum::{
         },
     },
     utils::{
+        htserve::Routes,
+        log::{
+            Log,
+            INFO,
+            DEBUG_DNS_S,
+            DEBUG_DNS_OTHER,
+            DEBUG_NODE,
+            DEBUG_PUBLISH,
+            DEBUG_RESOLVE,
+            NON_DEBUG,
+        },
         publish_util::generate_publish_announce,
         ip_util::{
             local_resolve_global_ip,
@@ -83,19 +93,51 @@ use tokio_stream::{
 
 #[derive(Aargvark)]
 struct Args {
+    /// Server config - see `spagh-cli`'s generate commands for a basic template, or
+    /// refer to the json schema in the `spagh` repo.
     pub config: Option<AargvarkJson<Config>>,
+    /// Enable default debug logging, additive with other debug options.
     pub debug: Option<()>,
+    /// Enable node debug logging, additive with other debug options.
+    pub debug_node: Option<()>,
+    /// Enable resolver debug logging, additive with other debug options.
+    pub debug_resolver: Option<()>,
+    /// Enable dns `.s` domain debug logging, additive with other debug options.
+    pub debug_dns_s: Option<()>,
+    /// Enable forwarded dns debug logging, additive with other debug options.
+    pub debug_dns_other: Option<()>,
+    /// Enable publisher debug logging, additive with other debug options.
+    pub debug_publisher: Option<()>,
 }
 
 #[tokio::main]
 async fn main() {
     async fn inner() -> Result<(), loga::Error> {
         let args = aargvark::vark::<Args>();
-        let log = &loga::new().with_level(if args.debug.is_some() {
-            loga::Level::Debug
-        } else {
-            loga::Level::Info
-        });
+        let mut flags = NON_DEBUG;
+        if args.debug.is_some() {
+            flags |= DEBUG_NODE;
+            flags |= DEBUG_PUBLISH;
+            flags |= DEBUG_RESOLVE;
+            flags |= DEBUG_DNS_S;
+        }
+        if args.debug_node.is_some() {
+            flags |= DEBUG_NODE;
+        }
+        if args.debug_resolver.is_some() {
+            flags |= DEBUG_RESOLVE;
+        }
+        if args.debug_dns_s.is_some() {
+            flags |= DEBUG_DNS_S;
+        }
+        if args.debug_dns_other.is_some() {
+            flags |= DEBUG_DNS_OTHER;
+        }
+        if args.debug_publisher.is_some() {
+            flags |= DEBUG_PUBLISH;
+        }
+        loga::init_flags(flags);
+        let log = &Log::new();
         let config = if let Some(p) = args.config {
             p.value
         } else if let Some(c) = match std::env::var(spagh_cli::ENV_CONFIG) {
@@ -103,17 +145,15 @@ async fn main() {
             Err(e) => match e {
                 std::env::VarError::NotPresent => None,
                 std::env::VarError::NotUnicode(_) => {
-                    return Err(
-                        loga::new_err_with("Error parsing env var as unicode", ea!(env = spagh_cli::ENV_CONFIG)),
-                    )
+                    return Err(loga::err_with("Error parsing env var as unicode", ea!(env = spagh_cli::ENV_CONFIG)))
                 },
             },
         } {
             let log = log.fork(ea!(source = "env"));
-            serde_json::from_str::<Config>(&c).log_context(&log, "Parsing config")?
+            serde_json::from_str::<Config>(&c).stack_context(&log, "Parsing config")?
         } else {
             return Err(
-                log.new_err_with(
+                log.err_with(
                     "No config passed on command line, and no config set in env var",
                     ea!(env = spagh_cli::ENV_CONFIG),
                 ),
@@ -121,7 +161,7 @@ async fn main() {
         };
         create_dir_all(&config.persistent_dir)
             .await
-            .log_context_with(
+            .stack_context_with(
                 log,
                 "Error creating persistent dir",
                 ea!(path = config.persistent_dir.to_string_lossy()),
@@ -130,7 +170,7 @@ async fn main() {
         for a in config.global_addrs {
             global_ips.push(match a {
                 config::GlobalAddrConfig::Fixed(s) => {
-                    log.info("Identified fixed public ip address from config", ea!(addr = s));
+                    log.log_with(INFO, "Identified fixed public ip address from config", ea!(addr = s));
                     s
                 },
                 config::GlobalAddrConfig::FromInterface { name, ip_version } => {
@@ -138,10 +178,10 @@ async fn main() {
                         if let Some(res) = local_resolve_global_ip(&name, &ip_version).await? {
                             break res;
                         }
-                        log.info("Waiting for public ip address on interface", ea!());
+                        log.log_with(INFO, "Waiting for public ip address on interface", ea!());
                         sleep(Duration::seconds(10).to_std().unwrap()).await;
                     };
-                    log.info("Identified public ip address via interface", ea!(addr = res));
+                    log.log_with(INFO, "Identified public ip address via interface", ea!(addr = res));
                     res
                 },
                 config::GlobalAddrConfig::Lookup(lookup) => {
@@ -149,16 +189,15 @@ async fn main() {
                         match remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await {
                             Ok(r) => break r,
                             Err(e) => {
-                                log.info_e(
-                                    e,
-                                    "Error looking up public ip through external service, retrying",
-                                    ea!(),
+                                log.log_err(
+                                    INFO,
+                                    e.context("Error looking up public ip through external service, retrying"),
                                 );
                             },
                         }
                         sleep(Duration::seconds(10).to_std().unwrap()).await;
                     };
-                    log.info("Identified public ip address via external lookup", ea!(addr = res));
+                    log.log_with(INFO, "Identified public ip address via external lookup", ea!(addr = res));
                     res
                 },
             })
@@ -167,11 +206,13 @@ async fn main() {
         if let Some(identity_config) = &config.identity {
             identity =
                 Some(
-                    get_identity_signer(identity_config.identity.clone()).log_context(log, "Error loading identity")?,
+                    get_identity_signer(
+                        identity_config.identity.clone(),
+                    ).stack_context(log, "Error loading identity")?,
                 );
             if identity_config.self_publish && config.publisher.is_none() {
                 return Err(
-                    log.new_err("Config has self_publish enabled but the publisher must be enabled for this to work"),
+                    log.err("Config has self_publish enabled but the publisher must be enabled for this to work"),
                 );
             }
         } else {
@@ -185,7 +226,7 @@ async fn main() {
                 bootstrap.push(NodeInfo {
                     id: e.id,
                     address: SerialAddr(
-                        e.addr.resolve().log_context(log, "Error resolving bootstrap node address")?,
+                        e.addr.resolve().stack_context(log, "Error resolving bootstrap node address")?,
                     ),
                 });
             }
@@ -195,12 +236,15 @@ async fn main() {
         let publisher = match config.publisher {
             Some(publisher_config) => {
                 let bind_addr =
-                    publisher_config.bind_addr.resolve().log_context(log, "Error resolving publisher bind address")?;
+                    publisher_config
+                        .bind_addr
+                        .resolve()
+                        .stack_context(log, "Error resolving publisher bind address")?;
                 has_api_endpoints = true;
                 let advertise_ip =
                     *global_ips
                         .get(0)
-                        .log_context(log, "Running a publisher requires at least one configured global IP")?;
+                        .stack_context(log, "Running a publisher requires at least one configured global IP")?;
                 let advertise_port = publisher_config.advertise_port.unwrap_or(bind_addr.port());
                 let advertise_addr = SocketAddr::new(advertise_ip, advertise_port);
                 let publisher =
@@ -212,10 +256,10 @@ async fn main() {
                         advertise_addr,
                         DbAdmin::new(&config.persistent_dir)
                             .await
-                            .log_context(log, "Error setting up publisher db-admin")?,
+                            .stack_context(log, "Error setting up publisher db-admin")?,
                     )
                         .await
-                        .log_context(log, "Error setting up publisher")?;
+                        .stack_context(log, "Error setting up publisher")?;
                 if let Some(identity_config) = &config.identity {
                     if identity_config.self_publish {
                         let (identity, announcement) =
@@ -224,7 +268,7 @@ async fn main() {
                                 advertise_addr,
                                 &publisher.pub_cert_hash(),
                             ).map_err(
-                                |e| log.new_err_with(
+                                |e| log.err_with(
                                     "Failed to generate announcement for self publication",
                                     ea!(err = e),
                                 ),
@@ -261,7 +305,7 @@ async fn main() {
                 let resolver =
                     Resolver::new(log, &tm, node.clone(), resolver_config.max_cache, &config.persistent_dir)
                         .await
-                        .log_context(log, "Error setting up resolver")?;
+                        .stack_context(log, "Error setting up resolver")?;
                 if let Some(dns_config) = resolver_config.dns_bridge {
                     resolver::dns::start_dns_bridge(
                         log,
@@ -272,7 +316,7 @@ async fn main() {
                         &config.persistent_dir,
                     )
                         .await
-                        .log_context(log, "Error setting up resolver DNS bridge")?;
+                        .stack_context(log, "Error setting up resolver DNS bridge")?;
                 } else {
                     has_api_endpoints = true;
                 }
@@ -283,9 +327,7 @@ async fn main() {
         if has_api_endpoints {
             if config.api_bind_addrs.is_empty() {
                 return Err(
-                    log.new_err(
-                        "Configuration defines api http endpoints but no api http bind address present in config",
-                    ),
+                    log.err("Configuration defines api http endpoints but no api http bind address present in config"),
                 );
             }
             let mut certs_stream_rx = None;
@@ -305,14 +347,27 @@ async fn main() {
             };
 
             for bind_addr in config.api_bind_addrs {
-                let bind_addr = bind_addr.resolve().log_context(log, "Error resolving api bind address")?;
-                let mut api_endpoints = Route::new();
+                let bind_addr = bind_addr.resolve().stack_context(log, "Error resolving api bind address")?;
+                let mut api_endpoints = Routes::new();
                 if let Some(resolver) = &resolver {
-                    api_endpoints = api_endpoints.nest("/resolve", resolver::build_api_endpoints(&log, resolver).0);
+                    api_endpoints.nest("resolve", resolver::build_api_endpoints(&log, resolver));
                 }
                 if let Some(publisher) = &publisher {
-                    api_endpoints = api_endpoints.nest("/publish", publisher::build_api_endpoints(publisher).0);
+                    api_endpoints.nest(
+                        "publish",
+                        publisher::build_api_endpoints(
+                            publisher,
+                            config
+                                .admin_token
+                                .as_ref()
+                                .stack_context(
+                                    log,
+                                    "The publisher is enabled but admin token is missing in the config",
+                                )?,
+                        ).stack_context(log, "Error building publisher endpoints")?,
+                    );
                 }
+                let api_endpoints = api_endpoints.build();
                 let server = match &certs_stream_rx {
                     Some(certs_stream_rx) => {
                         Server::new(
@@ -340,7 +395,7 @@ async fn main() {
                     async move {
                         match tm1.if_alive(server).await {
                             Some(r) => {
-                                return r.log_context_with(&log, "Exited with error", ea!(addr = bind_addr));
+                                return r.stack_context_with(&log, "Exited with error", ea!(addr = bind_addr));
                             },
                             None => {
                                 return Ok(());

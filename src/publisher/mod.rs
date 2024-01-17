@@ -32,37 +32,18 @@ use sha2::{
     Digest,
 };
 use loga::{
-    Log,
     ea,
     ResultContext,
 };
 use poem::{
-    Server,
-    Response,
     async_trait,
-    http::{
-        StatusCode,
-        Uri,
-    },
-    get,
+    Server,
     listener::{
         TcpListener,
         RustlsConfig,
         RustlsCertificate,
         Listener,
     },
-    IntoResponse,
-    Route,
-    post,
-    middleware::AddData,
-    EndpointExt,
-    web::{
-        Json,
-        Data,
-        Query,
-        self,
-    },
-    handler,
 };
 use serde::{
     Deserialize,
@@ -87,7 +68,6 @@ use x509_cert::{
 };
 use crate::{
     utils::{
-        SystemEndpoints,
         VisErr,
         ResultVisErr,
         db_util::setup_db,
@@ -99,6 +79,15 @@ use crate::{
         blob::{
             Blob,
             ToBlob,
+        },
+        log::{
+            Log,
+            WARN,
+        },
+        htserve::{
+            Routes,
+            Leaf,
+            Response,
         },
     },
     node::{
@@ -123,6 +112,9 @@ use crate::{
         spagh_internal,
         node_protocol,
     },
+    ta_res,
+    ta_vis_res,
+    cap_fn,
 };
 
 pub mod admin_db;
@@ -375,10 +367,6 @@ impl<A: Admin + 'static> Publisher<A> {
     /// * `advertise_addr`: The address to use in announcements to the network. This should
     ///   be the internet-routable address of this instance (your public ip, plus the port
     ///   you're forwarding to the host)
-    ///
-    /// * `cert_path`: where to persist certs; generated if doesn't exist, otherwise loaded
-    ///
-    /// * `db_path`: path to file to store sqlite database
     pub async fn new(
         log: &Log,
         tm: &TaskManager,
@@ -390,7 +378,7 @@ impl<A: Admin + 'static> Publisher<A> {
         let log = &log.fork(ea!(sys = "publisher"));
 
         // Prepare publisher certs for publisher-resolver communication
-        let certs = match admin.retrieve_certs().await.log_context(log, "Error looking up certs")? {
+        let certs = match admin.retrieve_certs().await.stack_context(log, "Error looking up certs")? {
             Some(c) => c,
             None => {
                 let priv_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
@@ -418,11 +406,11 @@ impl<A: Admin + 'static> Publisher<A> {
                     pub_der: pub_key_der,
                     priv_der: priv_key.to_pkcs8_der().unwrap().as_bytes().blob(),
                 };
-                admin.store_certs(&certs).await.log_context(log, "Error persisting generated certs")?;
+                admin.store_certs(&certs).await.stack_context(log, "Error persisting generated certs")?;
                 certs
             },
         };
-        let core = Publisher(Arc::new(PublisherInner {
+        let publisher = Publisher(Arc::new(PublisherInner {
             node: node.clone(),
             log: log.clone(),
             cert_pub_hash: publisher_cert_hash(&certs.pub_der).unwrap(),
@@ -430,11 +418,59 @@ impl<A: Admin + 'static> Publisher<A> {
             admin: admin,
         }));
         tm.critical_task({
-            let tm1 = tm.clone();
             let log = log.fork(ea!(subsys = "protocol"));
+            let mut routes = Routes::new();
+            let tm = tm.clone();
+            routes.add("", Leaf::new().get(cap_fn!((mut r)(publisher) {
+                match async {
+                    ta_vis_res!(Response);
+
+                    // Params
+                    let Some(ident) = r.path.pop() else {
+                        return Ok(Response::user_err("Missing identity in path"));
+                    };
+                    let ident = Identity::from_str(&ident).context("Couldn't parse identity").err_external()?;
+
+                    // Respond
+                    let mut kvs = resolve::latest::ResolveKeyValues(HashMap::new());
+                    if let Some(found_kvs) = publisher.0.admin.get_published_data(&ident).await.err_internal()? {
+                        let now = Utc::now();
+                        match found_kvs {
+                            publish::Publish::V1(mut found) => {
+                                for k in r.query.split(",") {
+                                    if let Some(v) = found.data.remove(k) {
+                                        kvs.0.insert(k.to_string(), resolve::latest::ResolveValue {
+                                            expires: now + Duration::minutes(v.ttl as i64),
+                                            data: Some(v.data),
+                                        });
+                                    } else {
+                                        kvs.0.insert(k.to_string(), resolve::latest::ResolveValue {
+                                            expires: now + Duration::minutes(found.missing_ttl as i64),
+                                            data: None,
+                                        });
+                                    }
+                                }
+                            },
+                        }
+                    }
+                    return Ok(Response::json(ResolveKeyValues::V1(kvs)));
+                }.await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        match e {
+                            VisErr::Internal(e) => {
+                                publisher.0.log.log_err(WARN, e.context("Error processing request"));
+                                return Response::InternalErr;
+                            },
+                            VisErr::External(e) => {
+                                return Response::external_err(e.to_string());
+                            },
+                        }
+                    },
+                }
+            })));
             async move {
-                let log = &log;
-                match tm1
+                match tm
                     .if_alive(
                         Server::new(
                             TcpListener::bind(
@@ -447,62 +483,11 @@ impl<A: Admin + 'static> Publisher<A> {
                                         .cert(encode_pub_pem(&certs.pub_der)),
                                 ),
                             ),
-                        ).run(get({
-                            #[handler]
-                            async fn ep(service: Data<&Publisher>, uri: &Uri) -> Response {
-                                match async {
-                                    let ident =
-                                        Identity::from_str(uri.path().get(1..).unwrap_or(""))
-                                            .context("Couldn't parse identity")
-                                            .err_external()?;
-                                    let mut kvs = resolve::latest::ResolveKeyValues(HashMap::new());
-                                    if let Some(found_kvs) =
-                                        service.0.0.admin.get_published_data(&ident).await.err_internal()? {
-                                        let now = Utc::now();
-                                        match found_kvs {
-                                            publish::Publish::V1(mut found) => {
-                                                for k in uri.query().unwrap_or("").split(",") {
-                                                    if let Some(v) = found.data.remove(k) {
-                                                        kvs.0.insert(k.to_string(), resolve::latest::ResolveValue {
-                                                            expires: now + Duration::minutes(v.ttl as i64),
-                                                            data: Some(v.data),
-                                                        });
-                                                    } else {
-                                                        kvs.0.insert(k.to_string(), resolve::latest::ResolveValue {
-                                                            expires: now + Duration::minutes(found.missing_ttl as i64),
-                                                            data: None,
-                                                        });
-                                                    }
-                                                }
-                                            },
-                                        }
-                                    }
-                                    return Ok(ResolveKeyValues::V1(kvs));
-                                }.await {
-                                    Ok(kvs) => poem::web::Json(kvs).into_response(),
-                                    Err(e) => {
-                                        match e {
-                                            VisErr::Internal(e) => {
-                                                service.0.0.log.warn_e(e, "Error processing request", ea!());
-                                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                                            },
-                                            VisErr::External(e) => {
-                                                return <String as IntoResponse>::with_status(
-                                                    e.to_string(),
-                                                    StatusCode::BAD_REQUEST,
-                                                ).into_response();
-                                            },
-                                        }
-                                    },
-                                }
-                            }
-
-                            ep
-                        })),
+                        ).run(routes.build()),
                     )
                     .await {
                     Some(r) => {
-                        return r.log_context(log, "Exited with error");
+                        return r.stack_context(&log, "Exited with error");
                     },
                     None => {
                         return Ok(());
@@ -512,42 +497,36 @@ impl<A: Admin + 'static> Publisher<A> {
         });
         tm.periodic(Duration::hours(4).to_std().unwrap(), {
             let log = log.fork(ea!(subsys = "periodic_announce"));
-            let core = core.clone();
-            let node = node.clone();
-            move || {
-                let core = core.clone();
-                let node = node.clone();
-                let log = log.clone();
-                return async move {
-                    match async {
-                        let mut after = None;
-                        loop {
-                            let announce_pairs = core.0.admin.list_announcements(after.as_ref()).await?;
-                            let count = announce_pairs.len();
-                            if count == 0 {
-                                break;
-                            }
-                            for (i, (identity, announcement)) in announce_pairs.into_iter().enumerate() {
-                                let value = match announcement {
-                                    node_protocol::PublisherAnnouncement::V1(v) => v,
-                                };
-                                node.put(identity.clone(), value).await;
-                                if i + 1 == count {
-                                    after = Some(identity);
-                                }
+            cap_fn!(()(log, publisher, node) {
+                match async {
+                    ta_res!(());
+                    let mut after = None;
+                    loop {
+                        let announce_pairs = publisher.0.admin.list_announcements(after.as_ref()).await?;
+                        let count = announce_pairs.len();
+                        if count == 0 {
+                            break;
+                        }
+                        for (i, (identity, announcement)) in announce_pairs.into_iter().enumerate() {
+                            let value = match announcement {
+                                node_protocol::PublisherAnnouncement::V1(v) => v,
+                            };
+                            node.put(identity.clone(), value).await;
+                            if i + 1 == count {
+                                after = Some(identity);
                             }
                         }
-                        return Ok(());
-                    }.await {
-                        Ok(_) => { },
-                        Err(e) => {
-                            log.warn_e(e, "Error while re-announcing publishers", ea!());
-                        },
                     }
-                };
-            }
+                    return Ok(());
+                }.await {
+                    Ok(_) => { },
+                    Err(e) => {
+                        log.log_err(WARN, e.context("Error while re-announcing publishers"));
+                    },
+                }
+            })
         });
-        return Ok(core);
+        return Ok(publisher);
     }
 
     pub async fn publish(
@@ -568,207 +547,255 @@ impl<A: Admin + 'static> Publisher<A> {
     }
 }
 
-pub fn build_api_endpoints(publisher: &Publisher) -> SystemEndpoints {
-    return SystemEndpoints(Route::new().at("/publish", post({
-        #[handler]
-        async fn ep(Data(service): Data<&Publisher>, Json(req): Json<publish::PublishRequest>) -> Response {
+pub fn build_api_endpoints(publisher: &Publisher, admin_token: &str) -> Result<Routes, loga::Error> {
+    let mut routes = Routes::new();
+    routes.add("publish", Leaf::new().post(cap_fn!((r)(publisher) {
+        match async {
+            ta_res!(Response);
+
+            // Params
+            let req = match serde_json::from_slice(&r.body) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Ok(Response::user_err(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
+                },
+            };
             let req = match req {
                 publish::PublishRequest::V1(r) => r,
             };
-            match async {
-                // Before db access, make sure the stated identity actually created the message
-                let Ok(body) = req.content.verify(&req.identity) else {
-                    return Ok(StatusCode::BAD_REQUEST.into_response());
-                };
+            let Ok(body) = req.content.verify(&req.identity) else {
+                return Ok(Response::user_err("Couldn't verify payload"));
+            };
 
-                // Check the identity is in the list of allowed to publish
-                if !service.0.admin.is_identity_allowed(&req.identity).await? {
-                    return Ok(StatusCode::UNAUTHORIZED.into_response());
-                }
-
-                // Publish it
-                service.publish(&req.identity, body.announce, body.keyvalues).await?;
-                return Ok(StatusCode::OK.into_response());
-            }.await {
-                Ok(r) => {
-                    return r;
-                },
-                Err(e) => {
-                    service.0.log.warn_e(e, "Error publishing key values", ea!(identity = req.identity));
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                },
+            // Auth
+            if !publisher.0.admin.is_identity_allowed(&req.identity).await? {
+                return Ok(Response::AuthErr);
             }
-        }
 
-        ep
-    })).at("/unpublish", post({
-        #[handler]
-        async fn ep(Data(service): Data<&Publisher>, Json(body): Json<publish::UnpublishRequest>) -> Response {
-            let req = match body {
+            // Publish it
+            publisher.publish(&req.identity, body.announce, body.keyvalues).await?;
+            return Ok(Response::Ok);
+        }.await {
+            Ok(r) => {
+                return r;
+            },
+            Err(e) => {
+                publisher.0.log.log_err(WARN, e.context("Error publishing key values"));
+                return Response::InternalErr;
+            },
+        }
+    })));
+    routes.add("unpublish", Leaf::new().post(cap_fn!((r)(publisher) {
+        match async {
+            ta_res!(Response);
+
+            // Params
+            let req = match serde_json::from_slice(&r.body) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Ok(Response::user_err(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
+                },
+            };
+            let req = match req {
                 publish::UnpublishRequest::V1(body) => body,
             };
+            let Ok(content) = req.content.verify(&req.identity) else {
+                return Ok(Response::user_err("Couldn't verify payload"));
+            };
+            if content.now + Duration::seconds(10) < Utc::now() {
+                return Ok(Response::user_err("Expired request"));
+            }
+
+            // Auth
+            if !publisher.0.admin.is_identity_allowed(&req.identity).await? {
+                return Ok(Response::AuthErr);
+            }
+
+            // Respond
+            publisher.0.admin.unpublish(&req.identity).await?;
+            return Ok(Response::Ok);
+        }.await {
+            Ok(r) => {
+                return r;
+            },
+            Err(e) => {
+                publisher.0.log.log_err(WARN, e.context("Error unpublishing key values"));
+                return Response::InternalErr;
+            },
+        }
+    })));
+    routes.add("info", Leaf::new().get(cap_fn!((_r)(publisher) {
+        // Respond
+        return Response::json(InfoResponse {
+            advertise_addr: publisher.0.advertise_addr,
+            cert_pub_hash: publisher.0.cert_pub_hash.clone(),
+        });
+    })));
+    routes.nest("admin", {
+        let admin_token = bcrypt::hash(admin_token, bcrypt::DEFAULT_COST).context("Error hashing admin token")?;
+        let mut routes = Routes::new();
+        routes.add("allowed_identities", Leaf::new().get(cap_fn!((r)(publisher, admin_token) {
             match async {
-                // Before db access, make sure the stated identity actually created the message
-                let Ok(content) = req.content.verify(&req.identity) else {
-                    return Ok(StatusCode::BAD_REQUEST.into_response());
+                ta_res!(Response);
+
+                // Auth
+                if r.auth_bearer.and_then(|p| bcrypt::verify(&p, &admin_token).ok()).is_none() {
+                    return Ok(Response::AuthErr);
+                }
+
+                // Check params
+                #[derive(Debug, Deserialize)]
+                struct Params {
+                    after: Option<String>,
+                }
+
+                let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        return Ok(Response::user_err(format!("Invalid query parameters: {}", e)));
+                    },
+                };
+                let after = match &query.after {
+                    Some(i) => {
+                        Some(Identity::from_str(i)?)
+                    },
+                    None => None,
                 };
 
-                // Check the identity is in the list of allowed to (un)publish
-                if !service.0.admin.is_identity_allowed(&req.identity).await? {
-                    return Ok(StatusCode::UNAUTHORIZED.into_response());
-                }
-
-                // Check that the message is recent to discourage repeat attacks
-                if content.now + Duration::seconds(10) < Utc::now() {
-                    return Ok(StatusCode::BAD_REQUEST.into_response());
-                }
-
-                // The request is by the identity and the identity recently made the request - do
-                // the unpublish.
-                service.0.admin.unpublish(&req.identity).await?;
-                return Ok(StatusCode::OK.into_response());
+                // Respond
+                return Ok(Response::json(publisher.0.admin.list_allowed_identities(after.as_ref()).await?));
             }.await {
-                Ok(r) => {
-                    return r;
+                Ok(d) => {
+                    return d;
                 },
                 Err(e) => {
-                    service.0.log.warn_e(e, "Error deleting published data", ea!(identity = req.identity));
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    publisher.0.log.log_err(WARN, e.context("Error getting published identities"));
+                    return Response::InternalErr;
                 },
             }
-        }
+        })).post(cap_fn!((mut r)(publisher, admin_token) {
+            match async {
+                ta_res!(Response);
 
-        ep
-    })).at("/info", get({
-        #[handler]
-        async fn ep(service: Data<&Publisher>) -> Response {
-            return Json(InfoResponse {
-                advertise_addr: service.0.0.advertise_addr,
-                cert_pub_hash: service.0.0.cert_pub_hash.clone(),
-            }).into_response();
-        }
+                // Auth
+                if r.auth_bearer.and_then(|p| bcrypt::verify(&p, &admin_token).ok()).is_none() {
+                    return Ok(Response::AuthErr);
+                }
 
-        ep
-    })).nest("/admin", Route::new().at("/admin/allowed_identities", get({
-            #[derive(Debug, Deserialize)]
-            struct Params {
-                after: Option<String>,
+                // Check params
+                ta_res!(Response);
+                let Some(identity) = r.path.pop() else {
+                    return Ok(Response::user_err("Missing identity in path"));
+                };
+                let identity = Identity::from_str(&identity)?;
+
+                // Respond
+                return Ok(Response::json(publisher.0.admin.allow_identity(&identity).await?));
+            }.await {
+                Ok(d) => {
+                    return d;
+                },
+                Err(e) => {
+                    publisher.0.log.log_err(WARN, e.context("Error registering identity for publishing"));
+                    return Response::InternalErr;
+                },
             }
+        })).delete(cap_fn!((mut r)(publisher, admin_token) {
+            match async {
+                ta_res!(Response);
 
-            #[handler]
-            async fn ep(Data(service): Data<&Publisher>, query: Query<Params>) -> Response {
+                // Auth
+                if r.auth_bearer.and_then(|p| bcrypt::verify(&p, &admin_token).ok()).is_none() {
+                    return Ok(Response::AuthErr);
+                }
+
+                // Check params
+                ta_res!(Response);
+                let Some(identity) = r.path.pop() else {
+                    return Ok(Response::user_err("Missing identity in path"));
+                };
+                let identity = Identity::from_str(&identity)?;
+
+                // Respond
+                return Ok(Response::json(publisher.0.admin.disallow_identity(&identity).await?));
+            }.await {
+                Ok(d) => {
+                    return d;
+                },
+                Err(e) => {
+                    publisher.0.log.log_err(WARN, e.context("Error unregistering identity for publishing"));
+                    return Response::InternalErr;
+                },
+            }
+        })));
+        routes.add("announcements", Leaf::new().get(cap_fn!((mut r)(publisher, admin_token) {
+            // Auth
+            if r.auth_bearer.and_then(|p| bcrypt::verify(&p, &admin_token).ok()).is_none() {
+                return Response::AuthErr;
+            }
+            if let Some(identity) = r.path.pop() {
                 match async {
-                    let after = match &query.after {
-                        Some(i) => {
-                            Some(Identity::from_str(i)?)
+                    ta_res!(Response);
+                    let identity = Identity::from_str(&identity)?;
+
+                    // Respond
+                    return Ok(Response::json(publisher.0.admin.get_published_data(&identity).await?));
+                }.await {
+                    Ok(d) => {
+                        return d;
+                    },
+                    Err(e) => {
+                        publisher.0.log.log_err(WARN, e.context("Error getting published identity data"));
+                        return Response::InternalErr;
+                    },
+                }
+            } else {
+                match async {
+                    ta_res!(Response);
+
+                    #[derive(Debug, Deserialize)]
+                    struct Params {
+                        after: Option<String>,
+                    }
+
+                    let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                        Ok(q) => q,
+                        Err(e) => {
+                            return Ok(Response::UserErr(format!("Invalid query parameters: {}", e)));
                         },
-                        None => None,
                     };
-                    return Ok(service.0.admin.list_allowed_identities(after.as_ref()).await?);
-                }.await {
-                    Ok(d) => {
-                        return Json(d).into_response();
-                    },
-                    Err(e) => {
-                        service.0.log.warn_e(e, "Error getting published identities", ea!());
-                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                    },
-                }
-            }
-
-            ep
-        })).at("/admin/allowed_identities/:identity", post({
-            #[handler]
-            async fn ep(Data(service): Data<&Publisher>, web::Path(identity): web::Path<String>) -> Response {
-                match async {
-                    let identity = Identity::from_str(&identity)?;
-                    return Ok(service.0.admin.allow_identity(&identity).await?);
-                }.await {
-                    Ok(d) => {
-                        return Json(d).into_response();
-                    },
-                    Err(e) => {
-                        service.0.log.warn_e(e, "Error registering identity for publishing", ea!());
-                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                    },
-                }
-            }
-
-            ep
-        }).delete({
-            #[handler]
-            async fn ep(Data(service): Data<&Publisher>, web::Path(identity): web::Path<String>) -> Response {
-                match async {
-                    let identity = Identity::from_str(&identity)?;
-                    return Ok(service.0.admin.disallow_identity(&identity).await?);
-                }.await {
-                    Ok(d) => {
-                        return Json(d).into_response();
-                    },
-                    Err(e) => {
-                        service.0.log.warn_e(e, "Error unregistering identity for publishing", ea!());
-                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                    },
-                }
-            }
-
-            ep
-        }))
-        // Announced identities
-        .at("/admin/announcements", get({
-            #[derive(Debug, Deserialize)]
-            struct Params {
-                after: Option<String>,
-            }
-
-            #[handler]
-            async fn ep(Data(service): Data<&Publisher>, Query(query): Query<Params>) -> Response {
-                match async {
                     let after = match query.after {
                         Some(i) => {
                             Some(Identity::from_str(&i)?)
                         },
                         None => None,
                     };
+
+                    // Respond
                     return Ok(
-                        service
-                            .0
-                            .admin
-                            .list_announcements(after.as_ref())
-                            .await?
-                            .into_iter()
-                            .map(|e| e.0)
-                            .collect::<Vec<_>>(),
+                        Response::json(
+                            publisher
+                                .0
+                                .admin
+                                .list_announcements(after.as_ref())
+                                .await?
+                                .into_iter()
+                                .map(|e| e.0)
+                                .collect::<Vec<_>>(),
+                        ),
                     );
                 }.await {
                     Ok(d) => {
-                        return Json(d).into_response();
+                        return d;
                     },
                     Err(e) => {
-                        service.0.log.warn_e(e, "Error getting published identities", ea!());
-                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                        publisher.0.log.log_err(WARN, e.context("Error getting published identities"));
+                        return Response::InternalErr;
                     },
                 }
             }
-
-            ep
-        })).at("/admin/announcements/:identity", get({
-            #[handler]
-            async fn ep(Data(service): Data<&Publisher>, web::Path(identity): web::Path<String>) -> Response {
-                match async {
-                    let identity = Identity::from_str(&identity)?;
-                    return Ok(service.0.admin.get_published_data(&identity).await?);
-                }.await {
-                    Ok(d) => {
-                        return Json(d).into_response();
-                    },
-                    Err(e) => {
-                        service.0.log.warn_e(e, "Error getting published identity data", ea!());
-                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                    },
-                }
-            }
-
-            ep
-        })).with(AddData::new(publisher.clone()))).with(AddData::new(publisher.clone())).boxed());
+        })));
+        routes
+    });
+    return Ok(routes);
 }

@@ -43,6 +43,8 @@ pub mod db_util;
 pub mod poem_util;
 pub mod time_util;
 pub mod blob;
+pub mod htserve;
+pub mod log;
 
 #[derive(Clone)]
 pub struct AsyncBus<T: Clone + Unpin>(Arc<Mutex<Vec<ManualFutureCompleter<T>>>>);
@@ -117,7 +119,7 @@ pub async fn reqwest_get(r: Response, limit: usize) -> Result<Blob, loga::Error>
     let resp_bytes = resp_bytes.blob();
     if status.is_client_error() || status.is_server_error() {
         return Err(
-            loga::new_err_with(
+            loga::err_with(
                 "Got response with error code",
                 ea!(status = status, body = String::from_utf8_lossy(&resp_bytes)),
             ),
@@ -128,7 +130,7 @@ pub async fn reqwest_get(r: Response, limit: usize) -> Result<Blob, loga::Error>
 
 pub struct SystemEndpoints(pub BoxEndpoint<'static, poem::Response>);
 
-// Break barrier - remove the footgunishness of using loop for this directly
+/// Break barrier - remove the footgunishness of using loop for this directly
 #[macro_export]
 macro_rules! bb{
     ($l: lifetime _; $($t: tt) *) => {
@@ -145,4 +147,65 @@ macro_rules! bb{
             };
         }
     };
+}
+
+/// Explicitly capturing async closure - clones elements in the second parens into
+/// the closure. Anything else will be moved.
+#[macro_export]
+macro_rules! cap_fn{
+    (($($a: pat_param), *)($($cap: ident), *) {
+        $($t: tt) *
+    }) => {
+        {
+            $(let $cap = $cap.clone();) * move | $($a),
+            *| {
+                $(let $cap = $cap.clone();) * async move {
+                    $($t) *
+                }
+            }
+        }
+    };
+}
+
+/// Explicitly capturing async block - clones elements in the second parens into
+/// the closure. Anything else will be moved.
+#[macro_export]
+macro_rules! cap_block{
+    (($($cap: ident), *) {
+        $($t: tt) *
+    }) => {
+        {
+            $(let $cap = $cap.clone();) * async move {
+                $($t) *
+            }
+        }
+    };
+}
+
+pub fn unreachable_value<T>() -> T {
+    panic!();
+}
+
+/// Explicitly communicate the async block return type to the compiler via
+/// unexecuting code.
+#[macro_export]
+macro_rules! ta_res{
+    ($t: ty) => {
+        if false {
+            return std:: result:: Result::< $t,
+            loga::Error > ::Ok(crate::utils::unreachable_value());
+        }
+    }
+}
+
+/// Explicitly communicate the async block return type to the compiler via
+/// unexecuting code (`VisErr` error type).
+#[macro_export]
+macro_rules! ta_vis_res{
+    ($t: ty) => {
+        if false {
+            return std:: result:: Result::< $t,
+            crate::utils::VisErr > ::Ok(crate::utils::unreachable_value());
+        }
+    }
 }

@@ -64,7 +64,7 @@ impl Identity {
             Self::from_bytes(
                 &zbase32::decode_full_bytes_str(
                     data,
-                ).map_err(|e| loga::new_err_with("Failed to decode zbase32 for identity", ea!(err = e)))?,
+                ).map_err(|e| loga::err_with("Failed to decode zbase32 for identity", ea!(err = e)))?,
             )?,
         );
     }

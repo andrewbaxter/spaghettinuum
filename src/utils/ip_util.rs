@@ -21,6 +21,7 @@ use super::{
         UnstableIpv6,
     },
     reqwest_get,
+    log::Log,
 };
 
 pub async fn local_resolve_global_ip(
@@ -85,14 +86,13 @@ pub async fn local_resolve_global_ip(
 }
 
 pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer>) -> Result<IpAddr, loga::Error> {
-    let log = &loga::new().fork(ea!(lookup = lookup));
-    let lookup = Url::parse(&lookup).log_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
-    let lookup_host =
-        lookup.host().ok_or_else(|| loga::new_err("Missing host portion in `advertise_addr` url"))?.to_string();
+    let log = &Log::new().fork(ea!(lookup = lookup));
+    let lookup = Url::parse(&lookup).stack_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
+    let lookup_host = lookup.host().stack_context(log, "Missing host portion in `advertise_addr` url")?.to_string();
     let lookup_port = lookup.port().unwrap_or(match lookup.scheme() {
         "http" => 80,
         "https" => 443,
-        _ => return Err(loga::new_err("Only http/https are supported for ip lookups")),
+        _ => return Err(log.err("Only http/https are supported for ip lookups")),
     });
     let ip =
         reqwest_get(
@@ -101,7 +101,7 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
                     &lookup_host,
                     format!("{}:{}", lookup_host, lookup_port)
                         .to_socket_addrs()
-                        .log_context_with(log, "Failed to look up lookup host", ea!(host = lookup_host))?
+                        .stack_context_with(log, "Failed to look up lookup host", ea!(host = lookup_host))?
                         .into_iter()
                         .filter(|a| {
                             match contact_ip_ver {
@@ -117,10 +117,9 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
                             }
                         })
                         .next()
-                        .ok_or_else(
-                            || log.new_err(
-                                "Unable to resolve any addresses (matching ipv4/6 requirements) via lookup",
-                            ),
+                        .stack_context(
+                            log,
+                            "Unable to resolve any addresses (matching ipv4/6 requirements) via lookup",
                         )?,
                 )
                 .build()
@@ -133,7 +132,7 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
     let ip =
         String::from_utf8(
             ip.to_vec(),
-        ).log_context_with(log, "Failed to parse response as utf8", ea!(resp = String::from_utf8_lossy(&ip)))?;
-    let ip = IpAddr::from_str(&ip).log_context_with(log, "Failed to parse response as socket addr", ea!(ip = ip))?;
+        ).stack_context_with(log, "Failed to parse response as utf8", ea!(resp = String::from_utf8_lossy(&ip)))?;
+    let ip = IpAddr::from_str(&ip).stack_context_with(log, "Failed to parse response as socket addr", ea!(ip = ip))?;
     return Ok(ip);
 }

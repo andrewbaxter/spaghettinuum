@@ -1,15 +1,28 @@
 use crate::{
     utils::{
         reqwest_get,
-        SystemEndpoints,
         db_util::setup_db,
         blob::Blob,
+        htserve::{
+            Routes,
+            self,
+            Response,
+        },
+        log::{
+            Log,
+            WARN,
+        },
+        ResultVisErr,
+        VisErr,
     },
     interface::{
         identity::Identity,
         spagh_api::resolve::self,
     },
     publisher::publisher_cert_hash,
+    ta_res,
+    cap_fn,
+    ta_vis_res,
 };
 use crate::node::Node;
 use chrono::{
@@ -20,21 +33,9 @@ use chrono::{
 use itertools::Itertools;
 use loga::{
     ea,
-    Log,
     ResultContext,
 };
 use moka::future::Cache;
-use poem::{
-    async_trait,
-    get,
-    http::StatusCode,
-    Endpoint,
-    IntoResponse,
-    Request,
-    Response,
-    IntoEndpoint,
-    EndpointExt,
-};
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -46,16 +47,6 @@ use tokio::spawn;
 pub mod db;
 pub mod config;
 pub mod dns;
-
-// Workaround for unqualified anyhow usage issue
-mod parse_path {
-    use structre::structre;
-
-    #[structre("/v1/(?P<identity>.*)")]
-    pub struct V1Path {
-        pub identity: String,
-    }
-}
 
 struct Resolver_ {
     node: Node,
@@ -88,7 +79,7 @@ impl Resolver {
         let db_pool =
             setup_db(&persistent_dir.join("resolver.sqlite3"), db::migrate)
                 .await
-                .log_context(log, "Error initializing database")?;
+                .stack_context(log, "Error initializing database")?;
         let cache = Cache::builder().weigher(|_key, pair: &(DateTime<Utc>, Option<String>)| -> u32 {
             match &pair.1 {
                 Some(v) => v.len().try_into().unwrap_or(u32::MAX),
@@ -106,7 +97,7 @@ impl Resolver {
                     for row in db_pool
                         .get()
                         .await
-                        .log_context(log, "Error gettting db connection")?
+                        .stack_context(log, "Error gettting db connection")?
                         .interact(move |db| db::cache_list(db, e))
                         .await?? {
                         edge = Some(row.rowid);
@@ -116,7 +107,7 @@ impl Resolver {
                 return Ok(()) as Result<(), loga::Error>;
             }.await {
                 Err(e) => {
-                    log.warn_e(e, "Error seeding cache with persisted data", ea!());
+                    log.log_err(WARN, e.context("Error seeding cache with persisted data"));
                 },
                 _ => { },
             }
@@ -137,8 +128,9 @@ impl Resolver {
                 async move {
                     let log = &log;
                     match async {
+                        ta_res!(());
                         tm1.until_terminate().await;
-                        db_pool.get().await.log_context(log, "Error gettting db connection")?.interact({
+                        db_pool.get().await.stack_context(log, "Error gettting db connection")?.interact({
                             let cache = cache.clone();
                             move |db| {
                                 db::cache_clear(db)?;
@@ -152,7 +144,7 @@ impl Resolver {
                     }.await {
                         Ok(_) => { },
                         Err(e) => {
-                            log.warn_e(e, "Failed to persist cache at shutdown", ea!());
+                            log.log_err(WARN, e.context("Failed to persist cache at shutdown"));
                         },
                     }
                 }
@@ -246,13 +238,13 @@ impl Resolver {
                     .get(format!("https://{}/{}?{}", resp.addr, ident, request_keys.join(",")))
                     .send()
                     .await
-                    .log_context(&log, "Error sending request")?,
+                    .stack_context(&log, "Error sending request")?,
                 128 * 1024 * request_keys.len(),
             )
                 .await
-                .log_context(&log, "Error getting response from publisher")?;
+                .stack_context(&log, "Error getting response from publisher")?;
         let resp_kvs: resolve::ResolveKeyValues =
-            serde_json::from_slice(&pub_resp_bytes).log_context(&log, "Couldn't parse response")?;
+            serde_json::from_slice(&pub_resp_bytes).stack_context(&log, "Couldn't parse response")?;
 
         // Store found values
         spawn({
@@ -282,52 +274,50 @@ impl Resolver {
 
 /// Launch a publisher into the task manager and return the API endpoints for
 /// attaching to the user-facing HTTP servers.
-pub fn build_api_endpoints(log: &loga::Log, resolver: &Resolver) -> SystemEndpoints {
+pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
     struct Inner {
         resolver: Resolver,
         log: Log,
     }
 
-    struct Outer(Arc<Inner>);
-
-    #[async_trait]
-    impl Endpoint for Outer {
-        type Output = Response;
-
-        async fn call(&self, req: Request) -> poem::Result<Self::Output> {
-            self.0.log.debug("Request", ea!(path = req.uri().path()));
-            if req.uri().path() == "/health" {
-                return Ok(StatusCode::OK.into_response());
-            }
-            match async {
-                let ident_src =
-                    parse_path::V1Path::parser().parse(req.uri().path()).map_err(|e| loga::Error::from(e))?;
-                let kvs =
-                    self
-                        .0
-                        .resolver
-                        .get(
-                            &Identity::from_str(
-                                &ident_src.identity,
-                            ).context_with("Failed to parse identity", ea!(identity = ident_src.identity))?,
-                            &req.uri().query().unwrap_or("").split(",").collect_vec(),
-                        )
-                        .await?;
-                return Ok(resolve::ResolveKeyValues::V1(resolve::latest::ResolveKeyValues(kvs))) as
-                    Result<resolve::ResolveKeyValues, loga::Error>;
-            }.await {
-                Ok(kvs) => Ok(poem::web::Json(kvs).into_response()),
-                Err(e) => {
-                    return Ok(
-                        <String as IntoResponse>::with_status(e.to_string(), StatusCode::BAD_REQUEST).into_response(),
-                    );
-                },
-            }
-        }
-    }
-
-    return SystemEndpoints(get(Outer(Arc::new(Inner {
+    let state = Arc::new(Inner {
         resolver: resolver.clone(),
         log: log.fork(ea!(sys = "resolver")),
-    }))).into_endpoint().boxed());
+    });
+    let mut r = Routes::new();
+
+    // TODO move to root
+    r.add("health", htserve::Leaf::new().get(cap_fn!((_r)() {
+        return htserve::Response::Ok;
+    })));
+    r.add("v1", htserve::Leaf::new().get(cap_fn!((mut req)(state) {
+        match async {
+            ta_vis_res!(resolve::ResolveKeyValues);
+            let ident_src = req.path.pop().context("Missing identity final path element").err_external()?;
+            let kvs =
+                state
+                    .resolver
+                    .get(
+                        &Identity::from_str(&ident_src)
+                            .context_with("Failed to parse identity", ea!(identity = ident_src))
+                            .err_external()?,
+                        &req.query.split(",").collect_vec(),
+                    )
+                    .await
+                    .err_internal()?;
+            return Ok(resolve::ResolveKeyValues::V1(resolve::latest::ResolveKeyValues(kvs)));
+        }.await {
+            Ok(r) => Response::json(r),
+            Err(e) => match e {
+                VisErr::External(e) => {
+                    return Response::ExternalErr(e.to_string());
+                },
+                VisErr::Internal(e) => {
+                    state.log.log_err(WARN, e.context("Error responding to query"));
+                    return Response::InternalErr;
+                },
+            },
+        }
+    })));
+    return r;
 }

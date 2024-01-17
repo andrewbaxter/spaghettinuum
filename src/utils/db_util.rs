@@ -16,18 +16,19 @@ use poem::async_trait;
 use rusqlite::{
     Transaction,
 };
+use super::log::Log;
 
 pub async fn setup_db(
     p: &Path,
     migrate: fn(&mut rusqlite::Connection) -> Result<(), GoodError>,
 ) -> Result<Pool, loga::Error> {
-    let log = &loga::new().fork(ea!(path = p.to_string_lossy()));
-    let pool = Config::new(p).create_pool(Runtime::Tokio1).log_context(log, "Error constructing db pool")?;
-    let conn = pool.get().await.log_context(log, "Error getting db connection from pool")?;
+    let log = &Log::new().fork(ea!(path = p.to_string_lossy()));
+    let pool = Config::new(p).create_pool(Runtime::Tokio1).stack_context(log, "Error constructing db pool")?;
+    let conn = pool.get().await.stack_context(log, "Error getting db connection from pool")?;
     conn.interact(move |conn| {
         migrate(conn)?;
         return Ok(()) as Result<(), loga::Error>;
-    }).await.log_context(log, "Error performing db interaction")?.log_context(log, "Error migrating database")?;
+    }).await.stack_context(log, "Error performing db interaction")?.stack_context(log, "Error migrating database")?;
     return Ok(pool);
 }
 

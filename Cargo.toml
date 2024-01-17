@@ -48,8 +48,8 @@ ed25519-dalek = { version = "2", features = ["serde", "digest", "rand_core"] }
 zbase32 = "0.1"
 itertools = "0.10"
 serde_json = "1"
-taskmanager = "0.2"
-loga = "0.2"
+taskmanager = "0.3"
+loga = "0.3.5"
 aargvark = { version = "0.0.8", features = ["serde_json", "http_types", "url"] }
 poem = { version = "2", features = [
     "rustls",
@@ -98,6 +98,8 @@ hickory-resolver = { version = "0.24", features = [
 ] }
 rustls-pemfile = "2"
 constant_time_eq = "0.3"
+serde_urlencoded = "0.7"
+bcrypt = "0.15.0"
 
 [target.'cfg(target_env = "musl")'.dependencies]
 # Add feature to transitive dep of rusqlite, working around crates.io obstructive nannying

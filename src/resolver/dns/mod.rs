@@ -27,6 +27,13 @@ use crate::{
             extract_expiry,
             encode_priv_pem,
         },
+        log::{
+            Log,
+            DEBUG_DNS_S,
+            DEBUG_DNS_OTHER,
+            DEBUG_DNS,
+            WARN,
+        },
     },
 };
 use crate::utils::{
@@ -84,9 +91,9 @@ use hickory_resolver::{
 };
 use loga::{
     ea,
-    Log,
     ResultContext,
     DebugDisplay,
+    ErrContext,
 };
 use poem::{
     async_trait,
@@ -147,7 +154,7 @@ impl rustls_21::server::ResolvesServerCert for DotCertHandler {
 }
 
 pub async fn start_dns_bridge(
-    log: &loga::Log,
+    log: &Log,
     tm: &TaskManager,
     resolver: &Resolver,
     global_addrs: &[IpAddr],
@@ -157,7 +164,7 @@ pub async fn start_dns_bridge(
     let db_pool =
         setup_db(&persistent_dir.join("resolver_dns_bridge.sqlite3"), db::migrate)
             .await
-            .log_context(log, "Error initializing database")?;
+            .stack_context(log, "Error initializing database")?;
     db_pool.get().await?.interact(|conn| db::dot_certs_setup(conn)).await??;
 
     struct HandlerInner {
@@ -182,14 +189,14 @@ pub async fn start_dns_bridge(
             match async {
                 if false {
                     // Type assertion
-                    return Err(loga::new_err("")).err_internal() as Result<ResponseInfo, VisErr>;
+                    return Err(loga::err("")).err_internal() as Result<ResponseInfo, VisErr>;
                 }
                 if request.query().query_class() == DNSClass::IN &&
                     request.query().name().base_name() == self1.expect_suffix {
-                    self.0.log.debug("Received spagh request", ea!(request = request.dbg_str()));
+                    self.0.log.log_with(DEBUG_DNS_S, "Received spagh request", ea!(request = request.dbg_str()));
                     if request.query().name().num_labels() != 2 {
                         return Err(
-                            loga::new_err_with(
+                            loga::err_with(
                                 "Expected two parts in request (id., s.) but got different number",
                                 ea!(name = request.query().name(), count = request.query().name().num_labels()),
                             ),
@@ -199,7 +206,7 @@ pub async fn start_dns_bridge(
                     let ident_part = query_name.iter().next().unwrap();
                     let ident =
                         Identity::from_bytes(&zbase32::decode_full_bytes(ident_part).map_err(|e| {
-                            loga::new_err_with("Wrong number of parts in request", ea!(ident = e))
+                            loga::err_with("Wrong number of parts in request", ea!(ident = e))
                         }).err_external()?)
                             .context_with(
                                 "Couldn't parse ident in request",
@@ -253,10 +260,12 @@ pub async fn start_dns_bridge(
                                             Err(e) => {
                                                 self1
                                                     .log
-                                                    .debug_e(
-                                                        e.into(),
-                                                        "A addr in record invalid for DNS",
-                                                        ea!(name = n),
+                                                    .log_err(
+                                                        DEBUG_DNS_S,
+                                                        e.context_with(
+                                                            "A addr in record invalid for DNS",
+                                                            ea!(name = n),
+                                                        ),
                                                     );
                                                 continue;
                                             },
@@ -281,10 +290,12 @@ pub async fn start_dns_bridge(
                                             Err(e) => {
                                                 self1
                                                     .log
-                                                    .debug_e(
-                                                        e.into(),
-                                                        "AAAA addr in record invalid for DNS",
-                                                        ea!(name = n),
+                                                    .log_err(
+                                                        DEBUG_DNS_S,
+                                                        e.context_with(
+                                                            "AAAA addr in record invalid for DNS",
+                                                            ea!(name = n),
+                                                        ),
                                                     );
                                                 continue;
                                             },
@@ -309,10 +320,12 @@ pub async fn start_dns_bridge(
                                             Err(e) => {
                                                 self1
                                                     .log
-                                                    .debug_e(
-                                                        e.into(),
-                                                        "Cname name in record invalid for DNS",
-                                                        ea!(name = n),
+                                                    .log_err(
+                                                        DEBUG_DNS_S,
+                                                        e.context_with(
+                                                            "Cname name in record invalid for DNS",
+                                                            ea!(name = n),
+                                                        ),
                                                     );
                                                 continue;
                                             },
@@ -352,10 +365,12 @@ pub async fn start_dns_bridge(
                                             Err(e) => {
                                                 self1
                                                     .log
-                                                    .debug_e(
-                                                        e.into(),
-                                                        "Mx name in record invalid for DNS",
-                                                        ea!(name = n.1),
+                                                    .log_err(
+                                                        DEBUG_DNS_S,
+                                                        e.context_with(
+                                                            "Mx name in record invalid for DNS",
+                                                            ea!(name = n.1),
+                                                        ),
                                                     );
                                                 continue;
                                             },
@@ -395,6 +410,7 @@ pub async fn start_dns_bridge(
                             .err_internal()?,
                     );
                 } else {
+                    self.0.log.log_with(DEBUG_DNS_OTHER, "Received spagh request", ea!(request = request.dbg_str()));
                     let resp = self1.upstream.send(DnsRequest::new(Message::from(MessageParts {
                         header: *request.header(),
                         queries: vec![{
@@ -478,7 +494,7 @@ pub async fn start_dns_bridge(
                 Err(e) => {
                     match e {
                         VisErr::External(e) => {
-                            self1.log.debug_e(e, "Request failed due to requester issue", ea!());
+                            self1.log.log_err(DEBUG_DNS_S, e.context("Request failed due to requester issue"));
                             match response_handle
                                 .send_response(
                                     MessageResponseBuilder::from_message_request(
@@ -488,13 +504,13 @@ pub async fn start_dns_bridge(
                                 .await {
                                 Ok(r) => return r,
                                 Err(e) => {
-                                    self1.log.warn_e(e.into(), "Failed to send error response", ea!());
+                                    self1.log.log_err(WARN, e.context("Failed to send error response"));
                                     return ResponseInfo::from(*request.header());
                                 },
                             };
                         },
                         VisErr::Internal(e) => {
-                            self1.log.warn_e(e, "Request failed due to internal issue", ea!());
+                            self1.log.log_err(WARN, e.context("Request failed due to internal issue"));
                             match response_handle
                                 .send_response(
                                     MessageResponseBuilder::from_message_request(
@@ -504,7 +520,7 @@ pub async fn start_dns_bridge(
                                 .await {
                                 Ok(r) => return r,
                                 Err(e) => {
-                                    self1.log.warn_e(e.into(), "Failed to send error response", ea!());
+                                    self1.log.log_err(WARN, e.context("Failed to send error response"));
                                     return ResponseInfo::from(*request.header());
                                 },
                             };
@@ -531,7 +547,7 @@ pub async fn start_dns_bridge(
                 },
                 _ => {
                     return Err(
-                        log.new_err_with(
+                        log.err_with(
                             "Unable to guess upstream DNS protocol from port number, please specify explicitly with `upstream_type`",
                             ea!(port = upstream.port()),
                         ),
@@ -558,7 +574,7 @@ pub async fn start_dns_bridge(
         server.register_socket(
             UdpSocket::bind(&bind_addr)
                 .await
-                .log_context_with(&log, "Opening UDP listener failed", ea!(socket = bind_addr))?,
+                .stack_context_with(&log, "Opening UDP listener failed", ea!(socket = bind_addr))?,
         );
     }
     for bind_addr in &dns_config.tcp_bind_addrs {
@@ -566,7 +582,7 @@ pub async fn start_dns_bridge(
         server.register_listener(
             TcpListener::bind(&bind_addr)
                 .await
-                .log_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
+                .stack_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
             Duration::seconds(10).to_std().unwrap(),
         );
     }
@@ -583,10 +599,14 @@ pub async fn start_dns_bridge(
         // Retrieve stored certs
         let initial_certs = db_pool.tx(|txn| {
             return Ok(db::dot_certs_get(txn)?);
-        }).await.log_context(log, "Error looking up initial certs")?;
+        }).await.stack_context(log, "Error looking up initial certs")?;
         if let Some((pub_pem, priv_pem)) = initial_certs.pub_pem.zip(initial_certs.priv_pem) {
             let expires_at = extract_expiry(pub_pem.as_bytes()).context("Error reading expiry from initial certs")?;
-            log.debug("Loaded existing cert", ea!(expiry = <DateTime<Utc>>::from(expires_at).to_rfc3339()));
+            log.log_with(
+                DEBUG_DNS_S | DEBUG_DNS_OTHER,
+                "Loaded existing cert",
+                ea!(expiry = <DateTime<Utc>>::from(expires_at).to_rfc3339()),
+            );
             (*cert.lock().unwrap()) = Some(load_certified_key(pub_pem.as_bytes(), priv_pem.as_bytes())?);
             (*cert_expiry.lock().unwrap()) = Some(expires_at);
         }
@@ -622,7 +642,7 @@ pub async fn start_dns_bridge(
                         }
                     }
 
-                    log.debug("Refreshing certificate", ea!());
+                    log.log(DEBUG_DNS_S | DEBUG_DNS_OTHER, "Refreshing certificate");
                     match async {
                         // Retrieve or create a new key for acme communication
                         let acme_key_pem;
@@ -646,7 +666,7 @@ pub async fn start_dns_bridge(
                         let acme_key =
                             poem::listener::acme::EncodingKey::from_ec_pem(
                                 acme_key_pem.as_bytes(),
-                            ).log_context(log, "Error loading stored acme key")?;
+                            ).stack_context(log, "Error loading stored acme key")?;
 
                         // Create acme client with key
                         let acme_client;
@@ -721,18 +741,18 @@ pub async fn start_dns_bridge(
                                 .context("Error issuing new cert")?;
                         subtm.terminate();
                         if let Err(e) = subtm.join().await {
-                            log.warn_e(e, "Error in one of the ACME challenge listeners", ea!());
+                            log.log_err(WARN, e.context("Error in one of the ACME challenge listeners"));
                         }
                         (*cert.lock().unwrap()) =
                             Some(
                                 load_certified_key(
                                     &res.public_pem,
                                     &res.private_pem,
-                                ).log_context(log, "Error loading received new certs")?,
+                                ).stack_context(log, "Error loading received new certs")?,
                             );
                         (*cert_expiry.lock().unwrap()) =
                             Some(extract_expiry(&res.public_pem).context("Error reading expiry from new certs")?);
-                        log.debug("Successfully refreshed certificate", ea!());
+                        log.log(DEBUG_DNS, "Successfully refreshed certificate");
                         db_pool.tx(move |txn| {
                             db::dot_certs_set(
                                 txn,
@@ -752,7 +772,7 @@ pub async fn start_dns_bridge(
                         return Ok(()) as Result<_, loga::Error>;
                     }.await {
                         Err(e) => {
-                            log.warn_e(e.into(), "Error getting new TLS cert", ea!());
+                            log.log_err(WARN, e.context("Error getting new TLS cert"));
 
                             select!{
                                 _ = sleep(Duration::minutes(10).to_std().unwrap()) =>(),
@@ -773,7 +793,7 @@ pub async fn start_dns_bridge(
                 .register_tls_listener_with_tls_config(
                     TcpListener::bind(&bind_addr)
                         .await
-                        .log_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
+                        .stack_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
                     Duration::seconds(10).to_std().unwrap(),
                     Arc::new(
                         rustls_21::ServerConfig::builder()
@@ -782,7 +802,7 @@ pub async fn start_dns_bridge(
                             .with_cert_resolver(Arc::new(DotCertHandler(cert.clone()))),
                     ),
                 )
-                .log_context_with(log, "Error registering TLS listener", ea!(bind_addr = bind_addr))?;
+                .stack_context_with(log, "Error registering TLS listener", ea!(bind_addr = bind_addr))?;
         }
     }
     tm.critical_task::<_, loga::Error>({
@@ -791,7 +811,7 @@ pub async fn start_dns_bridge(
         async move {
             match tm1.if_alive(server.block_until_done()).await {
                 Some(r) => {
-                    r.log_context(&log, "Server exited with error")?;
+                    r.stack_context(&log, "Server exited with error")?;
                 },
                 None => { },
             };

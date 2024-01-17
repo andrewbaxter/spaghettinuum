@@ -32,7 +32,7 @@ macro_rules! versioned{
                         data.get(
                             0..$crate:: ver_int_len !()
                         ).ok_or_else(
-                            || loga::new_err_with(
+                            || loga::err_with(
                                 "Data length is less than version header size",
                                 loga::ea!(got_len = data.len(), expected_len = $crate:: ver_int_len !()),
                             )
@@ -43,7 +43,7 @@ macro_rules! versioned{
                     $($ver => {
                         return Ok(Self:: $var(< $t >:: from_bytes(& data[$crate:: ver_int_len !()..]) ?));
                     },) * v => {
-                        return Err(loga::new_err_with("Unsupported version", loga::ea!(version = v)));
+                        return Err(loga::err_with("Unsupported version", loga::ea!(version = v)));
                     }
                 }
             }

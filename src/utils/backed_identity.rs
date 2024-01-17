@@ -87,7 +87,7 @@ mod card {
                     },
                     _ => (),
                 };
-                return Err(loga::new_err("Unsupported key type - must be Ed25519"));
+                return Err(loga::err("Unsupported key type - must be Ed25519"));
             }
             return Ok(
                 (
@@ -95,7 +95,7 @@ mod card {
                     extract_pgp_ed25519_sig(
                         &signer
                             .sign(HashAlgorithm::SHA512, &identity::hash_for_ed25519(data))
-                            .map_err(|e| loga::new_err_with("Card signature failed", ea!(err = e)))?,
+                            .map_err(|e| loga::err_with("Card signature failed", ea!(err = e)))?,
                     )
                         .to_bytes()
                         .blob(),
@@ -111,8 +111,8 @@ pub fn get_identity_signer(ident: BackedIdentityArg) -> Result<Box<dyn IdentityS
             let log = &loga::new().fork(ea!(path = ident_config.to_string_lossy()));
             let ident_data =
                 serde_json::from_slice::<BackedIdentityLocal>(
-                    &read(&ident_config).log_context(log, "Error reading identity file")?,
-                ).log_context(log, "Error parsing json in identity file")?;
+                    &read(&ident_config).stack_context(log, "Error reading identity file")?,
+                ).stack_context(log, "Error parsing json in identity file")?;
             return Ok(Box::new(ident_data));
         },
         #[cfg(feature = "card")]
