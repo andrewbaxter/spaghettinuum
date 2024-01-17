@@ -61,7 +61,10 @@ use spaghettinuum::{
         },
     },
     utils::{
-        htserve::Routes,
+        htserve::{
+            self,
+            Routes,
+        },
         log::{
             Log,
             INFO,
@@ -81,6 +84,7 @@ use spaghettinuum::{
     },
     bb,
     self_tls::request_cert_stream,
+    cap_fn,
 };
 use tokio::{
     fs::create_dir_all,
@@ -136,8 +140,7 @@ async fn main() {
         if args.debug_publisher.is_some() {
             flags |= DEBUG_PUBLISH;
         }
-        loga::init_flags(flags);
-        let log = &Log::new();
+        let log = &Log::new().with_flags(flags);
         let config = if let Some(p) = args.config {
             p.value
         } else if let Some(c) = match std::env::var(spagh_cli::ENV_CONFIG) {
@@ -218,7 +221,6 @@ async fn main() {
         } else {
             identity = None;
         }
-        sleep(Duration::seconds(60).to_std().unwrap()).await;
         let tm = taskmanager::TaskManager::new();
         let node = {
             let mut bootstrap = vec![];
@@ -325,6 +327,7 @@ async fn main() {
             None => None,
         };
         if has_api_endpoints {
+            let log = log.fork(ea!(subsys = "api_http"));
             if config.api_bind_addrs.is_empty() {
                 return Err(
                     log.err("Configuration defines api http endpoints but no api http bind address present in config"),
@@ -343,12 +346,15 @@ async fn main() {
                     true => DEFAULT_CERTIFIER_URL.to_string(),
                 };
                 certs_stream_rx =
-                    Some(request_cert_stream(log, &tm, &certifier_url, identity, &config.persistent_dir).await?);
+                    Some(request_cert_stream(&log, &tm, &certifier_url, identity, &config.persistent_dir).await?);
             };
 
             for bind_addr in config.api_bind_addrs {
-                let bind_addr = bind_addr.resolve().stack_context(log, "Error resolving api bind address")?;
+                let bind_addr = bind_addr.resolve().stack_context(&log, "Error resolving api bind address")?;
                 let mut api_endpoints = Routes::new();
+                api_endpoints.add("health", htserve::Leaf::new().get(cap_fn!((_r)() {
+                    return htserve::Response::Ok;
+                })));
                 if let Some(resolver) = &resolver {
                     api_endpoints.nest("resolve", resolver::build_api_endpoints(&log, resolver));
                 }
@@ -361,13 +367,14 @@ async fn main() {
                                 .admin_token
                                 .as_ref()
                                 .stack_context(
-                                    log,
+                                    &log,
                                     "The publisher is enabled but admin token is missing in the config",
                                 )?,
-                        ).stack_context(log, "Error building publisher endpoints")?,
+                        ).stack_context(&log, "Error building publisher endpoints")?,
                     );
                 }
-                let api_endpoints = api_endpoints.build();
+                let api_endpoints =
+                    api_endpoints.build(log.fork(ea!(subsubsys = "router")), DEBUG_PUBLISH | DEBUG_RESOLVE);
                 let server = match &certs_stream_rx {
                     Some(certs_stream_rx) => {
                         Server::new(
@@ -390,7 +397,7 @@ async fn main() {
                     },
                 };
                 tm.critical_task({
-                    let log = log.fork(ea!(subsys = "api_http"));
+                    let log = log.clone();
                     let tm1 = tm.clone();
                     async move {
                         match tm1.if_alive(server).await {

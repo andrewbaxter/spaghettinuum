@@ -83,6 +83,7 @@ use crate::{
         log::{
             Log,
             WARN,
+            DEBUG_PUBLISH,
         },
         htserve::{
             Routes,
@@ -483,7 +484,7 @@ impl<A: Admin + 'static> Publisher<A> {
                                         .cert(encode_pub_pem(&certs.pub_der)),
                                 ),
                             ),
-                        ).run(routes.build()),
+                        ).run(routes.build(log.fork(ea!(subsys = "router")), DEBUG_PUBLISH)),
                     )
                     .await {
                     Some(r) => {

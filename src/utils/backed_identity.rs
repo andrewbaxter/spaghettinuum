@@ -14,7 +14,10 @@ use crate::{
         },
     },
 };
-use super::blob::Blob;
+use super::{
+    blob::Blob,
+    log::Log,
+};
 
 pub trait IdentitySigner: Send {
     fn sign(&mut self, data: &[u8]) -> Result<(Identity, Blob), loga::Error>;
@@ -108,7 +111,7 @@ mod card {
 pub fn get_identity_signer(ident: BackedIdentityArg) -> Result<Box<dyn IdentitySigner>, loga::Error> {
     match ident {
         BackedIdentityArg::Local(ident_config) => {
-            let log = &loga::new().fork(ea!(path = ident_config.to_string_lossy()));
+            let log = &Log::new().fork(ea!(path = ident_config.to_string_lossy()));
             let ident_data =
                 serde_json::from_slice::<BackedIdentityLocal>(
                     &read(&ident_config).stack_context(log, "Error reading identity file")?,

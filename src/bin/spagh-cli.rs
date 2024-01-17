@@ -508,11 +508,10 @@ async fn publish(
 async fn main() {
     async fn inner() -> Result<(), loga::Error> {
         let args = aargvark::vark::<args::Args>();
-        match args.debug {
-            Some(_) => loga::init_flags(Flags::all()),
-            None => loga::init_flags(NON_DEBUG),
-        };
-        let log = Log::new();
+        let log = Log::new().with_flags(match args.debug {
+            Some(_) => Flags::all(),
+            None => NON_DEBUG,
+        });
         let log = &log;
         match args.command {
             args::Command::NewLocalIdentity(args) => {

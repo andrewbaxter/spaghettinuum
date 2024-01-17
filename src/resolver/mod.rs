@@ -285,11 +285,6 @@ pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
         log: log.fork(ea!(sys = "resolver")),
     });
     let mut r = Routes::new();
-
-    // TODO move to root
-    r.add("health", htserve::Leaf::new().get(cap_fn!((_r)() {
-        return htserve::Response::Ok;
-    })));
     r.add("v1", htserve::Leaf::new().get(cap_fn!((mut req)(state) {
         match async {
             ta_vis_res!(resolve::ResolveKeyValues);
