@@ -52,7 +52,10 @@ use spaghettinuum::{
             self,
         },
     },
-    utils::blob::Blob,
+    utils::{
+        log::Log,
+        blob::Blob,
+    },
 };
 use tokio::fs::create_dir_all;
 
@@ -65,17 +68,13 @@ async fn main() {
         let mut nodes = vec![];
         let mut prev_node = None;
         for i in 0 .. 1000 {
-            let log = &if i == 0 {
-                loga::new().with_level(loga::Level::Debug)
-            } else {
-                loga::new().with_level(loga::Level::Warn)
-            };
-            let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 1, 1).saturating_add(i), PORT_NODE));
+            let addr =
+                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 1, 1).saturating_add(i), PORT_NODE));
             let path = root.join(format!("node_{}", i));
             create_dir_all(&path).await.unwrap();
             let node =
                 Node::new(
-                    log,
+                    &Log::new(),
                     tm.clone(),
                     StrSocketAddr::from(addr.clone()),
                     &prev_node.take().map(|(addr, id)| NodeInfo {
