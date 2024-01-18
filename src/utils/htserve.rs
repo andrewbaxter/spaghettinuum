@@ -121,7 +121,7 @@ impl Endpoint for Handler {
         let query;
         match req.uri().path_and_query() {
             Some(pq) => {
-                let path0 = pq.path().trim_matches(['/']);
+                let path0 = pq.path().trim_matches('/');
                 if path0 == "" {
                     path = vec![];
                 } else {

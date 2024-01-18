@@ -66,14 +66,6 @@ pub enum GlobalAddrConfig {
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum SelfTlsConfig {
-    None,
-    Default,
-    Certifier(String),
-}
-
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
 pub struct SelfIdentityConfig {
     pub identity: BackedIdentityArg,
     /// Retrieve a TLS cert for the identity's domain (`.s`) and configure TLS on the
