@@ -36,17 +36,23 @@ pub async fn send<
 >(conn: Conn, max_size: usize, max_time: Duration, req: Request<I>) -> Result<Vec<u8>, loga::Error> {
     let read = async move {
         ta_res!((Vec < u8 >, StatusCode));
-        let (mut sender, _conn) =
+        let (mut sender, mut conn) =
             hyper::client::conn::http1::handshake(conn).await.context("Error completing http handshake")?;
-        let resp = sender.send_request(req).await.context("Error sending request")?;
+        let work = sender.send_request(req);
+        let resp = select!{
+            _ =& mut conn => {
+                return Err(loga::err("Connection failed while sending request"));
+            }
+            r = work => r,
+        }.context("Error sending request")?;
         let status = resp.status();
-        let resp =
-            Limited::new(resp.into_body(), max_size)
-                .collect()
-                .await
-                .map_err(|e| loga::err_with("Error reading response", ea!(err = e)))?
-                .to_bytes()
-                .to_vec();
+        let work = Limited::new(resp.into_body(), max_size).collect();
+        let resp = select!{
+            _ =& mut conn => {
+                return Err(loga::err("Connection failed while reading body"));
+            }
+            r = work => r,
+        }.map_err(|e| loga::err_with("Error reading response", ea!(err = e)))?.to_bytes().to_vec();
         return Ok((resp, status));
     };
     let (resp, status) = select!{

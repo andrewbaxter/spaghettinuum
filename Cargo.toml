@@ -96,17 +96,17 @@ rustls-pemfile = "2"
 constant_time_eq = "0.3"
 serde_urlencoded = "0.7"
 bcrypt = "0.15"
-hyper = "1.1.0"
-hyper-rustls = { version = "0.26.0", features = ["webpki-roots"] }
-hyper-util = { version = "0.1.2", features = [
+hyper = "1"
+hyper-rustls = { version = "0.26", features = ["webpki-roots"] }
+hyper-util = { version = "0.1", features = [
     "service",
     "http1",
     "client-legacy",
     "tokio",
 ] }
-tower-service = "0.3.2"
-http-body-util = "0.1.0"
-http-body = "1.0.0"
+tower-service = "0.3"
+http-body-util = "0.1"
+http-body = "1"
 
 [target.'cfg(target_env = "musl")'.dependencies]
 # Add feature to transitive dep of rusqlite, working around crates.io obstructive nannying

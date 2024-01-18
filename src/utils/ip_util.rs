@@ -24,7 +24,9 @@ use network_interface::{
 };
 use crate::{
     config::IpVer,
-    utils::htreq,
+    utils::{
+        htreq,
+    },
 };
 use super::{
     unstable_ip::{
@@ -109,29 +111,21 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
         _ => return Err(log.err("Only http/https are supported for ip lookups")),
     };
     let lookup_ip =
-        hickory_resolver::TokioAsyncResolver::tokio(
-            hickory_resolver::config::ResolverConfig::default(),
-            hickory_resolver::config::ResolverOpts::default(),
-        )
-            .lookup_ip(&lookup_host)
+        hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
+            let mut opts = hickory_resolver::config::ResolverOpts::default();
+            opts.ip_strategy = match contact_ip_ver {
+                Some(IpVer::V4) => hickory_resolver::config::LookupIpStrategy::Ipv4Only,
+                Some(IpVer::V6) => hickory_resolver::config::LookupIpStrategy::Ipv6Only,
+                None => hickory_resolver::config::LookupIpStrategy::Ipv4AndIpv6,
+            };
+            opts
+        })
+            .lookup_ip(&format!("{}.", lookup_host))
             .await
-            .stack_context_with(log, "Failed to look up lookup host ip addresses", ea!(host = lookup_host))?
+            .stack_context(log, "Failed to look up lookup host ip addresses")?
             .into_iter()
-            .filter(|a| {
-                match contact_ip_ver {
-                    Some(IpVer::V4) => {
-                        return a.is_ipv4();
-                    },
-                    Some(IpVer::V6) => {
-                        return a.is_ipv6();
-                    },
-                    None => {
-                        return true;
-                    },
-                }
-            })
             .next()
-            .stack_context(log, "Unable to resolve any addresses (matching ipv4/6 requirements) via lookup")?;
+            .stack_context(log, "Unable to resolve any lookup server addresses matching ipv4/6 requirements")?;
     let resp =
         htreq::send(
             HttpsConnectorBuilder::new()
@@ -140,7 +134,10 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
                 .with_server_name(lookup_host.clone())
                 .enable_http1()
                 .build()
-                .call(Uri::from_str(&format!("{}://{}:{}", lookup_scheme, lookup_ip, lookup_port)).unwrap())
+                .call(Uri::from_str(&format!("{}://{}:{}", lookup_scheme, match lookup_ip {
+                    IpAddr::V4(v) => v.to_string(),
+                    IpAddr::V6(v) => format!("[{}]", v),
+                }, lookup_port)).unwrap())
                 .await
                 .map_err(|e| loga::err_with("Error connecting to lookup host", ea!(err = e.to_string())))?,
             1024,

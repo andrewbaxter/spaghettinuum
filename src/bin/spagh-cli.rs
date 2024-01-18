@@ -710,7 +710,7 @@ async fn main() {
                             Some(SelfIdentityConfig {
                                 identity: i,
                                 self_tls: true,
-                                self_publish: true,
+                                self_publish: config.publisher.is_some(),
                             })
                         },
                         None => None,
