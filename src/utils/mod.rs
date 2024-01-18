@@ -1,8 +1,6 @@
-use std::{
-    sync::{
-        Arc,
-        Mutex,
-    },
+use std::sync::{
+    Arc,
+    Mutex,
 };
 use futures::{
     stream,
@@ -10,23 +8,9 @@ use futures::{
     Stream,
 };
 use itertools::Itertools;
-use loga::{
-    ea,
-    ResultContext,
-};
 use manual_future::{
     ManualFuture,
     ManualFutureCompleter,
-};
-use poem::{
-    endpoint::BoxEndpoint,
-};
-use reqwest::{
-    Response,
-};
-use self::blob::{
-    Blob,
-    ToBlob,
 };
 
 #[cfg(feature = "card")]
@@ -44,6 +28,7 @@ pub mod poem_util;
 pub mod time_util;
 pub mod blob;
 pub mod htserve;
+pub mod htreq;
 pub mod log;
 
 #[derive(Clone)]
@@ -111,24 +96,6 @@ impl<O, E: Into<loga::Error>> ResultVisErr<O> for Result<O, E> {
         }
     }
 }
-
-pub async fn reqwest_get(r: Response, limit: usize) -> Result<Blob, loga::Error> {
-    let status = r.status();
-    let mut resp_bytes = r.bytes().await.context("Error reading response body")?;
-    resp_bytes.truncate(limit);
-    let resp_bytes = resp_bytes.blob();
-    if status.is_client_error() || status.is_server_error() {
-        return Err(
-            loga::err_with(
-                "Got response with error code",
-                ea!(status = status, body = String::from_utf8_lossy(&resp_bytes)),
-            ),
-        );
-    }
-    return Ok(resp_bytes);
-}
-
-pub struct SystemEndpoints(pub BoxEndpoint<'static, poem::Response>);
 
 /// Break barrier - remove the footgunishness of using loop for this directly
 #[macro_export]

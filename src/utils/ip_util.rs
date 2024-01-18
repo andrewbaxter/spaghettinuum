@@ -1,9 +1,18 @@
 use std::{
     net::{
         IpAddr,
-        ToSocketAddrs,
     },
     str::FromStr,
+};
+use chrono::Duration;
+use http_body_util::Empty;
+use hyper::{
+    Request,
+    Uri,
+    body::Bytes,
+};
+use hyper_rustls::{
+    HttpsConnectorBuilder,
 };
 use loga::{
     ea,
@@ -13,14 +22,15 @@ use network_interface::{
     NetworkInterface,
     NetworkInterfaceConfig,
 };
-use reqwest::Url;
-use crate::config::IpVer;
+use crate::{
+    config::IpVer,
+    utils::htreq,
+};
 use super::{
     unstable_ip::{
         UnstableIpv4,
         UnstableIpv6,
     },
-    reqwest_get,
     log::Log,
 };
 
@@ -86,53 +96,64 @@ pub async fn local_resolve_global_ip(
 }
 
 pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer>) -> Result<IpAddr, loga::Error> {
+    use tower_service::Service;
+
     let log = &Log::new().fork(ea!(lookup = lookup));
-    let lookup = Url::parse(&lookup).stack_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
-    let lookup_host = lookup.host().stack_context(log, "Missing host portion in `advertise_addr` url")?.to_string();
-    let lookup_port = lookup.port().unwrap_or(match lookup.scheme() {
+    let lookup = hyper::Uri::from_str(&lookup).stack_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
+    let lookup_host =
+        lookup.authority().stack_context(log, "Missing host portion in `advertise_addr` url")?.to_string();
+    let lookup_scheme = lookup.scheme().stack_context(log, "Lookup url missing scheme")?.to_string();
+    let lookup_port = match lookup_scheme.as_str() {
         "http" => 80,
         "https" => 443,
         _ => return Err(log.err("Only http/https are supported for ip lookups")),
-    });
-    let ip =
-        reqwest_get(
-            reqwest::ClientBuilder::new()
-                .resolve(
-                    &lookup_host,
-                    format!("{}:{}", lookup_host, lookup_port)
-                        .to_socket_addrs()
-                        .stack_context_with(log, "Failed to look up lookup host", ea!(host = lookup_host))?
-                        .into_iter()
-                        .filter(|a| {
-                            match contact_ip_ver {
-                                Some(IpVer::V4) => {
-                                    return a.is_ipv4();
-                                },
-                                Some(IpVer::V6) => {
-                                    return a.is_ipv6();
-                                },
-                                None => {
-                                    return true;
-                                },
-                            }
-                        })
-                        .next()
-                        .stack_context(
-                            log,
-                            "Unable to resolve any addresses (matching ipv4/6 requirements) via lookup",
-                        )?,
-                )
+    };
+    let lookup_ip =
+        hickory_resolver::TokioAsyncResolver::tokio(
+            hickory_resolver::config::ResolverConfig::default(),
+            hickory_resolver::config::ResolverOpts::default(),
+        )
+            .lookup_ip(&lookup_host)
+            .await
+            .stack_context_with(log, "Failed to look up lookup host ip addresses", ea!(host = lookup_host))?
+            .into_iter()
+            .filter(|a| {
+                match contact_ip_ver {
+                    Some(IpVer::V4) => {
+                        return a.is_ipv4();
+                    },
+                    Some(IpVer::V6) => {
+                        return a.is_ipv6();
+                    },
+                    None => {
+                        return true;
+                    },
+                }
+            })
+            .next()
+            .stack_context(log, "Unable to resolve any addresses (matching ipv4/6 requirements) via lookup")?;
+    let resp =
+        htreq::send(
+            HttpsConnectorBuilder::new()
+                .with_webpki_roots()
+                .https_or_http()
+                .with_server_name(lookup_host.clone())
+                .enable_http1()
                 .build()
-                .unwrap()
-                .get(lookup)
-                .send()
-                .await?,
-            10 * 1024,
-        ).await?;
-    let ip =
-        String::from_utf8(
-            ip.to_vec(),
-        ).stack_context_with(log, "Failed to parse response as utf8", ea!(resp = String::from_utf8_lossy(&ip)))?;
+                .call(Uri::from_str(&format!("{}://{}:{}", lookup_scheme, lookup_ip, lookup_port)).unwrap())
+                .await
+                .map_err(|e| loga::err_with("Error connecting to lookup host", ea!(err = e.to_string())))?,
+            1024,
+            Duration::seconds(10),
+            Request::builder()
+                .uri(lookup)
+                .header(hyper::header::HOST, lookup_host)
+                .body(Empty::<Bytes>::new())
+                .unwrap(),
+        )
+            .await
+            .stack_context(log, "Error sending request")?;
+    let ip = String::from_utf8(resp.to_vec()).stack_context(log, "Failed to parse response as utf8")?;
     let ip = IpAddr::from_str(&ip).stack_context_with(log, "Failed to parse response as socket addr", ea!(ip = ip))?;
     return Ok(ip);
 }

@@ -4,6 +4,7 @@ use std::{
     time::{
         SystemTime,
     },
+    collections::HashMap,
 };
 use chrono::{
     Utc,
@@ -15,7 +16,6 @@ use der::{
 use loga::{
     ea,
     ResultContext,
-    DebugDisplay,
 };
 use taskmanager::TaskManager;
 use tokio::{
@@ -47,6 +47,7 @@ use crate::{
             DEBUG_OTHER,
             WARN,
         },
+        htreq,
     },
     interface::{
         certify_protocol::{
@@ -91,25 +92,8 @@ pub async fn request_cert(
         "Sending cert request body",
         ea!(url = certifier_url, body = String::from_utf8_lossy(&body)),
     );
-    let resp =
-        reqwest::Client::builder()
-            .build()
-            .unwrap()
-            .post(certifier_url)
-            .body(body)
-            .send()
-            .await
-            .context("Error sending cert request")?;
-    let resp_status = resp.status();
-    let body = resp.bytes().await.context("Error reading cert request response")?;
-    if !resp_status.is_success() {
-        return Err(
-            loga::err_with(
-                "Received error response",
-                ea!(status = resp_status.dbg_str(), body = String::from_utf8_lossy(&body)),
-            ),
-        );
-    }
+    let body =
+        htreq::post(certifier_url, &HashMap::new(), body, 100 * 1024).await.context("Error reading cert response")?;
     return Ok(serde_json::from_slice(&body).context("Error reading cert request response body")?);
 }
 

@@ -14,7 +14,6 @@ use openpgp_card_sequoia::{
     Card,
 };
 use poem::{
-    async_trait,
     http::{
         Uri,
         uri::Authority,
@@ -25,10 +24,6 @@ use rand::{
         Alphanumeric,
         DistString,
     },
-};
-use reqwest::{
-    Response,
-    header::AUTHORIZATION,
 };
 use serde_json::json;
 use spaghettinuum::{
@@ -68,6 +63,7 @@ use spaghettinuum::{
             local_resolve_global_ip,
             remote_resolve_global_ip,
         },
+        htreq,
     },
     interface::{
         spagh_cli::{
@@ -299,82 +295,22 @@ mod args {
     }
 }
 
-#[async_trait]
-trait ReqwestCheck {
-    async fn check(self) -> Result<(), loga::Error>;
-    async fn check_text(self) -> Result<String, loga::Error>;
-    async fn check_bytes(self) -> Result<Vec<u8>, loga::Error>;
-}
-
-#[async_trait]
-impl ReqwestCheck for Result<Response, reqwest::Error> {
-    async fn check(self) -> Result<(), loga::Error> {
-        let resp = self?;
-        let status = resp.status();
-        let body = resp.bytes().await?.to_vec();
-        if !status.is_success() {
-            return Err(
-                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
-            );
-        }
-        return Ok(());
-    }
-
-    async fn check_text(self) -> Result<String, loga::Error> {
-        let resp = self?;
-        let status = resp.status();
-        let body = resp.bytes().await?.to_vec();
-        if !status.is_success() {
-            return Err(
-                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
-            );
-        }
-        return Ok(
-            String::from_utf8(
-                body.clone(),
+fn admin_headers() -> Result<HashMap<String, String>, loga::Error> {
+    let mut out = HashMap::new();
+    let env_key = ENV_API_ADMIN_TOKEN;
+    out.insert(
+        "Authorization".to_string(),
+        format!(
+            "Bearer {}",
+            env::var(
+                env_key,
             ).context_with(
-                "Failed to parse response as bytes",
-                ea!(status = status, body = String::from_utf8_lossy(&body)),
-            )?,
-        );
-    }
-
-    async fn check_bytes(self) -> Result<Vec<u8>, loga::Error> {
-        let resp = self?;
-        let status = resp.status();
-        let body = resp.bytes().await?.to_vec();
-        if !status.is_success() {
-            return Err(
-                loga::err_with("Request failed", ea!(status = status, body = String::from_utf8_lossy(&body))),
-            );
-        }
-        return Ok(body);
-    }
-}
-
-fn publisher_priv_client() -> Result<reqwest::Client, loga::Error> {
-    return Ok(reqwest::ClientBuilder::new().default_headers({
-        let mut h = reqwest::header::HeaderMap::new();
-        let env_key = ENV_API_ADMIN_TOKEN;
-        h.insert(
-            AUTHORIZATION,
-            format!(
-                "Bearer {}",
-                env::var(
-                    env_key,
-                ).context_with(
-                    "This operation uses an admin endpoint, but missing the admin token in the environment",
-                    ea!(key = env_key),
-                )?
-            )
-                .try_into()
-                .context_with(
-                    "The admin token in the environment isn't a valid HTTP authorization token",
-                    ea!(key = env_key),
-                )?,
-        );
-        h
-    }).build().unwrap());
+                "This operation uses an admin endpoint, but missing the admin token in the environment",
+                ea!(key = env_key),
+            )?
+        ),
+    );
+    return Ok(out);
 }
 
 fn api_url(url: Option<Uri>) -> Result<Uri, loga::Error> {
@@ -434,18 +370,13 @@ fn api_url_(mut url: Option<Uri>, env_key: &'static str) -> Result<Uri, loga::Er
 
 async fn publish(
     log: &Log,
-    c: reqwest::Client,
     server: &Uri,
     identity_arg: BackedIdentityArg,
     keyvalues: publish::latest::Publish,
 ) -> Result<(), loga::Error> {
     let mut signer = get_identity_signer(identity_arg).stack_context(&log, "Error constructing signer")?;
     let info_body =
-        c
-            .get(format!("{}info", server))
-            .send()
-            .await
-            .check_bytes()
+        htreq::get(&format!("{}info", server), &HashMap::new(), 100 * 1024)
             .await
             .stack_context(log, "Error getting publisher info")?;
     let info: publish::latest::InfoResponse =
@@ -500,7 +431,9 @@ async fn publish(
         "Sending publish request",
         ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
     );
-    c.post(url).json(&request).send().await.check().await.stack_context(log, "Error making publish request")?;
+    htreq::post(&url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
+        .await
+        .stack_context(log, "Error making publish request")?;
     return Ok(());
 }
 
@@ -564,102 +497,88 @@ async fn main() {
             args::Command::Register(config) => {
                 let url = format!("{}publish/register/{}", admin_api_url(config.server)?, config.identity_id);
                 log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
-                publisher_priv_client()?.post(url).send().await.check_text().await?;
+                htreq::post(&url, &admin_headers()?, vec![], 100).await?;
             },
             args::Command::Unregister(config) => {
                 let url = format!("{}publish/unregister/{}", admin_api_url(config.server)?, config.identity_id);
                 log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
-                publisher_priv_client()?.post(url).send().await.check_text().await?;
+                htreq::post(&url, &admin_headers()?, vec![], 100).await?;
             },
             args::Command::Publish(config) => {
-                publish(
-                    log,
-                    reqwest::ClientBuilder::new().build().unwrap(),
-                    &admin_api_url(config.server)?,
-                    config.identity,
-                    config.data.value,
-                ).await?;
+                publish(log, &admin_api_url(config.server)?, config.identity, config.data.value).await?;
             },
             args::Command::PublishDns(config) => {
-                publish(
-                    log,
-                    reqwest::ClientBuilder::new().build().unwrap(),
-                    &admin_api_url(config.server)?,
-                    config.identity,
-                    publish::latest::Publish {
-                        missing_ttl: config.ttl,
-                        data: {
-                            let mut kvs = HashMap::new();
-                            if !config.dns_cname.is_empty() {
-                                kvs.insert(KEY_DNS_CNAME.to_string(), publish::latest::PublishValue {
-                                    ttl: config.ttl,
-                                    data: serde_json::to_string(
-                                        &resolve::DnsRecordsetJson::V1(
-                                            resolve::latest::DnsRecordsetJson::Cname(config.dns_cname),
-                                        ),
-                                    ).unwrap(),
-                                });
+                publish(log, &admin_api_url(config.server)?, config.identity, publish::latest::Publish {
+                    missing_ttl: config.ttl,
+                    data: {
+                        let mut kvs = HashMap::new();
+                        if !config.dns_cname.is_empty() {
+                            kvs.insert(KEY_DNS_CNAME.to_string(), publish::latest::PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &resolve::DnsRecordsetJson::V1(
+                                        resolve::latest::DnsRecordsetJson::Cname(config.dns_cname),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_a.is_empty() {
+                            kvs.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &resolve::DnsRecordsetJson::V1(
+                                        resolve::latest::DnsRecordsetJson::A(config.dns_a),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_aaaa.is_empty() {
+                            kvs.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &resolve::DnsRecordsetJson::V1(
+                                        resolve::latest::DnsRecordsetJson::Aaaa(config.dns_aaaa),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_txt.is_empty() {
+                            kvs.insert(KEY_DNS_TXT.to_string(), publish::latest::PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &resolve::DnsRecordsetJson::V1(
+                                        resolve::latest::DnsRecordsetJson::Txt(config.dns_txt),
+                                    ),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_mx.is_empty() {
+                            let mut values = vec![];
+                            for v in config.dns_mx {
+                                let (priority, name) =
+                                    v
+                                        .split_once("/")
+                                        .ok_or_else(
+                                            || loga::err_with(
+                                                "Incorrect mx record specification, must be like `PRIORITY/NAME`",
+                                                ea!(entry = v),
+                                            ),
+                                        )?;
+                                let priority = u16::from_str(&priority).context("Couldn't parse priority as int")?;
+                                values.push((priority, name.to_string()));
                             }
-                            if !config.dns_a.is_empty() {
-                                kvs.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
-                                    ttl: config.ttl,
-                                    data: serde_json::to_string(
-                                        &resolve::DnsRecordsetJson::V1(
-                                            resolve::latest::DnsRecordsetJson::A(config.dns_a),
-                                        ),
-                                    ).unwrap(),
-                                });
-                            }
-                            if !config.dns_aaaa.is_empty() {
-                                kvs.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
-                                    ttl: config.ttl,
-                                    data: serde_json::to_string(
-                                        &resolve::DnsRecordsetJson::V1(
-                                            resolve::latest::DnsRecordsetJson::Aaaa(config.dns_aaaa),
-                                        ),
-                                    ).unwrap(),
-                                });
-                            }
-                            if !config.dns_txt.is_empty() {
-                                kvs.insert(KEY_DNS_TXT.to_string(), publish::latest::PublishValue {
-                                    ttl: config.ttl,
-                                    data: serde_json::to_string(
-                                        &resolve::DnsRecordsetJson::V1(
-                                            resolve::latest::DnsRecordsetJson::Txt(config.dns_txt),
-                                        ),
-                                    ).unwrap(),
-                                });
-                            }
-                            if !config.dns_mx.is_empty() {
-                                let mut values = vec![];
-                                for v in config.dns_mx {
-                                    let (priority, name) =
-                                        v
-                                            .split_once("/")
-                                            .ok_or_else(
-                                                || loga::err_with(
-                                                    "Incorrect mx record specification, must be like `PRIORITY/NAME`",
-                                                    ea!(entry = v),
-                                                ),
-                                            )?;
-                                    let priority =
-                                        u16::from_str(&priority).context("Couldn't parse priority as int")?;
-                                    values.push((priority, name.to_string()));
-                                }
-                                kvs.insert(KEY_DNS_MX.to_string(), publish::latest::PublishValue {
-                                    ttl: config.ttl,
-                                    data: serde_json::to_string(
-                                        &resolve::DnsRecordsetJson::V1(resolve::latest::DnsRecordsetJson::Mx(values)),
-                                    ).unwrap(),
-                                });
-                            }
-                            kvs
-                        },
+                            kvs.insert(KEY_DNS_MX.to_string(), publish::latest::PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &resolve::DnsRecordsetJson::V1(resolve::latest::DnsRecordsetJson::Mx(values)),
+                                ).unwrap(),
+                            });
+                        }
+                        kvs
                     },
-                ).await?;
+                }).await?;
             },
             args::Command::Unpublish(config) => {
-                let c = reqwest::ClientBuilder::new().build().unwrap();
                 let mut signer =
                     get_identity_signer(config.identity).stack_context(&log, "Error constructing signer")?;
                 let request_message = publish::latest::UnpublishRequestContent { now: Utc::now() };
@@ -679,20 +598,15 @@ async fn main() {
                     "Sending unpublish request",
                     ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
                 );
-                c
-                    .post(url)
-                    .json(&request)
-                    .send()
-                    .await
-                    .check()
+                htreq::post(&url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
                     .await
                     .stack_context(log, "Error making unpublish request")?;
             },
             args::Command::ListPublisherIdentities(config) => {
                 let mut out = vec![];
-                let c = publisher_priv_client()?;
-                let url = admin_api_url(config.server)?;
-                let mut res = c.get(format!("{}publish", url)).send().await.check_bytes().await?;
+                let admin_headers = admin_headers()?;
+                let base_url = admin_api_url(config.server)?;
+                let mut res = htreq::get(format!("{}publish", base_url), &admin_headers, 1024 * 1024).await?;
                 loop {
                     let mut identities: Vec<Identity> =
                         serde_json::from_slice(
@@ -707,19 +621,23 @@ async fn main() {
                         Some(a) => a,
                         None => break,
                     };
-                    res = c.get(format!("{}publish?after={}", url, after)).send().await.check_bytes().await?;
+                    res =
+                        htreq::get(
+                            format!("{}publish?after={}", base_url, after),
+                            &admin_headers,
+                            1024 * 1024,
+                        ).await?;
                 }
                 println!("{}", serde_json::to_string_pretty(&out).unwrap());
             },
             args::Command::ListPublisherKeyValues(config) => {
                 println!(
                     "{}",
-                    publisher_priv_client()?
-                        .get(format!("{}publish/{}", admin_api_url(config.server)?, config.identity))
-                        .send()
-                        .await
-                        .check_text()
-                        .await?
+                    htreq::get_text(
+                        &format!("{}publish/{}", admin_api_url(config.server)?, config.identity),
+                        &admin_headers()?,
+                        1024 * 1024,
+                    ).await?
                 );
             },
             args::Command::Query(config) => {
@@ -733,7 +651,11 @@ async fn main() {
                 log.log_with(DEBUG_OTHER, "Sending query request", ea!(url = url));
                 println!(
                     "{}",
-                    reqwest::ClientBuilder::new().build().unwrap().get(url).send().await.check_text().await?
+                    serde_json::to_string_pretty(
+                        &serde_json::from_slice::<serde_json::Value>(
+                            &htreq::get(&url, &HashMap::new(), 1024 * 1024).await?,
+                        ).stack_context(log, "Response could not be parsed as JSON")?,
+                    ).unwrap()
                 );
             },
             args::Command::GenerateConfig(config) => {
@@ -924,33 +846,27 @@ async fn main() {
                         remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await?
                     },
                 };
-                publish(
-                    log,
-                    reqwest::ClientBuilder::new().build().unwrap(),
-                    &admin_api_url(config.server)?,
-                    config.identity,
-                    publish::latest::Publish {
-                        missing_ttl: 60 * 24,
-                        data: {
-                            let mut out = HashMap::new();
-                            match global_ip {
-                                std::net::IpAddr::V4(ip) => {
-                                    out.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
-                                        ttl: 60,
-                                        data: ip.to_string(),
-                                    });
-                                },
-                                std::net::IpAddr::V6(ip) => {
-                                    out.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
-                                        ttl: 60,
-                                        data: ip.to_string(),
-                                    });
-                                },
-                            }
-                            out
-                        },
+                publish(log, &admin_api_url(config.server)?, config.identity, publish::latest::Publish {
+                    missing_ttl: 60 * 24,
+                    data: {
+                        let mut out = HashMap::new();
+                        match global_ip {
+                            std::net::IpAddr::V4(ip) => {
+                                out.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
+                                    ttl: 60,
+                                    data: ip.to_string(),
+                                });
+                            },
+                            std::net::IpAddr::V6(ip) => {
+                                out.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
+                                    ttl: 60,
+                                    data: ip.to_string(),
+                                });
+                            },
+                        }
+                        out
                     },
-                ).await?;
+                }).await?;
             },
         }
         return Ok(());
