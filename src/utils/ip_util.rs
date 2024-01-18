@@ -25,7 +25,10 @@ use network_interface::{
 use crate::{
     config::IpVer,
     utils::{
-        htreq,
+        htreq::{
+            self,
+            uri_parts,
+        },
     },
 };
 use super::{
@@ -102,14 +105,7 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
 
     let log = &Log::new().fork(ea!(lookup = lookup));
     let lookup = hyper::Uri::from_str(&lookup).stack_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
-    let lookup_host =
-        lookup.authority().stack_context(log, "Missing host portion in `advertise_addr` url")?.to_string();
-    let lookup_scheme = lookup.scheme().stack_context(log, "Lookup url missing scheme")?.to_string();
-    let lookup_port = match lookup_scheme.as_str() {
-        "http" => 80,
-        "https" => 443,
-        _ => return Err(log.err("Only http/https are supported for ip lookups")),
-    };
+    let (lookup_scheme, lookup_host, lookup_port) = uri_parts(&lookup).stack_context(log, "Incomplete URL")?;
     let lookup_ip =
         hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
             let mut opts = hickory_resolver::config::ResolverOpts::default();

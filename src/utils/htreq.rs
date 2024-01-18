@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     str::FromStr,
+    net::IpAddr,
 };
 use chrono::Duration;
 use http_body_util::{
@@ -20,6 +21,10 @@ use loga::{
     ea,
     ResultContext,
 };
+use rand::{
+    seq::SliceRandom,
+    thread_rng,
+};
 use tokio::{
     select,
     time::sleep,
@@ -28,6 +33,20 @@ use tower_service::Service;
 use crate::ta_res;
 
 pub type Conn = hyper_rustls::MaybeHttpsStream<hyper_util::rt::tokio::TokioIo<tokio::net::TcpStream>>;
+
+pub fn uri_parts(uri: &Uri) -> Result<(String, String, u16), loga::Error> {
+    let host = uri.authority().context("Url is missing host")?.to_string();
+    let scheme = uri.scheme().context("Url is missing scheme")?.to_string();
+    let port = match uri.port_u16() {
+        Some(p) => p,
+        None => match scheme.as_str() {
+            "http" => 80,
+            "https" => 443,
+            _ => return Err(loga::err("Only http/https urls are supported")),
+        },
+    };
+    return Ok((scheme, host, port));
+}
 
 pub async fn send<
     ID: Send,
@@ -70,16 +89,61 @@ pub async fn send<
 /// Creates a new HTTPS/HTTP connection with default settings.  `base_uri` is just
 /// used for schema, host, and port.
 pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
-    return Ok(
-        HttpsConnectorBuilder::new()
-            .with_webpki_roots()
-            .https_or_http()
-            .enable_http1()
-            .build()
-            .call(base_uri.clone())
-            .await
-            .map_err(|e| loga::err_with("Error connecting to host", ea!(err = e.to_string(), uri = base_uri)))?,
-    );
+    let (scheme, host, port) = uri_parts(base_uri).context("Incomplete url")?;
+    let mut ipv4s = vec![];
+    let mut ipv6s = vec![];
+    for ip in hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
+        let mut opts = hickory_resolver::config::ResolverOpts::default();
+        opts.ip_strategy = hickory_resolver::config::LookupIpStrategy::Ipv4AndIpv6;
+        opts
+    }).lookup_ip(&format!("{}.", host)).await.context("Failed to look up lookup host ip addresses")? {
+        match ip {
+            std::net::IpAddr::V4(_) => {
+                ipv4s.push(ip);
+            },
+            std::net::IpAddr::V6(_) => {
+                ipv6s.push(ip);
+            },
+        }
+    }
+    let mut try_ips = vec![];
+    {
+        let mut r = thread_rng();
+        try_ips.extend(ipv4s.choose(&mut r));
+        try_ips.extend(ipv6s.choose(&mut r));
+    }
+
+    async fn inner(ip: IpAddr, scheme: &str, host: &str, port: u16) -> Result<Conn, loga::Error> {
+        return Ok(
+            HttpsConnectorBuilder::new()
+                .with_webpki_roots()
+                .https_or_http()
+                .with_server_name(host.to_string())
+                .enable_http1()
+                .build()
+                .call(Uri::from_str(&format!("{}://{}:{}", scheme, host, port)).unwrap())
+                .await
+                .map_err(
+                    |e| loga::err_with(
+                        "Error connecting to host",
+                        ea!(err = e.to_string(), source_addr = ip, host = host, port = port),
+                    ),
+                )?,
+        );
+    }
+
+    let first_ip = try_ips.pop().context("No dns records found for host")?;
+    match try_ips.pop() {
+        Some(second_ip) => {
+            select!{
+                first = inner(first_ip, &scheme, &host, port) => return Ok(first?),
+                second = inner(second_ip, &scheme, &host, port) => return Ok(second?),
+            }
+        },
+        None => {
+            return Ok(inner(first_ip, &scheme, &host, port).await?);
+        },
+    }
 }
 
 pub async fn post(

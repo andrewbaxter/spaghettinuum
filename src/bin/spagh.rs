@@ -237,12 +237,12 @@ async fn main() {
         let mut has_api_endpoints = false;
         let publisher = match config.publisher {
             Some(publisher_config) => {
+                has_api_endpoints = true;
                 let bind_addr =
                     publisher_config
                         .bind_addr
                         .resolve()
                         .stack_context(log, "Error resolving publisher bind address")?;
-                has_api_endpoints = true;
                 let advertise_ip =
                     *global_ips
                         .get(0)
@@ -304,6 +304,7 @@ async fn main() {
         };
         let resolver = match config.resolver {
             Some(resolver_config) => {
+                has_api_endpoints = true;
                 let resolver =
                     Resolver::new(log, &tm, node.clone(), resolver_config.max_cache, &config.persistent_dir)
                         .await
@@ -319,8 +320,6 @@ async fn main() {
                     )
                         .await
                         .stack_context(log, "Error setting up resolver DNS bridge")?;
-                } else {
-                    has_api_endpoints = true;
                 }
                 Some(resolver)
             },
@@ -330,7 +329,9 @@ async fn main() {
             let log = log.fork(ea!(subsys = "api_http"));
             if config.api_bind_addrs.is_empty() {
                 return Err(
-                    log.err("Configuration defines api http endpoints but no api http bind address present in config"),
+                    log.err(
+                        "Configuration enables resolver or publisher but no api http bind address present in config",
+                    ),
                 );
             }
             let mut certs_stream_rx = None;
