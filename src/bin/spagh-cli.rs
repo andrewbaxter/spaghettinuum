@@ -675,7 +675,7 @@ async fn main() {
                         bootstrap: vec![BootstrapConfig {
                             addr: StrSocketAddr::new_fake(format!("spaghettinuum.isandrew.com:{}", PORT_NODE)),
                             id: NodeIdentity::from_str(
-                                "yryyyyyyyy88hprzytfsni9zqf9pp41ttnps4ics8kwc7ye743qd9cj4yxzi1",
+                                "yryyyyyyyysigxfw9e6rufrzztozhe3j4nqnm3jpjpyia3wckmzgz5akpa9ao",
                             ).unwrap(),
                         }],
                     },
