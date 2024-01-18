@@ -57,6 +57,7 @@ use spaghettinuum::{
             resolve::{
                 KEY_DNS_A,
                 KEY_DNS_AAAA,
+                self,
             },
         },
     },
@@ -283,13 +284,17 @@ async fn main() {
                                     std::net::IpAddr::V4(ip) => {
                                         out.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
                                             ttl: 60,
-                                            data: ip.to_string(),
+                                            data: serde_json::to_string(
+                                                &resolve::DnsA::V1(resolve::v1::DnsA(vec![ip.to_string()])),
+                                            ).unwrap(),
                                         });
                                     },
                                     std::net::IpAddr::V6(ip) => {
                                         out.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
                                             ttl: 60,
-                                            data: ip.to_string(),
+                                            data: serde_json::to_string(
+                                                &resolve::DnsAaaa::V1(resolve::v1::DnsAaaa(vec![ip.to_string()])),
+                                            ).unwrap(),
                                         });
                                     },
                                 }

@@ -6,7 +6,6 @@ use crate::{
                 self,
                 KEY_DNS_CNAME,
                 KEY_DNS_TXT,
-                KEY_DNS_MX,
                 COMMON_KEYS_DNS,
                 KEY_DNS_A,
                 KEY_DNS_AAAA,
@@ -53,7 +52,6 @@ use hickory_proto::{
             AAAA,
             A,
             TXT,
-            MX,
         },
         LowerName,
         RData,
@@ -222,7 +220,6 @@ pub async fn start_dns_bridge(
                             (KEY_DNS_CNAME, COMMON_KEYS_DNS)
                         },
                         RecordType::TXT => (KEY_DNS_TXT, COMMON_KEYS_DNS),
-                        RecordType::MX => (KEY_DNS_MX, COMMON_KEYS_DNS),
                         _ => {
                             // Unsupported key pairs
                             return Ok(
@@ -244,151 +241,143 @@ pub async fn start_dns_bridge(
                         Some(v1) => Some((v.expires, v1)),
                         None => None,
                     };
-                    if let Some((expires, data)) =
-                        res
-                            .remove(KEY_DNS_CNAME)
-                            .map(filter_some)
-                            .flatten()
-                            .or_else(|| res.remove(lookup_key).map(filter_some).flatten()) {
-                        match serde_json::from_str::<resolve::DnsRecordsetJson>(&data)
+                    if let Some((expires, data)) = res.remove(KEY_DNS_CNAME).map(filter_some).flatten() {
+                        match serde_json::from_str::<resolve::DnsCname>(&data)
                             .context_with("Failed to parse received record json", ea!(json = data))
                             .err_external()? {
-                            resolve::DnsRecordsetJson::V1(v) => match v {
-                                resolve::latest::DnsRecordsetJson::A(n) => {
-                                    for n in n {
-                                        let n = match Ipv4Addr::from_str(&n) {
-                                            Err(e) => {
-                                                self1
-                                                    .log
-                                                    .log_err(
-                                                        DEBUG_DNS_S,
-                                                        e.context_with(
-                                                            "A addr in record invalid for DNS",
-                                                            ea!(name = n),
-                                                        ),
-                                                    );
-                                                continue;
-                                            },
-                                            Ok(n) => n,
-                                        };
-                                        answers.push(
-                                            Record::from_rdata(
-                                                request.query().name().into(),
-                                                expires
-                                                    .signed_duration_since(Utc::now())
-                                                    .num_seconds()
-                                                    .try_into()
-                                                    .unwrap_or(i32::MAX as u32),
-                                                RData::A(A(n)),
-                                            ),
-                                        );
-                                    }
-                                },
-                                resolve::latest::DnsRecordsetJson::Aaaa(n) => {
-                                    for n in n {
-                                        let n = match Ipv6Addr::from_str(&n) {
-                                            Err(e) => {
-                                                self1
-                                                    .log
-                                                    .log_err(
-                                                        DEBUG_DNS_S,
-                                                        e.context_with(
-                                                            "AAAA addr in record invalid for DNS",
-                                                            ea!(name = n),
-                                                        ),
-                                                    );
-                                                continue;
-                                            },
-                                            Ok(n) => n,
-                                        };
-                                        answers.push(
-                                            Record::from_rdata(
-                                                request.query().name().into(),
-                                                expires
-                                                    .signed_duration_since(Utc::now())
-                                                    .num_seconds()
-                                                    .try_into()
-                                                    .unwrap_or(i32::MAX as u32),
-                                                RData::AAAA(AAAA(n)),
-                                            ),
-                                        );
-                                    }
-                                },
-                                resolve::latest::DnsRecordsetJson::Cname(n) => {
-                                    for n in n {
-                                        let n = match Name::from_utf8(&n) {
-                                            Err(e) => {
-                                                self1
-                                                    .log
-                                                    .log_err(
-                                                        DEBUG_DNS_S,
-                                                        e.context_with(
-                                                            "Cname name in record invalid for DNS",
-                                                            ea!(name = n),
-                                                        ),
-                                                    );
-                                                continue;
-                                            },
-                                            Ok(n) => n,
-                                        };
-                                        answers.push(
-                                            Record::from_rdata(
-                                                request.query().name().into(),
-                                                expires
-                                                    .signed_duration_since(Utc::now())
-                                                    .num_seconds()
-                                                    .try_into()
-                                                    .unwrap_or(i32::MAX as u32),
-                                                RData::CNAME(CNAME(n)),
-                                            ),
-                                        );
-                                    }
-                                },
-                                resolve::latest::DnsRecordsetJson::Txt(n) => {
-                                    for n in n {
-                                        answers.push(
-                                            Record::from_rdata(
-                                                request.query().name().into(),
-                                                expires
-                                                    .signed_duration_since(Utc::now())
-                                                    .num_seconds()
-                                                    .try_into()
-                                                    .unwrap_or(i32::MAX as u32),
-                                                RData::TXT(TXT::new(vec![n])),
-                                            ),
-                                        );
-                                    }
-                                },
-                                resolve::latest::DnsRecordsetJson::Mx(n) => {
-                                    for n in n {
-                                        let exchange = match Name::from_utf8(&n.1) {
-                                            Err(e) => {
-                                                self1
-                                                    .log
-                                                    .log_err(
-                                                        DEBUG_DNS_S,
-                                                        e.context_with(
-                                                            "Mx name in record invalid for DNS",
-                                                            ea!(name = n.1),
-                                                        ),
-                                                    );
-                                                continue;
-                                            },
-                                            Ok(n) => n,
-                                        };
-                                        answers.push(
-                                            Record::from_rdata(
-                                                request.query().name().into(),
-                                                expires
-                                                    .signed_duration_since(Utc::now())
-                                                    .num_seconds()
-                                                    .try_into()
-                                                    .unwrap_or(i32::MAX as u32),
-                                                RData::MX(MX::new(n.0, exchange)),
-                                            ),
-                                        );
-                                    }
-                                },
+                            resolve::DnsCname::V1(n) => {
+                                for n in n.0 {
+                                    let n = match Name::from_utf8(&n) {
+                                        Err(e) => {
+                                            self1
+                                                .log
+                                                .log_err(
+                                                    DEBUG_DNS_S,
+                                                    e.context_with(
+                                                        "Cname name in record invalid for DNS",
+                                                        ea!(name = n),
+                                                    ),
+                                                );
+                                            continue;
+                                        },
+                                        Ok(n) => n,
+                                    };
+                                    answers.push(
+                                        Record::from_rdata(
+                                            request.query().name().into(),
+                                            expires
+                                                .signed_duration_since(Utc::now())
+                                                .num_seconds()
+                                                .try_into()
+                                                .unwrap_or(i32::MAX as u32),
+                                            RData::CNAME(CNAME(n)),
+                                        ),
+                                    );
+                                }
+                            },
+                        }
+                    } else if let Some((expires, data)) = res.remove(lookup_key).map(filter_some).flatten() {
+                        match lookup_key {
+                            KEY_DNS_A => {
+                                match serde_json::from_str::<resolve::DnsA>(&data)
+                                    .context_with("Failed to parse received record json", ea!(json = data))
+                                    .err_external()? {
+                                    resolve::DnsA::V1(n) => {
+                                        for n in n.0 {
+                                            let n = match Ipv4Addr::from_str(&n) {
+                                                Err(e) => {
+                                                    self1
+                                                        .log
+                                                        .log_err(
+                                                            DEBUG_DNS_S,
+                                                            e.context_with(
+                                                                "Ipv4 addr in record invalid",
+                                                                ea!(name = n),
+                                                            ),
+                                                        );
+                                                    continue;
+                                                },
+                                                Ok(n) => n,
+                                            };
+                                            answers.push(
+                                                Record::from_rdata(
+                                                    request.query().name().into(),
+                                                    expires
+                                                        .signed_duration_since(Utc::now())
+                                                        .num_seconds()
+                                                        .try_into()
+                                                        .unwrap_or(i32::MAX as u32),
+                                                    RData::A(A(n)),
+                                                ),
+                                            );
+                                        }
+                                    },
+                                }
+                            },
+                            KEY_DNS_AAAA => {
+                                match serde_json::from_str::<resolve::DnsAaaa>(&data)
+                                    .context_with("Failed to parse received record json", ea!(json = data))
+                                    .err_external()? {
+                                    resolve::DnsAaaa::V1(n) => {
+                                        for n in n.0 {
+                                            let n = match Ipv6Addr::from_str(&n) {
+                                                Err(e) => {
+                                                    self1
+                                                        .log
+                                                        .log_err(
+                                                            DEBUG_DNS_S,
+                                                            e.context_with(
+                                                                "Ipv6 addr in AAAA record invalid",
+                                                                ea!(name = n),
+                                                            ),
+                                                        );
+                                                    continue;
+                                                },
+                                                Ok(n) => n,
+                                            };
+                                            answers.push(
+                                                Record::from_rdata(
+                                                    request.query().name().into(),
+                                                    expires
+                                                        .signed_duration_since(Utc::now())
+                                                        .num_seconds()
+                                                        .try_into()
+                                                        .unwrap_or(i32::MAX as u32),
+                                                    RData::AAAA(AAAA(n)),
+                                                ),
+                                            );
+                                        }
+                                    },
+                                }
+                            },
+                            KEY_DNS_TXT => {
+                                match serde_json::from_str::<resolve::DnsA>(&data)
+                                    .context_with("Failed to parse received record json", ea!(json = data))
+                                    .err_external()? {
+                                    resolve::DnsA::V1(n) => {
+                                        for n in n.0 {
+                                            answers.push(
+                                                Record::from_rdata(
+                                                    request.query().name().into(),
+                                                    expires
+                                                        .signed_duration_since(Utc::now())
+                                                        .num_seconds()
+                                                        .try_into()
+                                                        .unwrap_or(i32::MAX as u32),
+                                                    RData::TXT(TXT::new(vec![n])),
+                                                ),
+                                            );
+                                        }
+                                    },
+                                }
+                            },
+                            _ => {
+                                return Err(
+                                    loga::err_with(
+                                        "ASSERTION! Equivalent record handled above but not here.",
+                                        ea!(equivalent = lookup_key),
+                                    ),
+                                ).err_internal();
                             },
                         }
                     }

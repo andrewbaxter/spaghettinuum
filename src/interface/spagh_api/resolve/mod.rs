@@ -15,11 +15,11 @@ pub enum ResolveKeyValues {
 pub const KEY_DNS_A: &'static str = "dsf9oyfz83fatqpscp9yt8wkuw";
 pub const KEY_DNS_AAAA: &'static str = "wwfukygd6tykiqrmi3jp6qnoiw";
 pub const KEY_DNS_CNAME: &'static str = "gi3saqn8pfn7tmwbd4pxj3tour";
-pub const KEY_DNS_MX: &'static str = "zm5zzaotiib4bbqg9befbr1kro";
 pub const KEY_DNS_TXT: &'static str = "rht6tfoc4pnbipesgjejkzeeta";
-pub const COMMON_KEYS_DNS: &[&'static str] = &[KEY_DNS_A, KEY_DNS_AAAA, KEY_DNS_CNAME, KEY_DNS_MX, KEY_DNS_TXT];
+pub const COMMON_KEYS_DNS: &[&'static str] = &[KEY_DNS_A, KEY_DNS_AAAA, KEY_DNS_CNAME, KEY_DNS_TXT];
 
 // Not yet supported
+//. pub const KEY_DNS_MX: &'static str = "zm5zzaotiib4bbqg9befbr1kro";
 //. pub const KEY_DNS_NS: &'static str = "ic6hcun6zjnqtxe5ft8i6wox4w";
 //. pub const KEY_DNS_SOA: &'static str = "371z1qxg5jnftcjr3g9x7ihzdo";
 //. pub const KEY_DNS_PTR: &'static str = "t7ou17qiefnozbe1uef7ym5hih";
@@ -64,6 +64,24 @@ pub const COMMON_KEYS_DNS: &[&'static str] = &[KEY_DNS_A, KEY_DNS_AAAA, KEY_DNS_
 //. pub const KEY_DNS_ZONEMD: &'static str = "yar9fu1px7f3pygrfuxjejm61a";
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
-pub enum DnsRecordsetJson {
-    V1(v1::DnsRecordsetJson),
+pub enum DnsA {
+    V1(v1::DnsA),
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum DnsAaaa {
+    V1(v1::DnsAaaa),
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum DnsCname {
+    V1(v1::DnsCname),
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum DnsTxt {
+    V1(v1::DnsTxt),
 }

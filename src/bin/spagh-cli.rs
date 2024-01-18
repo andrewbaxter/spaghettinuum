@@ -86,7 +86,6 @@ use spaghettinuum::{
                 latest::JsonSignature,
             },
             resolve::{
-                KEY_DNS_MX,
                 KEY_DNS_TXT,
                 KEY_DNS_AAAA,
                 KEY_DNS_A,
@@ -179,8 +178,6 @@ mod args {
         pub dns_a: Vec<String>,
         pub dns_aaaa: Vec<String>,
         pub dns_txt: Vec<String>,
-        /// In the format `PRIORITY/NAME` ex `10/mail.example.org`
-        pub dns_mx: Vec<String>,
     }
 
     #[derive(Aargvark)]
@@ -248,8 +245,6 @@ mod args {
         pub dns_a: Vec<String>,
         pub dns_aaaa: Vec<String>,
         pub dns_txt: Vec<String>,
-        /// In the format `PRIORITY/NAME` ex `10/mail.example.org`
-        pub dns_mx: Vec<String>,
     }
 
     #[derive(Aargvark)]
@@ -516,9 +511,7 @@ async fn main() {
                             kvs.insert(KEY_DNS_CNAME.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &resolve::DnsRecordsetJson::V1(
-                                        resolve::latest::DnsRecordsetJson::Cname(config.dns_cname),
-                                    ),
+                                    &resolve::DnsCname::V1(resolve::latest::DnsCname(config.dns_cname)),
                                 ).unwrap(),
                             });
                         }
@@ -526,9 +519,7 @@ async fn main() {
                             kvs.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &resolve::DnsRecordsetJson::V1(
-                                        resolve::latest::DnsRecordsetJson::A(config.dns_a),
-                                    ),
+                                    &resolve::DnsA::V1(resolve::latest::DnsA(config.dns_a)),
                                 ).unwrap(),
                             });
                         }
@@ -536,9 +527,7 @@ async fn main() {
                             kvs.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &resolve::DnsRecordsetJson::V1(
-                                        resolve::latest::DnsRecordsetJson::Aaaa(config.dns_aaaa),
-                                    ),
+                                    &resolve::DnsAaaa::V1(resolve::latest::DnsAaaa(config.dns_aaaa)),
                                 ).unwrap(),
                             });
                         }
@@ -546,31 +535,7 @@ async fn main() {
                             kvs.insert(KEY_DNS_TXT.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &resolve::DnsRecordsetJson::V1(
-                                        resolve::latest::DnsRecordsetJson::Txt(config.dns_txt),
-                                    ),
-                                ).unwrap(),
-                            });
-                        }
-                        if !config.dns_mx.is_empty() {
-                            let mut values = vec![];
-                            for v in config.dns_mx {
-                                let (priority, name) =
-                                    v
-                                        .split_once("/")
-                                        .ok_or_else(
-                                            || loga::err_with(
-                                                "Incorrect mx record specification, must be like `PRIORITY/NAME`",
-                                                ea!(entry = v),
-                                            ),
-                                        )?;
-                                let priority = u16::from_str(&priority).context("Couldn't parse priority as int")?;
-                                values.push((priority, name.to_string()));
-                            }
-                            kvs.insert(KEY_DNS_MX.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_string(
-                                    &resolve::DnsRecordsetJson::V1(resolve::latest::DnsRecordsetJson::Mx(values)),
+                                    &resolve::DnsTxt::V1(resolve::latest::DnsTxt(config.dns_txt)),
                                 ).unwrap(),
                             });
                         }
@@ -753,9 +718,7 @@ async fn main() {
                             kvs.insert(KEY_DNS_CNAME.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &resolve::DnsRecordsetJson::V1(
-                                        resolve::latest::DnsRecordsetJson::Cname(config.dns_cname),
-                                    ),
+                                    &resolve::DnsCname::V1(resolve::latest::DnsCname(config.dns_cname)),
                                 ).unwrap(),
                             });
                         }
@@ -763,9 +726,7 @@ async fn main() {
                             kvs.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &resolve::DnsRecordsetJson::V1(
-                                        resolve::latest::DnsRecordsetJson::A(config.dns_a),
-                                    ),
+                                    &resolve::DnsA::V1(resolve::latest::DnsA(config.dns_a)),
                                 ).unwrap(),
                             });
                         }
@@ -773,9 +734,7 @@ async fn main() {
                             kvs.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &resolve::DnsRecordsetJson::V1(
-                                        resolve::latest::DnsRecordsetJson::Aaaa(config.dns_aaaa),
-                                    ),
+                                    &resolve::DnsAaaa::V1(resolve::latest::DnsAaaa(config.dns_aaaa)),
                                 ).unwrap(),
                             });
                         }
@@ -783,31 +742,7 @@ async fn main() {
                             kvs.insert(KEY_DNS_TXT.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_string(
-                                    &resolve::DnsRecordsetJson::V1(
-                                        resolve::latest::DnsRecordsetJson::Txt(config.dns_txt),
-                                    ),
-                                ).unwrap(),
-                            });
-                        }
-                        if !config.dns_mx.is_empty() {
-                            let mut values = vec![];
-                            for v in config.dns_mx {
-                                let (priority, name) =
-                                    v
-                                        .split_once("/")
-                                        .ok_or_else(
-                                            || loga::err_with(
-                                                "Incorrect mx record specification, must be like `PRIORITY/NAME`",
-                                                ea!(entry = v),
-                                            ),
-                                        )?;
-                                let priority = u16::from_str(&priority).context("Couldn't parse priority as int")?;
-                                values.push((priority, name.to_string()));
-                            }
-                            kvs.insert(KEY_DNS_MX.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_string(
-                                    &resolve::DnsRecordsetJson::V1(resolve::latest::DnsRecordsetJson::Mx(values)),
+                                    &resolve::DnsTxt::V1(resolve::latest::DnsTxt(config.dns_txt)),
                                 ).unwrap(),
                             });
                         }
