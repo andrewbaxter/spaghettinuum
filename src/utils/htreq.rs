@@ -121,7 +121,10 @@ pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
                 .with_server_name(host.to_string())
                 .enable_http1()
                 .build()
-                .call(Uri::from_str(&format!("{}://{}:{}", scheme, ip, port)).unwrap())
+                .call(Uri::from_str(&format!("{}://{}:{}", scheme, match ip {
+                    IpAddr::V4(i) => i.to_string(),
+                    IpAddr::V6(i) => format!("[{}]", i),
+                }, port)).unwrap())
                 .await
                 .map_err(
                     |e| loga::err_with(

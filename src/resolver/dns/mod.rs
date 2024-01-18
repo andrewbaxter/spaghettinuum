@@ -251,7 +251,7 @@ pub async fn start_dns_bridge(
                             .flatten()
                             .or_else(|| res.remove(lookup_key).map(filter_some).flatten()) {
                         match serde_json::from_str::<resolve::DnsRecordsetJson>(&data)
-                            .context("Failed to parse received record json")
+                            .context_with("Failed to parse received record json", ea!(json = data))
                             .err_external()? {
                             resolve::DnsRecordsetJson::V1(v) => match v {
                                 resolve::latest::DnsRecordsetJson::A(n) => {
