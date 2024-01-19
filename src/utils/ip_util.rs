@@ -106,22 +106,31 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
     let log = &Log::new().fork(ea!(lookup = lookup));
     let lookup = hyper::Uri::from_str(&lookup).stack_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
     let (lookup_scheme, lookup_host, lookup_port) = uri_parts(&lookup).stack_context(log, "Incomplete URL")?;
-    let lookup_ip =
-        hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
-            let mut opts = hickory_resolver::config::ResolverOpts::default();
-            opts.ip_strategy = match contact_ip_ver {
-                Some(IpVer::V4) => hickory_resolver::config::LookupIpStrategy::Ipv4Only,
-                Some(IpVer::V6) => hickory_resolver::config::LookupIpStrategy::Ipv6Only,
-                None => hickory_resolver::config::LookupIpStrategy::Ipv4AndIpv6,
-            };
-            opts
-        })
-            .lookup_ip(&format!("{}.", lookup_host))
-            .await
-            .stack_context(log, "Failed to look up lookup host ip addresses")?
-            .into_iter()
-            .next()
-            .stack_context(log, "Unable to resolve any lookup server addresses matching ipv4/6 requirements")?;
+    let (lookup_ip, lookup_host) = match lookup_host {
+        htreq::HostPart::Ip(i) => (i, i.to_string()),
+        htreq::HostPart::Name(lookup_host) => {
+            let ip =
+                hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
+                    let mut opts = hickory_resolver::config::ResolverOpts::default();
+                    opts.ip_strategy = match contact_ip_ver {
+                        Some(IpVer::V4) => hickory_resolver::config::LookupIpStrategy::Ipv4Only,
+                        Some(IpVer::V6) => hickory_resolver::config::LookupIpStrategy::Ipv6Only,
+                        None => hickory_resolver::config::LookupIpStrategy::Ipv4AndIpv6,
+                    };
+                    opts
+                })
+                    .lookup_ip(&format!("{}.", lookup_host))
+                    .await
+                    .stack_context(log, "Failed to look up lookup host ip addresses")?
+                    .into_iter()
+                    .next()
+                    .stack_context(
+                        log,
+                        "Unable to resolve any lookup server addresses matching ipv4/6 requirements",
+                    )?;
+            (ip, lookup_host)
+        },
+    };
     let resp =
         htreq::send(
             HttpsConnectorBuilder::new()

@@ -1,9 +1,15 @@
 use std::{
     collections::HashMap,
     str::FromStr,
-    net::IpAddr,
+    net::{
+        IpAddr,
+        Ipv6Addr,
+        Ipv4Addr,
+    },
 };
-use chrono::Duration;
+use chrono::{
+    Duration,
+};
 use http_body_util::{
     Limited,
     BodyExt,
@@ -34,8 +40,35 @@ use crate::ta_res;
 
 pub type Conn = hyper_rustls::MaybeHttpsStream<hyper_util::rt::tokio::TokioIo<tokio::net::TcpStream>>;
 
-pub fn uri_parts(uri: &Uri) -> Result<(String, String, u16), loga::Error> {
-    let host = uri.authority().context("Url is missing host")?.to_string();
+pub enum HostPart {
+    Ip(IpAddr),
+    Name(String),
+}
+
+pub fn uri_parts(uri: &Uri) -> Result<(String, HostPart, u16), loga::Error> {
+    let host = uri.host().context("Url is missing host")?;
+    if host.is_empty() {
+        return Err(loga::err("Host portion of url is empty"));
+    }
+    let host = match *host.as_bytes().get(0).unwrap() as char {
+        '[' => HostPart::Ip(
+            IpAddr::V6(
+                Ipv6Addr::from_str(
+                    &String::from_utf8(
+                        host.as_bytes()[1..]
+                            .split_last()
+                            .context("URL ipv6 missing ending ]")?
+                            .1
+                            .iter()
+                            .cloned()
+                            .collect(),
+                    ).unwrap(),
+                ).context("Invalid ipv6 address in URL")?,
+            ),
+        ),
+        '0' ..= '9' => HostPart::Ip(IpAddr::V4(Ipv4Addr::from_str(host).context("Invalid ipv4 address in URL")?)),
+        _ => HostPart::Name(host.to_string()),
+    };
     let scheme = uri.scheme().context("Url is missing scheme")?.to_string();
     let port = match uri.port_u16() {
         Some(p) => p,
@@ -81,7 +114,12 @@ pub async fn send<
         x = read => x ?,
     };
     if !status.is_success() {
-        return Err(loga::err_with("Server returned error response", ea!(body = String::from_utf8_lossy(&resp))));
+        return Err(
+            loga::err_with(
+                "Server returned error response",
+                ea!(status = status, body = String::from_utf8_lossy(&resp)),
+            ),
+        );
     }
     return Ok(resp);
 }
@@ -90,28 +128,34 @@ pub async fn send<
 /// used for schema, host, and port.
 pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
     let (scheme, host, port) = uri_parts(base_uri).context("Incomplete url")?;
-    let mut ipv4s = vec![];
-    let mut ipv6s = vec![];
-    for ip in hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
-        let mut opts = hickory_resolver::config::ResolverOpts::default();
-        opts.ip_strategy = hickory_resolver::config::LookupIpStrategy::Ipv4AndIpv6;
-        opts
-    }).lookup_ip(&format!("{}.", host)).await.context("Failed to look up lookup host ip addresses")? {
-        match ip {
-            std::net::IpAddr::V4(_) => {
-                ipv4s.push(ip);
-            },
-            std::net::IpAddr::V6(_) => {
-                ipv6s.push(ip);
-            },
-        }
-    }
-    let mut try_ips = vec![];
-    {
-        let mut r = thread_rng();
-        try_ips.extend(ipv4s.choose(&mut r));
-        try_ips.extend(ipv6s.choose(&mut r));
-    }
+    let (mut try_ips, host) = match host {
+        HostPart::Ip(i) => (vec![i], i.to_string()),
+        HostPart::Name(host) => {
+            let mut ipv4s = vec![];
+            let mut ipv6s = vec![];
+            for ip in hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
+                let mut opts = hickory_resolver::config::ResolverOpts::default();
+                opts.ip_strategy = hickory_resolver::config::LookupIpStrategy::Ipv4AndIpv6;
+                opts
+            }).lookup_ip(&format!("{}.", host)).await.context("Failed to look up lookup host ip addresses")? {
+                match ip {
+                    std::net::IpAddr::V4(_) => {
+                        ipv4s.push(ip);
+                    },
+                    std::net::IpAddr::V6(_) => {
+                        ipv6s.push(ip);
+                    },
+                }
+            }
+            let mut try_ips = vec![];
+            {
+                let mut r = thread_rng();
+                try_ips.extend(ipv4s.choose(&mut r));
+                try_ips.extend(ipv6s.choose(&mut r));
+            }
+            (try_ips, host)
+        },
+    };
 
     async fn inner(ip: IpAddr, scheme: &str, host: &str, port: u16) -> Result<Conn, loga::Error> {
         return Ok(
@@ -129,7 +173,7 @@ pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
                 .map_err(
                     |e| loga::err_with(
                         "Error connecting to host",
-                        ea!(err = e.to_string(), source_addr = ip, dest_addr = ip, host = host, port = port),
+                        ea!(err = e.to_string(), dest_addr = ip, host = host, port = port),
                     ),
                 )?,
         );
@@ -208,5 +252,24 @@ pub async fn get_text(
                 ea!(err = e.to_string(), body = String::from_utf8_lossy(e.as_bytes())),
             ),
         )?,
+    );
+}
+
+pub async fn delete(
+    uri: impl AsRef<str>,
+    headers: &HashMap<String, String>,
+    max_size: usize,
+) -> Result<Vec<u8>, loga::Error> {
+    let uri = uri.as_ref();
+    let uri = Uri::from_str(uri).context_with("URI couldn't be parsed", ea!(uri = uri))?;
+    let req = Request::builder();
+    let mut req = req.method("DELETE").uri(uri.clone());
+    for (k, v) in headers.iter() {
+        req = req.header(k, v);
+    }
+    return Ok(
+        send(new_conn(&uri).await?, max_size, Duration::seconds(10), req.body(Empty::<Bytes>::new()).unwrap())
+            .await
+            .context_with("Error sending DELETE", ea!(uri = uri))?,
     );
 }

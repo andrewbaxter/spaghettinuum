@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     pin::Pin,
 };
+use chrono::Utc;
 use futures::Future;
 use itertools::Itertools;
 use loga::{
@@ -156,8 +157,8 @@ impl Endpoint for Handler {
                             .log
                             .log_with(
                                 self.debug_flag,
-                                "No such path, too deep",
-                                ea!(path = path.dbg_str(), index = i),
+                                "Path matching ended at branch",
+                                ea!(path = path.dbg_str(), seg = i),
                             );
                         return Ok(StatusCode::NOT_FOUND.into_response());
                     }
@@ -169,7 +170,11 @@ impl Endpoint for Handler {
                         None => {
                             self
                                 .log
-                                .log_with(self.debug_flag, "No such path", ea!(path = path.dbg_str(), index = i));
+                                .log_with(
+                                    self.debug_flag,
+                                    "No route for path segment in parent branch",
+                                    ea!(path = path.dbg_str(), seg = i),
+                                );
                             return Ok(StatusCode::NOT_FOUND.into_response());
                         },
                     }
@@ -180,11 +185,7 @@ impl Endpoint for Handler {
                             let Some(m) =& l.get else {
                                 self
                                     .log
-                                    .log_with(
-                                        self.debug_flag,
-                                        "No GET handler",
-                                        ea!(path = path.dbg_str(), index = i),
-                                    );
+                                    .log_with(self.debug_flag, "No GET handler", ea!(path = path.dbg_str(), seg = i));
                                 return Ok(StatusCode::NOT_FOUND.into_response());
                             };
                             break 'recurse m;
@@ -196,7 +197,7 @@ impl Endpoint for Handler {
                                     .log_with(
                                         self.debug_flag,
                                         "No POST handler",
-                                        ea!(path = path.dbg_str(), index = i),
+                                        ea!(path = path.dbg_str(), seg = i),
                                     );
                                 return Ok(StatusCode::NOT_FOUND.into_response());
                             };
@@ -209,7 +210,7 @@ impl Endpoint for Handler {
                                     .log_with(
                                         self.debug_flag,
                                         "No DELETE handler",
-                                        ea!(path = path.dbg_str(), index = i),
+                                        ea!(path = path.dbg_str(), seg = i),
                                     );
                                 return Ok(StatusCode::NOT_FOUND.into_response());
                             };
@@ -222,19 +223,20 @@ impl Endpoint for Handler {
                 },
             }
         };
-        match leaf(Request {
+        let resp = match leaf(Request {
             path: path[i..].to_vec(),
             query: query,
             body: body,
             auth_bearer: bearer,
         }).await {
-            Response::Ok => Ok(StatusCode::OK.into_response()),
-            Response::AuthErr => Ok(StatusCode::UNAUTHORIZED.into_response()),
-            Response::InternalErr => Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
-            Response::ExternalErr(e) => Ok((StatusCode::INTERNAL_SERVER_ERROR, e).into_response()),
-            Response::UserErr(e) => Ok((StatusCode::BAD_REQUEST, e).into_response()),
-            Response::Json(b) => return Ok((StatusCode::OK, b.to_vec()).into_response()),
-        }
+            Response::Ok => StatusCode::OK.into_response(),
+            Response::AuthErr => StatusCode::UNAUTHORIZED.into_response(),
+            Response::InternalErr => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Response::ExternalErr(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            Response::UserErr(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+            Response::Json(b) => (StatusCode::OK, b.to_vec()).into_response(),
+        };
+        return Ok(resp);
     }
 }
 

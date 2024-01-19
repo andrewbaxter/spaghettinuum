@@ -25,6 +25,7 @@ use rand::{
         DistString,
     },
 };
+use serde::de::DeserializeOwned;
 use serde_json::json;
 use spaghettinuum::{
     config::{
@@ -139,7 +140,7 @@ mod args {
     }
 
     #[derive(Aargvark)]
-    pub struct Register {
+    pub struct AllowIdentity {
         /// Private/admin URL of a server with publishing set up. Defaults to the value of
         /// environment variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
@@ -147,7 +148,15 @@ mod args {
     }
 
     #[derive(Aargvark)]
-    pub struct Unregister {
+    pub struct DisallowIdentity {
+        /// Private/admin URL of a server with publishing set up. Defaults to the value of
+        /// environment variable `SPAGH_ADMIN`.
+        pub server: Option<Uri>,
+        pub identity_id: String,
+    }
+
+    #[derive(Aargvark)]
+    pub struct ListAllowedIdentities {
         /// Private/admin URL of a server with publishing set up. Defaults to the value of
         /// environment variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
@@ -200,14 +209,14 @@ mod args {
     }
 
     #[derive(Aargvark)]
-    pub struct ListPublisherIdentities {
+    pub struct ListPublishingIdentities {
         /// URL of a server with publishing set up. Defaults to the value of environment
         /// variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
     }
 
     #[derive(Aargvark)]
-    pub struct ListPublisherKeyValues {
+    pub struct ListPublishingKeyValues {
         /// URL of a server with publishing set up. Defaults to the value of environment
         /// variable `SPAGH_ADMIN`.
         pub server: Option<Uri>,
@@ -249,28 +258,15 @@ mod args {
 
     #[derive(Aargvark)]
     pub enum Command {
+        // # Local
+        //
+        // ---
         /// Create a new local (file) identity
         NewLocalIdentity(NewLocalIdentity),
         /// Show the identity for a local identity file
         ShowLocalIdentity(AargvarkJson<BackedIdentityLocal>),
         /// List usable pcsc cards (configured with curve25519/ed25519 signing keys)
         ListCardIdentities,
-        /// Register an identity with the server, allowing it to publish
-        Register(Register),
-        /// Unregister an identity with the server, disallowing it from publishing
-        Unregister(Unregister),
-        /// Create or replace existing publish data for an identity on a publisher server
-        Publish(Publish),
-        /// A shortcut for publishing DNS data, generating the key values for you
-        PublishDns(PublishDns),
-        /// Create or replace existing publish data for an identity on a publisher server
-        Unpublish(Unpublish),
-        /// List identities a publisher is currently publishing
-        ListPublisherIdentities(ListPublisherIdentities),
-        /// List data a publisher is publishing for an identity
-        ListPublisherKeyValues(ListPublisherKeyValues),
-        /// Request values associated with provided identity and keys from a resolver
-        Query(Query),
         /// Generate base server configs
         GenerateConfig(GenerateConfig),
         /// Generate data for publishing DNS records
@@ -281,6 +277,33 @@ mod args {
         /// Publish the ip of the host this command runs on using the DNS-equivalent A/AAAA
         /// records.
         SelfPublish(SelfPublish),
+        // # Resolver
+        //
+        // ---
+        /// Request values associated with provided identity and keys from a resolver
+        Query(Query),
+        // # Publisher non-admin
+        //
+        // ---
+        /// Create or replace existing publish data for an identity on a publisher server
+        Publish(Publish),
+        /// A shortcut for publishing DNS data, generating the key values for you
+        PublishDns(PublishDns),
+        /// Stop publishing data
+        Unpublish(Unpublish),
+        // # Publisher admin
+        //
+        // ---
+        /// Register an identity with the publisher, allowing it to publish
+        AllowIdentity(AllowIdentity),
+        /// Unregister an identity with the publisher, disallowing it from publishing
+        DisallowIdentity(DisallowIdentity),
+        /// Unregister an identity with the publisher, disallowing it from publishing
+        ListAllowedIdentities(ListAllowedIdentities),
+        /// List identities a publisher is currently publishing
+        ListPublishingIdentities(ListPublishingIdentities),
+        /// List data a publisher is publishing for an identity
+        ListPublishingKeyValues(ListPublishingKeyValues),
     }
 
     #[derive(Aargvark)]
@@ -363,6 +386,29 @@ fn api_url_(mut url: Option<Uri>, env_key: &'static str) -> Result<Uri, loga::Er
     }
 }
 
+async fn api_list<
+    T: DeserializeOwned,
+>(server: Option<Uri>, path: &str, get_key: fn(&T) -> String) -> Result<Vec<T>, loga::Error> {
+    let mut out = vec![];
+    let admin_headers = admin_headers()?;
+    let base_url = admin_api_url(server)?;
+    let mut res = htreq::get(format!("{}{}", base_url, path), &admin_headers, 1024 * 1024).await?;
+    loop {
+        let page: Vec<T> =
+            serde_json::from_slice(&res).context("Failed to parse response page from publisher admin")?;
+        let after = match page.last() {
+            Some(a) => Some(get_key(a)),
+            None => None,
+        };
+        out.extend(page);
+        let Some(after) = after else {
+            break;
+        };
+        res = htreq::get(format!("{}{}?after={}", base_url, path, after), &admin_headers, 1024 * 1024).await?;
+    }
+    return Ok(out);
+}
+
 async fn publish(
     log: &Log,
     server: &Uri,
@@ -442,6 +488,7 @@ async fn main() {
         });
         let log = &log;
         match args.command {
+            // Local
             args::Command::NewLocalIdentity(args) => {
                 let (ident, secret) = BackedIdentityLocal::new();
                 write_identity(&args.path, &secret).await.stack_context(&log, "Error creating local identity")?;
@@ -488,140 +535,6 @@ async fn main() {
                     }));
                 }
                 println!("{}", serde_json::to_string_pretty(&out).unwrap());
-            },
-            args::Command::Register(config) => {
-                let url = format!("{}publish/register/{}", admin_api_url(config.server)?, config.identity_id);
-                log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
-                htreq::post(&url, &admin_headers()?, vec![], 100).await?;
-            },
-            args::Command::Unregister(config) => {
-                let url = format!("{}publish/unregister/{}", admin_api_url(config.server)?, config.identity_id);
-                log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
-                htreq::post(&url, &admin_headers()?, vec![], 100).await?;
-            },
-            args::Command::Publish(config) => {
-                publish(log, &admin_api_url(config.server)?, config.identity, config.data.value).await?;
-            },
-            args::Command::PublishDns(config) => {
-                publish(log, &admin_api_url(config.server)?, config.identity, publish::latest::Publish {
-                    missing_ttl: config.ttl,
-                    data: {
-                        let mut kvs = HashMap::new();
-                        if !config.dns_cname.is_empty() {
-                            kvs.insert(KEY_DNS_CNAME.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_string(
-                                    &resolve::DnsCname::V1(resolve::latest::DnsCname(config.dns_cname)),
-                                ).unwrap(),
-                            });
-                        }
-                        if !config.dns_a.is_empty() {
-                            kvs.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_string(
-                                    &resolve::DnsA::V1(resolve::latest::DnsA(config.dns_a)),
-                                ).unwrap(),
-                            });
-                        }
-                        if !config.dns_aaaa.is_empty() {
-                            kvs.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_string(
-                                    &resolve::DnsAaaa::V1(resolve::latest::DnsAaaa(config.dns_aaaa)),
-                                ).unwrap(),
-                            });
-                        }
-                        if !config.dns_txt.is_empty() {
-                            kvs.insert(KEY_DNS_TXT.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_string(
-                                    &resolve::DnsTxt::V1(resolve::latest::DnsTxt(config.dns_txt)),
-                                ).unwrap(),
-                            });
-                        }
-                        kvs
-                    },
-                }).await?;
-            },
-            args::Command::Unpublish(config) => {
-                let mut signer =
-                    get_identity_signer(config.identity).stack_context(&log, "Error constructing signer")?;
-                let request_message = publish::latest::UnpublishRequestContent { now: Utc::now() };
-                log.log_with(DEBUG_OTHER, "Unsigned request message", ea!(message = request_message.dbg_str()));
-                let (identity, signature) =
-                    PublishIdentSignatureMethods::sign(
-                        signer.as_mut(),
-                        request_message,
-                    ).stack_context(&log, "Failed to sign unpublish request")?;
-                let request = publish::UnpublishRequest::V1(publish::latest::UnpublishRequest {
-                    identity: identity,
-                    content: signature,
-                });
-                let url = format!("{}publish/unpublish", admin_api_url(config.server)?);
-                log.log_with(
-                    DEBUG_OTHER,
-                    "Sending unpublish request",
-                    ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
-                );
-                htreq::post(&url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
-                    .await
-                    .stack_context(log, "Error making unpublish request")?;
-            },
-            args::Command::ListPublisherIdentities(config) => {
-                let mut out = vec![];
-                let admin_headers = admin_headers()?;
-                let base_url = admin_api_url(config.server)?;
-                let mut res = htreq::get(format!("{}publish", base_url), &admin_headers, 1024 * 1024).await?;
-                loop {
-                    let mut identities: Vec<Identity> =
-                        serde_json::from_slice(
-                            &res,
-                        ).stack_context(log, "Failed to parse response from publisher admin")?;
-                    for i in &identities {
-                        out.push(json!({
-                            "identity": i.to_string()
-                        }));
-                    }
-                    let after = match identities.pop() {
-                        Some(a) => a,
-                        None => break,
-                    };
-                    res =
-                        htreq::get(
-                            format!("{}publish?after={}", base_url, after),
-                            &admin_headers,
-                            1024 * 1024,
-                        ).await?;
-                }
-                println!("{}", serde_json::to_string_pretty(&out).unwrap());
-            },
-            args::Command::ListPublisherKeyValues(config) => {
-                println!(
-                    "{}",
-                    htreq::get_text(
-                        &format!("{}publish/{}", admin_api_url(config.server)?, config.identity),
-                        &admin_headers()?,
-                        1024 * 1024,
-                    ).await?
-                );
-            },
-            args::Command::Query(config) => {
-                let url =
-                    format!(
-                        "{}v1/{}?{}",
-                        api_url(config.server)?,
-                        config.identity,
-                        config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
-                    );
-                log.log_with(DEBUG_OTHER, "Sending query request", ea!(url = url));
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &serde_json::from_slice::<serde_json::Value>(
-                            &htreq::get(&url, &HashMap::new(), 1024 * 1024).await?,
-                        ).stack_context(log, "Response could not be parsed as JSON")?,
-                    ).unwrap()
-                );
             },
             args::Command::GenerateConfig(config) => {
                 let api = config.publisher.is_some() || config.resolver.is_some();
@@ -802,6 +715,139 @@ async fn main() {
                         out
                     },
                 }).await?;
+            },
+            // Resolver
+            args::Command::Query(config) => {
+                let url =
+                    format!(
+                        "{}v1/{}?{}",
+                        api_url(config.server)?,
+                        config.identity,
+                        config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
+                    );
+                log.log_with(DEBUG_OTHER, "Sending query request", ea!(url = url));
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::from_slice::<serde_json::Value>(
+                            &htreq::get(&url, &HashMap::new(), 1024 * 1024).await?,
+                        ).stack_context(log, "Response could not be parsed as JSON")?,
+                    ).unwrap()
+                );
+            },
+            // Publisher registered non-admin
+            args::Command::Publish(config) => {
+                publish(log, &admin_api_url(config.server)?, config.identity, config.data.value).await?;
+            },
+            args::Command::PublishDns(config) => {
+                publish(log, &admin_api_url(config.server)?, config.identity, publish::latest::Publish {
+                    missing_ttl: config.ttl,
+                    data: {
+                        let mut kvs = HashMap::new();
+                        if !config.dns_cname.is_empty() {
+                            kvs.insert(KEY_DNS_CNAME.to_string(), publish::latest::PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &resolve::DnsCname::V1(resolve::latest::DnsCname(config.dns_cname)),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_a.is_empty() {
+                            kvs.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &resolve::DnsA::V1(resolve::latest::DnsA(config.dns_a)),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_aaaa.is_empty() {
+                            kvs.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &resolve::DnsAaaa::V1(resolve::latest::DnsAaaa(config.dns_aaaa)),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_txt.is_empty() {
+                            kvs.insert(KEY_DNS_TXT.to_string(), publish::latest::PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_string(
+                                    &resolve::DnsTxt::V1(resolve::latest::DnsTxt(config.dns_txt)),
+                                ).unwrap(),
+                            });
+                        }
+                        kvs
+                    },
+                }).await?;
+            },
+            args::Command::Unpublish(config) => {
+                let mut signer =
+                    get_identity_signer(config.identity).stack_context(&log, "Error constructing signer")?;
+                let request_message = publish::latest::UnpublishRequestContent { now: Utc::now() };
+                log.log_with(DEBUG_OTHER, "Unsigned request message", ea!(message = request_message.dbg_str()));
+                let (identity, signature) =
+                    PublishIdentSignatureMethods::sign(
+                        signer.as_mut(),
+                        request_message,
+                    ).stack_context(&log, "Failed to sign unpublish request")?;
+                let request = publish::UnpublishRequest::V1(publish::latest::UnpublishRequest {
+                    identity: identity,
+                    content: signature,
+                });
+                let url = format!("{}publish/unpublish", admin_api_url(config.server)?);
+                log.log_with(
+                    DEBUG_OTHER,
+                    "Sending unpublish request",
+                    ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
+                );
+                htreq::post(&url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
+                    .await
+                    .stack_context(log, "Error making unpublish request")?;
+            },
+            // Publisher admin
+            args::Command::AllowIdentity(config) => {
+                let url =
+                    format!(
+                        "{}publish/admin/allowed_identities/{}",
+                        admin_api_url(config.server)?,
+                        config.identity_id
+                    );
+                log.log_with(DEBUG_OTHER, "Sending register request (POST)", ea!(url = url));
+                htreq::post(&url, &admin_headers()?, vec![], 100).await?;
+            },
+            args::Command::DisallowIdentity(config) => {
+                let url =
+                    format!(
+                        "{}publish/admin/allowed_identities/{}",
+                        admin_api_url(config.server)?,
+                        config.identity_id
+                    );
+                log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
+                htreq::delete(&url, &admin_headers()?, 100).await?;
+            },
+            args::Command::ListAllowedIdentities(config) => {
+                let out =
+                    api_list::<Identity>(config.server, "publish/admin/allowed_identities", |v| v.to_string())
+                        .await
+                        .stack_context(log, "Error listing allowed identities")?;
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            },
+            args::Command::ListPublishingIdentities(config) => {
+                let out =
+                    api_list::<Identity>(config.server, "publish/admin/announcements", |v| v.to_string())
+                        .await
+                        .stack_context(log, "Error listing publishing identities")?;
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            },
+            args::Command::ListPublishingKeyValues(config) => {
+                println!(
+                    "{}",
+                    htreq::get_text(
+                        &format!("{}publish/admin/announcements/{}", admin_api_url(config.server)?, config.identity),
+                        &admin_headers()?,
+                        1024 * 1024,
+                    ).await?
+                );
             },
         }
         return Ok(());

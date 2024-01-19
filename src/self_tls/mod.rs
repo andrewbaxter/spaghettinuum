@@ -17,6 +17,7 @@ use loga::{
     ea,
     ResultContext,
 };
+use p256::pkcs8::EncodePrivateKey;
 use taskmanager::TaskManager;
 use tokio::{
     sync::watch::{
@@ -99,7 +100,9 @@ pub async fn request_cert(
 
 #[derive(Clone)]
 pub struct CertPair {
+    /// X509 public cert, signed by certipasta CA key
     pub pub_pem: String,
+    /// PKCS8 private key
     pub priv_pem: String,
 }
 
@@ -136,7 +139,7 @@ pub async fn request_cert_stream(
                 .await
                 .context("Error requesting api server tls cert from certifier")?
                 .pub_pem;
-        let priv_pem = encode_priv_pem(&priv_key.to_sec1_der().unwrap());
+        let priv_pem = encode_priv_pem(priv_key.to_pkcs8_der().unwrap().as_bytes());
         db_pool.get().await?.interact({
             let pub_pem = pub_pem.clone();
             let priv_pem = priv_pem.clone();

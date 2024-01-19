@@ -164,6 +164,17 @@ pub fn publisher_cert_hash(cert_der: &[u8]) -> Result<Blob, ()> {
     );
 }
 
+pub fn auth_hash(s: &str) -> Blob {
+    return <Sha256 as Digest>::digest(s.as_bytes()).blob();
+}
+
+pub fn auth(want: &[u8], got: &Option<String>) -> bool {
+    let Some(got) = got.as_ref() else {
+        return false;
+    };
+    return auth_hash(got).as_ref() == want;
+}
+
 /// This manages identities/published values for the publisher.  The `DbAdmin`
 /// trait manages them in a persistent database, but you can implement your own if
 /// you want to control them fully programmatically.
@@ -312,15 +323,12 @@ impl Admin for DbAdmin {
         let after = after.cloned();
         return Ok(match after {
             None => {
-                self
-                    .db_pool
-                    .get()
-                    .await?
-                    .interact(|db| admin_db::list_announce_start(db))
-                    .await??
-                    .into_iter()
-                    .map(|p| (p.identity, p.value))
-                    .collect()
+                let outer = self.db_pool.get().await?;
+                let res = outer.interact(|db| {
+                    let out = admin_db::list_announce_start(db);
+                    out
+                }).await??.into_iter().map(|p| (p.identity, p.value)).collect();
+                res
             },
             Some(a) => {
                 self
@@ -633,14 +641,14 @@ pub fn build_api_endpoints(publisher: &Publisher, admin_token: &str) -> Result<R
         });
     })));
     routes.nest("admin", {
-        let admin_token = bcrypt::hash(admin_token, bcrypt::DEFAULT_COST).context("Error hashing admin token")?;
+        let admin_token = auth_hash(admin_token);
         let mut routes = Routes::new();
         routes.add("allowed_identities", Leaf::new().get(cap_fn!((r)(publisher, admin_token) {
             match async {
                 ta_res!(Response);
 
                 // Auth
-                if r.auth_bearer.and_then(|p| bcrypt::verify(&p, &admin_token).ok()).is_none() {
+                if !auth(&admin_token, &r.auth_bearer) {
                     return Ok(Response::AuthErr);
                 }
 
@@ -679,7 +687,7 @@ pub fn build_api_endpoints(publisher: &Publisher, admin_token: &str) -> Result<R
                 ta_res!(Response);
 
                 // Auth
-                if r.auth_bearer.and_then(|p| bcrypt::verify(&p, &admin_token).ok()).is_none() {
+                if !auth(&admin_token, &r.auth_bearer) {
                     return Ok(Response::AuthErr);
                 }
 
@@ -706,7 +714,7 @@ pub fn build_api_endpoints(publisher: &Publisher, admin_token: &str) -> Result<R
                 ta_res!(Response);
 
                 // Auth
-                if r.auth_bearer.and_then(|p| bcrypt::verify(&p, &admin_token).ok()).is_none() {
+                if !auth(&admin_token, &r.auth_bearer) {
                     return Ok(Response::AuthErr);
                 }
 
@@ -731,7 +739,7 @@ pub fn build_api_endpoints(publisher: &Publisher, admin_token: &str) -> Result<R
         })));
         routes.add("announcements", Leaf::new().get(cap_fn!((mut r)(publisher, admin_token) {
             // Auth
-            if r.auth_bearer.and_then(|p| bcrypt::verify(&p, &admin_token).ok()).is_none() {
+            if !auth(&admin_token, &r.auth_bearer) {
                 return Response::AuthErr;
             }
             if let Some(identity) = r.path.pop() {
