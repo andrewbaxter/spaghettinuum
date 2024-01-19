@@ -50,8 +50,8 @@ pub fn uri_parts(uri: &Uri) -> Result<(String, HostPart, u16), loga::Error> {
     if host.is_empty() {
         return Err(loga::err("Host portion of url is empty"));
     }
-    let host = match *host.as_bytes().get(0).unwrap() as char {
-        '[' => HostPart::Ip(
+    let host = if host.as_bytes()[0] as char == '[' {
+        HostPart::Ip(
             IpAddr::V6(
                 Ipv6Addr::from_str(
                     &String::from_utf8(
@@ -65,9 +65,11 @@ pub fn uri_parts(uri: &Uri) -> Result<(String, HostPart, u16), loga::Error> {
                     ).unwrap(),
                 ).context("Invalid ipv6 address in URL")?,
             ),
-        ),
-        '0' ..= '9' => HostPart::Ip(IpAddr::V4(Ipv4Addr::from_str(host).context("Invalid ipv4 address in URL")?)),
-        _ => HostPart::Name(host.to_string()),
+        )
+    } else if host.as_bytes().iter().all(|b| ('0' ..= '9').contains(&(*b as char))) {
+        HostPart::Ip(IpAddr::V4(Ipv4Addr::from_str(host).context("Invalid ipv4 address in URL")?))
+    } else {
+        HostPart::Name(host.to_string())
     };
     let scheme = uri.scheme().context("Url is missing scheme")?.to_string();
     let port = match uri.port_u16() {
