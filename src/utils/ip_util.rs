@@ -28,6 +28,7 @@ use crate::{
         htreq::{
             self,
             uri_parts,
+            rustls_client_config,
         },
     },
 };
@@ -134,7 +135,7 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
     let resp =
         htreq::send(
             HttpsConnectorBuilder::new()
-                .with_webpki_roots()
+                .with_tls_config(rustls_client_config())
                 .https_or_http()
                 .with_server_name(lookup_host.clone())
                 .enable_http1()

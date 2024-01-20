@@ -6,10 +6,15 @@ use std::{
         Ipv6Addr,
         Ipv4Addr,
     },
+    path::PathBuf,
+    sync::OnceLock,
+    io::BufReader,
+    fs::File,
 };
 use chrono::{
     Duration,
 };
+use futures::future::join_all;
 use http_body_util::{
     Limited,
     BodyExt,
@@ -31,12 +36,49 @@ use rand::{
     seq::SliceRandom,
     thread_rng,
 };
+use rustls::ClientConfig;
 use tokio::{
     select,
     time::sleep,
+    sync::{
+        mpsc,
+    },
 };
 use tower_service::Service;
-use crate::ta_res;
+use crate::{
+    ta_res,
+    utils::tls_util::encode_pub_pem,
+};
+
+pub fn rustls_client_config() -> rustls::ClientConfig {
+    static S: OnceLock<rustls::ClientConfig> = OnceLock::new();
+    return S.get_or_init(|| {
+        ClientConfig::builder().with_root_certificates({
+            let mut roots = rustls::RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let path = PathBuf::from("/usr/local/ssl/spagh_cert.crt");
+            if path.exists() {
+                for cert in rustls_pemfile::certs(
+                    &mut BufReader::new(
+                        File::open(&path)
+                            .context_with("Error opening additional cert", ea!(path = path.to_string_lossy()))
+                            .unwrap(),
+                    ),
+                ) {
+                    let cert =
+                        cert
+                            .context_with("Error reading additional cert", ea!(path = path.to_string_lossy()))
+                            .unwrap();
+                    roots
+                        .add(cert.clone())
+                        .context_with("Invalid additional cert", ea!(cert = encode_pub_pem(&cert)))
+                        .unwrap();
+                }
+            }
+            roots
+        }).with_no_client_auth()
+    }).clone();
+}
 
 pub type Conn = hyper_rustls::MaybeHttpsStream<hyper_util::rt::tokio::TokioIo<tokio::net::TcpStream>>;
 
@@ -130,16 +172,16 @@ pub async fn send<
 /// used for schema, host, and port.
 pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
     let (scheme, host, port) = uri_parts(base_uri).context("Incomplete url")?;
-    let (mut try_ips, host) = match host {
+    let (try_ips, host) = match host {
         HostPart::Ip(i) => (vec![i], i.to_string()),
         HostPart::Name(host) => {
             let mut ipv4s = vec![];
             let mut ipv6s = vec![];
-            for ip in hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
-                let mut opts = hickory_resolver::config::ResolverOpts::default();
-                opts.ip_strategy = hickory_resolver::config::LookupIpStrategy::Ipv4AndIpv6;
-                opts
-            }).lookup_ip(&format!("{}.", host)).await.context("Failed to look up lookup host ip addresses")? {
+            for ip in hickory_resolver::TokioAsyncResolver::tokio_from_system_conf()
+                .context("Error reading resolv.conf")?
+                .lookup_ip(&format!("{}.", host))
+                .await
+                .context("Failed to look up lookup host ip addresses")? {
                 match ip {
                     std::net::IpAddr::V4(_) => {
                         ipv4s.push(ip);
@@ -158,40 +200,54 @@ pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
             (try_ips, host)
         },
     };
-
-    async fn inner(ip: IpAddr, scheme: &str, host: &str, port: u16) -> Result<Conn, loga::Error> {
-        return Ok(
-            HttpsConnectorBuilder::new()
-                .with_webpki_roots()
-                .https_or_http()
-                .with_server_name(host.to_string())
-                .enable_http1()
-                .build()
-                .call(Uri::from_str(&format!("{}://{}:{}", scheme, match ip {
-                    IpAddr::V4(i) => i.to_string(),
-                    IpAddr::V6(i) => format!("[{}]", i),
-                }, port)).unwrap())
-                .await
-                .map_err(
-                    |e| loga::err_with(
-                        "Error connecting to host",
-                        ea!(err = e.to_string(), dest_addr = ip, host = host, port = port),
-                    ),
-                )?,
-        );
+    let mut bg = vec![];
+    let (found_tx, mut found_rx) = mpsc::channel(1);
+    for ip in try_ips {
+        bg.push({
+            let found_tx = found_tx.clone();
+            let scheme = &scheme;
+            let host = &host;
+            async move {
+                ta_res!(());
+                let conn =
+                    HttpsConnectorBuilder::new()
+                        .with_tls_config(rustls_client_config())
+                        .https_or_http()
+                        .with_server_name(host.to_string())
+                        .enable_http1()
+                        .build()
+                        .call(Uri::from_str(&format!("{}://{}:{}", scheme, match ip {
+                            IpAddr::V4(i) => i.to_string(),
+                            IpAddr::V6(i) => format!("[{}]", i),
+                        }, port)).unwrap())
+                        .await
+                        .map_err(
+                            |e| loga::err_with(
+                                "Error connecting to host",
+                                ea!(err = e.to_string(), dest_addr = ip, host = host, port = port),
+                            ),
+                        )?;
+                _ = found_tx.send(conn);
+                return Ok(());
+            }
+        });
     }
 
-    let first_ip = try_ips.pop().context("No dns records found for host")?;
-    match try_ips.pop() {
-        Some(second_ip) => {
-            select!{
-                first = inner(first_ip, &scheme, &host, port) => return Ok(first?),
-                second = inner(second_ip, &scheme, &host, port) => return Ok(second?),
+    select!{
+        failed = join_all(bg) => {
+            if failed.is_empty() {
+                return Err(loga::err("No addresses found when looking up host"));
             }
-        },
-        None => {
-            return Ok(inner(first_ip, &scheme, &host, port).await?);
-        },
+            if let Ok(found) = found_rx.try_recv() {
+                return Ok(found);
+            }
+            return Err(
+                loga::agg_err("Unable to connect to host", failed.into_iter().map(|e| e.unwrap_err()).collect()),
+            );
+        }
+        found = found_rx.recv() => {
+            return Ok(found.unwrap());
+        }
     }
 }
 
