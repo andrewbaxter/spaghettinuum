@@ -167,12 +167,17 @@ struct NextChallengeTimeout {
     key: (node_identity::NodeIdentity, usize),
 }
 
+struct Buckets {
+    buckets: [Vec<node_protocol::latest::NodeState>; HASH_SIZE],
+    addrs: HashMap<SocketAddr, NodeIdentity>,
+}
+
 struct NodeInner {
     log: Log,
     own_ident: node_identity::NodeIdentity,
     own_coord: DhtCoord,
     own_secret: node_identity::NodeSecret,
-    buckets: Mutex<[Vec<node_protocol::latest::NodeState>; HASH_SIZE]>,
+    buckets: Mutex<Buckets>,
     store: Mutex<HashMap<Identity, ValueState>>,
     dirty: AtomicBool,
     socket: UdpSocket,
@@ -316,8 +321,10 @@ impl Node {
         let mut do_bootstrap = false;
         let own_ident;
         let own_secret;
-        let mut initial_buckets =
-            array_init::array_init::<_, Vec<node_protocol::latest::NodeState>, HASH_SIZE>(|_| vec![]);
+        let mut initial_buckets = Buckets {
+            buckets: array_init::array_init(|_| vec![]),
+            addrs: HashMap::new(),
+        };
         let db_pool =
             setup_db(&persistent_path.join("node.sqlite3"), db::migrate)
                 .await
@@ -339,7 +346,6 @@ impl Node {
         let own_coord = node_ident_coord(&own_ident);
         {
             let mut no_neighbors = true;
-            let mut seen = HashSet::new();
             for e in db
                 .interact(|conn| db::neighbors_get(&conn))
                 .await
@@ -348,12 +354,21 @@ impl Node {
                 let state = match e {
                     node_protocol::NodeState::V1(s) => s,
                 };
-                if !seen.insert(state.node.ident) {
-                    log.log_with(WARN, "Duplicate neighbor in database, skipping", ea!(ident = state.node.ident));
-                    continue;
-                }
                 let (leading_zeros, _) = dist(&node_ident_coord(&state.node.ident), &own_coord);
-                initial_buckets[leading_zeros].push(state);
+                match initial_buckets.addrs.entry(state.node.address.0) {
+                    Entry::Occupied(v) => {
+                        log.log_with(
+                            WARN,
+                            "Duplicate neighbor address in database, skipping",
+                            ea!(addr = state.node.address, ident1 = state.node.ident, ident2 = v.get()),
+                        );
+                        continue;
+                    },
+                    Entry::Vacant(v) => {
+                        v.insert(state.node.ident);
+                    },
+                }
+                initial_buckets.buckets[leading_zeros].push(state);
                 no_neighbors = false;
             }
             if no_neighbors {
@@ -418,7 +433,7 @@ impl Node {
                         db_pool.get().await.context("Error getting db connection")?.interact(move |conn| {
                             db::secret_ensure(conn, &dir.0.own_secret)?;
                             db::neighbors_clear(conn)?;
-                            for bucket in dir.0.buckets.lock().unwrap().clone().into_iter() {
+                            for bucket in dir.0.buckets.lock().unwrap().buckets.clone().into_iter() {
                                 for n in bucket {
                                     db::neighbors_insert(conn, &node_protocol::NodeState::V1(n))?;
                                 }
@@ -502,7 +517,7 @@ impl Node {
                     for i in 0 .. NEIGHBORHOOD {
                         for leading_zeros in 0 .. HASH_SIZE {
                             let (id, addr) =
-                                if let Some(node) = dir.0.buckets.lock().unwrap()[leading_zeros].get(i) {
+                                if let Some(node) = dir.0.buckets.lock().unwrap().buckets[leading_zeros].get(i) {
                                     (node.node.ident.clone(), node.node.address.clone())
                                 } else {
                                     continue;
@@ -648,7 +663,7 @@ impl Node {
 
     fn mark_node_unresponsive(&self, key: node_identity::NodeIdentity, leading_zeros: usize, unresponsive: bool) {
         let mut buckets = self.0.buckets.lock().unwrap();
-        let bucket = &mut buckets[leading_zeros];
+        let bucket = &mut buckets.buckets[leading_zeros];
         for n in bucket {
             if n.node.ident == key {
                 n.unresponsive = unresponsive;
@@ -1120,7 +1135,7 @@ impl Node {
         let (leading_zeros, _) = dist(&target_hash, &self.0.own_coord);
         let mut nodes: Vec<node_protocol::latest::NodeInfo> = vec![];
         'outer1: for bucket in leading_zeros .. HASH_SIZE {
-            for state in &buckets[bucket] {
+            for state in &buckets.buckets[bucket] {
                 if nodes.len() >= count {
                     break 'outer1;
                 }
@@ -1129,7 +1144,7 @@ impl Node {
         }
         if leading_zeros > 0 {
             'outer: for bucket in (0 .. leading_zeros - 1).rev() {
-                for state in &buckets[bucket] {
+                for state in &buckets.buckets[bucket] {
                     if nodes.len() >= count {
                         break 'outer;
                     }
@@ -1264,38 +1279,68 @@ impl Node {
     /// Add a node, or check if adding a node would be new (returns whether id is new)
     fn add_good_node(&self, id: node_identity::NodeIdentity, node: Option<node_protocol::latest::NodeInfo>) -> bool {
         let log = self.0.log.fork(ea!(activity = "add_good_node", node = id.dbg_str()));
+        let log = &log;
         if id == self.0.own_ident {
             log.log(DEBUG_NODE, "Own node id, ignoring");
             return false;
         }
         let (leading_zeros, _) = dist(&node_ident_coord(&id), &self.0.own_coord);
-        let buckets = &mut self.0.buckets.lock().unwrap();
+        let mut buckets = self.0.buckets.lock().unwrap();
+        let buckets = &mut *buckets;
+
+        fn store_addr(
+            log: &Log,
+            buckets: &mut Buckets,
+            own_coord: &DhtCoord,
+            addr: SocketAddr,
+            new_ident: NodeIdentity,
+        ) {
+            if let Some(old) = buckets.addrs.get(&addr) {
+                let (leading_zeros, _) = dist(&node_ident_coord(old), own_coord);
+                let bucket = &mut buckets.buckets[leading_zeros];
+                for i in 0 .. bucket.len() {
+                    let n = &mut bucket[i];
+                    if &n.node.ident == old {
+                        log.log_with(
+                            DEBUG_NODE,
+                            "Replaced node with same addr",
+                            ea!(addr = addr, old_ident = old, new_ident = new_ident),
+                        );
+                        bucket.remove(i);
+                    }
+                }
+            };
+            buckets.addrs.insert(addr, new_ident);
+        }
+
         let new_node = 'logic : loop {
-            let bucket = &mut buckets[leading_zeros];
+            let bucket = &mut buckets.buckets[leading_zeros];
             let mut last_unresponsive: Option<usize> = None;
 
             // Updated or already known
             for i in 0 .. bucket.len() {
-                let n = &mut bucket[i];
-                if n.node.ident == id {
+                let bucket_entry = &mut bucket[i];
+                if bucket_entry.node.ident == id {
                     if let Some(node) = node {
-                        if n.unresponsive {
-                            n.unresponsive = false;
+                        if bucket_entry.unresponsive {
+                            bucket_entry.unresponsive = false;
                         }
+                        buckets.addrs.remove(&bucket_entry.node.address.0);
                         let new_state = node_protocol::latest::NodeState {
                             node: node.clone(),
                             unresponsive: false,
                         };
-                        let changed = *n == new_state;
-                        *n = new_state;
+                        let changed = *bucket_entry == new_state;
+                        *bucket_entry = new_state;
                         if changed {
                             self.0.dirty.store(true, Ordering::Relaxed);
                         }
                         log.log(DEBUG_NODE, "Updated existing node");
+                        store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident);
                     }
                     break 'logic false;
                 }
-                if n.unresponsive {
+                if bucket_entry.unresponsive {
                     last_unresponsive = Some(i);
                 }
             }
@@ -1309,6 +1354,7 @@ impl Node {
                     });
                     self.0.dirty.store(true, Ordering::Relaxed);
                     log.log(DEBUG_NODE, "Added node to empty slot");
+                    store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident);
                 }
                 break true;
             }
@@ -1316,6 +1362,7 @@ impl Node {
             // Replacing dead
             if let Some(i) = last_unresponsive {
                 if let Some(node) = node {
+                    buckets.addrs.remove(&bucket[i].node.address.0);
                     bucket.remove(i);
                     bucket.push(node_protocol::latest::NodeState {
                         node: node.clone(),
@@ -1323,6 +1370,7 @@ impl Node {
                     });
                     self.0.dirty.store(true, Ordering::Relaxed);
                     log.log(DEBUG_NODE, "Replaced dead node");
+                    store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident);
                 }
                 break 'logic true;
             }
