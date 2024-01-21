@@ -6,10 +6,7 @@ use std::{
         Ipv6Addr,
         Ipv4Addr,
     },
-    path::PathBuf,
     sync::OnceLock,
-    io::BufReader,
-    fs::File,
 };
 use chrono::{
     Duration,
@@ -27,7 +24,10 @@ use hyper::{
     Uri,
     body::Bytes,
 };
-use hyper_rustls::HttpsConnectorBuilder;
+use hyper_rustls::{
+    HttpsConnectorBuilder,
+    ConfigBuilderExt,
+};
 use loga::{
     ea,
     ResultContext,
@@ -47,36 +47,16 @@ use tokio::{
 use tower_service::Service;
 use crate::{
     ta_res,
-    utils::tls_util::encode_pub_pem,
 };
 
 pub fn rustls_client_config() -> rustls::ClientConfig {
     static S: OnceLock<rustls::ClientConfig> = OnceLock::new();
-    return S.get_or_init(|| {
-        ClientConfig::builder().with_root_certificates({
-            let mut roots = rustls::RootCertStore::empty();
-            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            let path = PathBuf::from("/usr/local/ssl/spagh_cert.crt");
-            if path.exists() {
-                for cert in rustls_pemfile::certs(
-                    &mut BufReader::new(
-                        File::open(&path)
-                            .context_with("Error opening additional cert", ea!(path = path.to_string_lossy()))
-                            .unwrap(),
-                    ),
-                ) {
-                    let cert =
-                        cert
-                            .context_with("Error reading additional cert", ea!(path = path.to_string_lossy()))
-                            .unwrap();
-                    roots
-                        .add(cert.clone())
-                        .context_with("Invalid additional cert", ea!(cert = encode_pub_pem(&cert)))
-                        .unwrap();
-                }
-            }
-            roots
-        }).with_no_client_auth()
+    return S.get_or_init(move || {
+        ClientConfig::builder()
+            .with_native_roots()
+            .context("Error loading native roots")
+            .unwrap()
+            .with_no_client_auth()
     }).clone();
 }
 

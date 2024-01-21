@@ -50,7 +50,7 @@ loga = "0.3.7"
 aargvark = { version = "0.0.8", features = ["serde_json", "http_types", "url"] }
 poem = { version = "2", features = [
     "rustls",
-    "acme-webpki-roots",
+    "acme-native-roots",
 ], path = "fork-poem/poem" }
 openpgp-card-pcsc = { version = "0.3", optional = true }
 openpgp-card-sequoia = { version = "0.1", optional = true }
@@ -63,7 +63,6 @@ pem = "2"
 deadpool-sqlite = "0.7"
 hickory-server = { version = "0.24", features = ["dns-over-rustls"] }
 hickory-proto = { version = "0.24", features = [
-    "webpki-roots",
     "dns-over-rustls",
     "backtrace",
 ] }
@@ -89,7 +88,6 @@ ecdsa = { version = "0.16", features = [
 ] }
 p256 = "0.13"
 hickory-resolver = { version = "0.24", features = [
-    "webpki-roots",
     "tokio",
     "dns-over-rustls",
     "system-config",
@@ -98,7 +96,7 @@ rustls-pemfile = "2"
 constant_time_eq = "0.3"
 serde_urlencoded = "0.7"
 hyper = "1"
-hyper-rustls = { version = "0.26", features = ["webpki-roots"] }
+hyper-rustls = { version = "0.26", features = [] }
 hyper-util = { version = "0.1", features = [
     "service",
     "http1",
@@ -108,7 +106,6 @@ hyper-util = { version = "0.1", features = [
 tower-service = "0.3"
 http-body-util = "0.1"
 http-body = "1"
-webpki-roots = "0.26.0"
 
 [target.'cfg(target_env = "musl")'.dependencies]
 # Add feature to transitive dep of rusqlite, working around crates.io obstructive nannying

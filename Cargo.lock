@@ -1565,7 +1565,6 @@ dependencies = [
  "tokio-rustls 0.24.1",
  "tracing",
  "url",
- "webpki-roots 0.25.3",
 ]
 
 [[package]]
@@ -1590,7 +1589,6 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.24.1",
  "tracing",
- "webpki-roots 0.25.3",
 ]
 
 [[package]]
@@ -1774,12 +1772,11 @@ dependencies = [
  "hyper-util",
  "log",
  "rustls 0.22.2",
- "rustls-native-certs",
+ "rustls-native-certs 0.7.0",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls 0.25.0",
  "tower-service",
- "webpki-roots 0.26.0",
 ]
 
 [[package]]
@@ -2942,6 +2939,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "rustls 0.21.10",
+ "rustls-native-certs 0.6.3",
  "rustls-pemfile 1.0.4",
  "serde",
  "serde_json",
@@ -2954,7 +2952,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots 0.25.3",
  "winreg",
 ]
 
@@ -3167,6 +3164,18 @@ dependencies = [
  "rustls-webpki 0.102.1",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rustls-native-certs"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9aace74cb666635c918e9c12bc0d348266037aa8eb599b5cba565709a8dff00"
+dependencies = [
+ "openssl-probe",
+ "rustls-pemfile 1.0.4",
+ "schannel",
+ "security-framework",
 ]
 
 [[package]]
@@ -3639,7 +3648,6 @@ dependencies = [
  "tokio-stream",
  "tower-service",
  "urlencoding",
- "webpki-roots 0.26.0",
  "x509-cert",
  "zbase32",
 ]
@@ -4455,21 +4463,6 @@ checksum = "50c24a44ec86bb68fbecd1b3efed7e85ea5621b39b35ef2766b66cd984f8010f"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "webpki-roots"
-version = "0.25.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1778a42e8b3b90bff8d0f5032bf22250792889a5cdc752aa0020c84abe3aaf10"
-
-[[package]]
-name = "webpki-roots"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0de2cfda980f21be5a7ed2eadb3e6fe074d56022bea2cdeb1a62eb220fc04188"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]
