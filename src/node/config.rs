@@ -14,7 +14,7 @@ pub struct BootstrapConfig {
     /// Peer address.
     pub addr: StrSocketAddr,
     /// Node ID at that address.
-    pub id: NodeIdentity,
+    pub ident: NodeIdentity,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

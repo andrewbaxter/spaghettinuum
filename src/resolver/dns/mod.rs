@@ -713,7 +713,7 @@ pub async fn start_dns_bridge(
                             SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 80)),
                             SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 80, 0, 0)),
                         ] {
-                            subtm.critical_task("Listener", {
+                            subtm.critical_task(format!("Listener ({})", bind_addr), {
                                 let tokens = tokens.clone();
                                 let subtm = subtm.clone();
                                 async move {

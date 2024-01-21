@@ -205,7 +205,7 @@ async fn main() {
             let mut bootstrap = vec![];
             for e in config.node.bootstrap {
                 bootstrap.push(NodeInfo {
-                    id: e.id,
+                    ident: e.ident,
                     address: SerialAddr(
                         e.addr.resolve().stack_context(log, "Error resolving bootstrap node address")?,
                     ),
@@ -380,7 +380,7 @@ async fn main() {
                         Server::new(TcpListener::bind(bind_addr)).run(api_endpoints).boxed()
                     },
                 };
-                tm.critical_task("API - Server", {
+                tm.critical_task(format!("API - Server ({})", bind_addr), {
                     let log = log.clone();
                     let tm = tm.clone();
                     async move {

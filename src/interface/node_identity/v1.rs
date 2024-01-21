@@ -17,7 +17,7 @@ use crate::utils::blob::ToBlob;
 use super::NodeIdentityMethods;
 use super::NodeSecretMethods;
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub struct Ed25519NodeIdentity(VerifyingKey);
 
 impl Serialize for Ed25519NodeIdentity {
@@ -47,12 +47,6 @@ impl<'de> Deserialize<'de> for Ed25519NodeIdentity {
 impl Debug for Ed25519NodeIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("Ed25519NodeId").field(&zbase32::encode_full_bytes(&self.0.to_bytes())).finish()
-    }
-}
-
-impl core::hash::Hash for Ed25519NodeIdentity {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write(&self.0.to_bytes());
     }
 }
 

@@ -3,7 +3,6 @@ use good_ormning::sqlite::{
     Query,
     schema::field::{
         field_str,
-        field_u32,
         field_i32,
     },
     query::{
@@ -44,7 +43,6 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
 
     // Persistend neighbors
     let neighbors = v.table("zDY20L3FM", "neighbors");
-    let neighbors_bucket = neighbors.field(v, "zM12Y66J2", "bucket", field_u32().build());
     let neighbors_neighbor =
         neighbors.field(
             v,
@@ -56,13 +54,13 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
         queries.push(
             new_insert(
                 &neighbors,
-                vec![set_field("bucket", &neighbors_bucket), set_field("neighbor", &neighbors_neighbor)],
+                vec![set_field("neighbor", &neighbors_neighbor)],
             ).build_query("neighbors_insert", QueryResCount::None),
         );
         queries.push(new_delete(&neighbors).build_query("neighbors_clear", QueryResCount::None));
         queries.push(
             new_select(&neighbors)
-                .return_fields(&[&neighbors_bucket, &neighbors_neighbor])
+                .return_fields(&[&neighbors_neighbor])
                 .build_query("neighbors_get", QueryResCount::Many),
         );
     }

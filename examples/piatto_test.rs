@@ -86,7 +86,7 @@ async fn main() {
                     StrSocketAddr::from(addr.clone()),
                     &prev_node.take().map(|(addr, id)| NodeInfo {
                         address: addr,
-                        id: id,
+                        ident: id,
                     }).into_iter().collect_vec(),
                     &path,
                 ).await?;

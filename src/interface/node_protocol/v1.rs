@@ -135,7 +135,7 @@ impl<'a> Deserialize<'a> for SerialAddr {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct NodeInfo {
-    pub id: NodeIdentity,
+    pub ident: NodeIdentity,
     pub address: SerialAddr,
 }
 
