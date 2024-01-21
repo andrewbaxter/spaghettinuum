@@ -375,8 +375,7 @@ impl Node {
                 do_bootstrap = true;
             }
         }
-        let log = log.fork(ea!(own_node_ident = own_ident));
-        log.log(INFO, "Starting");
+        log.log_with(INFO, "Starting", ea!(own_node_ident = own_ident));
         let sock = {
             let log = log.fork(ea!(addr = bind_addr));
             UdpSocket::bind(bind_addr.resolve()?).await.stack_context(&log, "Failed to open node UDP port")?
@@ -1382,7 +1381,7 @@ impl Node {
 
     async fn send(&self, addr: &SocketAddr, data: Protocol) {
         let bytes = data.to_bytes();
-        self.0.log.log_with(DEBUG_NODE, "Sending", ea!(to_addr = addr, message = data.dbg_str(), size = bytes.len()));
+        self.0.log.log_with(DEBUG_NODE, "Sending", ea!(to_addr = addr, message = data.dbg_str()));
         self.0.socket.send_to(&bytes, addr).await.unwrap();
     }
 }
