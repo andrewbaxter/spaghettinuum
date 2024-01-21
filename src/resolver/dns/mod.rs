@@ -37,6 +37,7 @@ use crate::{
         time_util::ToInstant,
     },
     ta_res,
+    ta_vis_res,
 };
 use crate::utils::{
     ResultVisErr,
@@ -193,10 +194,7 @@ pub async fn start_dns_bridge(
         ) -> hickory_server::server::ResponseInfo {
             let self1 = self.0.clone();
             match async {
-                if false {
-                    // Type assertion
-                    return Err(loga::err("")).err_internal() as Result<ResponseInfo, VisErr>;
-                }
+                ta_vis_res!(ResponseInfo);
                 if request.query().query_class() == DNSClass::IN &&
                     request.query().name().base_name() == self1.expect_suffix {
                     self.0.log.log_with(DEBUG_DNS_S, "Received spagh request", ea!(request = request.dbg_str()));
