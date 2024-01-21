@@ -159,6 +159,8 @@ pub async fn start_dns_bridge(
     dns_config: DnsBridgeConfig,
     persistent_dir: &Path,
 ) -> Result<(), loga::Error> {
+    let log = log.fork(ea!(subsys = "dns"));
+    let log = &log;
     let db_pool =
         setup_db(&persistent_dir.join("resolver_dns_bridge.sqlite3"), db::migrate)
             .await
@@ -399,7 +401,10 @@ pub async fn start_dns_bridge(
                             .err_internal()?,
                     );
                 } else {
-                    self.0.log.log_with(DEBUG_DNS_OTHER, "Received spagh request", ea!(request = request.dbg_str()));
+                    self
+                        .0
+                        .log
+                        .log_with(DEBUG_DNS_OTHER, "Received non-spagh request", ea!(request = request.dbg_str()));
                     let resp = self1.upstream.send(DnsRequest::new(Message::from(MessageParts {
                         header: *request.header(),
                         queries: vec![{
@@ -631,7 +636,7 @@ pub async fn start_dns_bridge(
                         }
                     }
 
-                    log.log(DEBUG_DNS_S | DEBUG_DNS_OTHER, "Refreshing certificate");
+                    log.log(DEBUG_DNS, "Refreshing certificate");
                     match async {
                         // Retrieve or create a new key for acme communication
                         let acme_key_pem;
@@ -795,7 +800,7 @@ pub async fn start_dns_bridge(
         }
     }
     tm.critical_task::<_, loga::Error>({
-        let log = log.fork(ea!(subsys = "dns"));
+        let log = log.clone();
         let tm1 = tm.clone();
         async move {
             match tm1.if_alive(server.block_until_done()).await {

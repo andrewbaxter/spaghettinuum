@@ -196,7 +196,7 @@ impl Resolver {
         };
 
         // Request values via publisher
-        let log = self.0.log.fork(ea!(url = resp.addr, action = "publisher_request"));
+        let log = self.0.log.fork(ea!(publisher = resp.addr, action = "publisher_request"));
         let log = &log;
 
         #[derive(Debug)]
@@ -280,7 +280,7 @@ impl Resolver {
                     .build()
                     .call(uri.clone())
                     .await
-                    .map_err(|e| loga::err_with("Error connecting to lookup host", ea!(err = e.to_string())))?,
+                    .map_err(|e| log.err_with("Error connecting to publisher", ea!(err = e.to_string())))?,
                 128 * 1024 * request_keys.len(),
                 Duration::seconds(10),
                 Request::builder()

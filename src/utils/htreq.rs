@@ -214,16 +214,23 @@ pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
     }
 
     select!{
-        failed = join_all(bg) => {
-            if failed.is_empty() {
+        results = join_all(bg) => {
+            if results.is_empty() {
                 return Err(loga::err("No addresses found when looking up host"));
             }
-            if let Ok(found) = found_rx.try_recv() {
-                return Ok(found);
+            let mut failed = vec![];
+            for res in results {
+                match res {
+                    Ok(_) => {
+                        let found = found_rx.recv().await.unwrap();
+                        return Ok(found);
+                    },
+                    Err(e) => {
+                        failed.push(e);
+                    },
+                }
             }
-            return Err(
-                loga::agg_err("Unable to connect to host", failed.into_iter().map(|e| e.unwrap_err()).collect()),
-            );
+            return Err(loga::agg_err("Unable to connect to host", failed));
         }
         found = found_rx.recv() => {
             return Ok(found.unwrap());
