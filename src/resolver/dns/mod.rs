@@ -32,8 +32,11 @@ use crate::{
             DEBUG_DNS_OTHER,
             DEBUG_DNS,
             WARN,
+            INFO,
         },
+        time_util::ToInstant,
     },
+    ta_res,
 };
 use crate::utils::{
     ResultVisErr,
@@ -130,7 +133,10 @@ use tokio::{
         TcpListener,
     },
     select,
-    time::sleep,
+    time::{
+        sleep,
+        sleep_until,
+    },
 };
 use hickory_server::{
     authority::MessageResponseBuilder,
@@ -607,7 +613,7 @@ pub async fn start_dns_bridge(
 
         // Start cert refreshing task
         let near_expiry_thresh = Duration::hours(7 * 24);
-        tm.critical_task({
+        tm.critical_task("DNS bridge - DoT cert refresher", {
             let tm = tm.clone();
             let cert = cert.clone();
             let db_pool = db_pool.clone();
@@ -618,25 +624,26 @@ pub async fn start_dns_bridge(
             async move {
                 let log = &log;
                 loop {
-                    let until_near_expiry;
+                    let near_expiry;
                     if let Some(cert_expiry) = cert_expiry.lock().unwrap().clone() {
-                        until_near_expiry =
-                            <DateTime<Utc>>::from(cert_expiry)
-                                .signed_duration_since(Utc::now())
-                                .checked_sub(&near_expiry_thresh)
-                                .unwrap();
+                        near_expiry = <DateTime<Utc>>::from(cert_expiry) - near_expiry_thresh;
                     } else {
-                        until_near_expiry = Duration::zero();
+                        near_expiry = Utc::now();
                     }
+                    log.log_with(
+                        DEBUG_DNS,
+                        "Sleeping until time to refresh cert",
+                        ea!(deadline = near_expiry.to_rfc3339()),
+                    );
 
                     select!{
-                        _ = sleep(until_near_expiry.to_std().unwrap()) =>(),
+                        _ = sleep_until(near_expiry.to_instant()) =>(),
                         _ = tm.until_terminate() => {
                             break;
                         }
                     }
 
-                    log.log(DEBUG_DNS, "Refreshing certificate");
+                    log.log(DEBUG_DNS, "Refreshing cert");
                     match async {
                         // Retrieve or create a new key for acme communication
                         let acme_key_pem;
@@ -701,15 +708,16 @@ pub async fn start_dns_bridge(
 
                         // Start challenge listener
                         let tokens = Http01TokensMap::new();
-                        let subtm = tm.sub();
+                        let subtm = tm.sub("DNS bridge - DoT cert refresher ACME listener");
                         for bind_addr in [
                             SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 80)),
                             SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 80, 0, 0)),
                         ] {
-                            subtm.critical_task({
+                            subtm.critical_task("Listener", {
                                 let tokens = tokens.clone();
                                 let subtm = subtm.clone();
                                 async move {
+                                    ta_res!(());
                                     Server::new(poem::listener::TcpListener::bind(bind_addr))
                                         .run_with_graceful_shutdown(
                                             RouteScheme::new().http(Http01Endpoint { keys: tokens }),
@@ -717,7 +725,7 @@ pub async fn start_dns_bridge(
                                             Some(Duration::seconds(60).to_std().unwrap().into()),
                                         )
                                         .await?;
-                                    return Ok(()) as Result<_, loga::Error>;
+                                    return Ok(());
                                 }
                             });
                         }
@@ -734,7 +742,7 @@ pub async fn start_dns_bridge(
                                 .await
                                 .context("Error issuing new cert")?;
                         subtm.terminate();
-                        if let Err(e) = subtm.join().await {
+                        if let Err(e) = subtm.join(log, INFO).await {
                             log.log_err(WARN, e.context("Error in one of the ACME challenge listeners"));
                         }
                         (*cert.lock().unwrap()) =
@@ -746,15 +754,13 @@ pub async fn start_dns_bridge(
                             );
                         (*cert_expiry.lock().unwrap()) =
                             Some(extract_expiry(&res.public_pem).context("Error reading expiry from new certs")?);
-                        log.log(DEBUG_DNS, "Successfully refreshed certificate");
+                        let pub_pem =
+                            String::from_utf8(res.public_pem).context("Issued public cert PEM is invalid utf-8")?;
+                        log.log_with(DEBUG_DNS, "Successfully refreshed certificate", ea!(pub_pem = pub_pem));
                         db_pool.tx(move |txn| {
                             db::dot_certs_set(
                                 txn,
-                                Some(
-                                    &String::from_utf8(
-                                        res.public_pem,
-                                    ).context("Issued public cert PEM is invalid utf-8")?,
-                                ),
+                                Some(&pub_pem),
                                 Some(
                                     &String::from_utf8(
                                         res.private_pem,
@@ -799,17 +805,21 @@ pub async fn start_dns_bridge(
                 .stack_context_with(log, "Error registering TLS listener", ea!(bind_addr = bind_addr))?;
         }
     }
-    tm.critical_task::<_, loga::Error>({
+    tm.critical_task::<_, loga::Error>("DNS bridge - server", {
         let log = log.clone();
-        let tm1 = tm.clone();
+        let tm = tm.clone();
         async move {
-            match tm1.if_alive(server.block_until_done()).await {
-                Some(r) => {
+            ta_res!(());
+
+            select!{
+                _ = tm.until_terminate() => {
+                    return Ok(());
+                }
+                r = server.block_until_done() => {
                     r.stack_context(&log, "Server exited with error")?;
-                },
-                None => { },
-            };
-            return Ok(());
+                    return Err(log.err("Server unexpectedly exited"));
+                }
+            }
         }
     });
     return Ok(());

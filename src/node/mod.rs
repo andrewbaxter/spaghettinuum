@@ -22,6 +22,7 @@ use crate::utils::log::{
 };
 use crate::utils::time_util::ToInstant;
 use constant_time_eq::constant_time_eq;
+use tokio::select;
 use tokio::time::sleep;
 use crate::interface::node_protocol::{
     Protocol,
@@ -391,48 +392,45 @@ impl Node {
                 }
             }
         }
-        {
-            // Periodically save
-            let tm = tm.clone();
+
+        // Periodically save
+        tm.periodic("Node - persist neighbors", Duration::minutes(10).to_std().unwrap(), {
+            let log = log.clone();
             let dir = dir.clone();
-            let log = log.fork(ea!(subsys = "persist_neighbors"));
-            tm.periodic(Duration::minutes(10).to_std().unwrap(), {
+            let db_pool = db_pool.clone();
+            move || {
                 let log = log.clone();
                 let dir = dir.clone();
                 let db_pool = db_pool.clone();
-                move || {
-                    let log = log.clone();
-                    let dir = dir.clone();
+                async move {
+                    if !dir.0.dirty.swap(false, Ordering::Relaxed) {
+                        return;
+                    }
                     let db_pool = db_pool.clone();
-                    async move {
-                        if !dir.0.dirty.swap(false, Ordering::Relaxed) {
-                            return;
-                        }
-                        let db_pool = db_pool.clone();
-                        match async {
-                            db_pool.get().await.context("Error getting db connection")?.interact(move |conn| {
-                                db::secret_ensure(conn, &dir.0.own_secret)?;
-                                db::neighbors_clear(conn)?;
-                                for (i, bucket) in dir.0.buckets.lock().unwrap().clone().into_iter().enumerate() {
-                                    for n in bucket {
-                                        db::neighbors_insert(conn, i as u32, &node_protocol::NodeState::V1(n))?;
-                                    }
+                    match async {
+                        db_pool.get().await.context("Error getting db connection")?.interact(move |conn| {
+                            db::secret_ensure(conn, &dir.0.own_secret)?;
+                            db::neighbors_clear(conn)?;
+                            for (i, bucket) in dir.0.buckets.lock().unwrap().clone().into_iter().enumerate() {
+                                for n in bucket {
+                                    db::neighbors_insert(conn, i as u32, &node_protocol::NodeState::V1(n))?;
                                 }
-                                return Ok(()) as Result<_, loga::Error>;
-                            }).await??;
+                            }
                             return Ok(()) as Result<_, loga::Error>;
-                        }.await {
-                            Ok(_) => { },
-                            Err(e) => log.log_err(WARN, e.context("Failed to persist state")),
-                        }
+                        }).await??;
+                        return Ok(()) as Result<_, loga::Error>;
+                    }.await {
+                        Ok(_) => { },
+                        Err(e) => log.log_err(WARN, e.context("Failed to persist state")),
                     }
                 }
-            });
-        }
-        {
-            // Find timeouts
+            }
+        });
+
+        // Find timeouts
+        tm.stream("Node - close timed requests", find_timeout_recv, {
             let dir = dir.clone();
-            tm.stream(find_timeout_recv, move |e| {
+            move |e| {
                 let dir = dir.clone();
                 async move {
                     tokio::time::sleep_until(e.end.to_instant()).await;
@@ -459,12 +457,13 @@ impl Node {
                     }
                     dir.complete_state(state).await;
                 }
-            });
-        }
-        {
-            // Stored data expiry or maybe re-propagation
+            }
+        });
+
+        // Stored data expiry or maybe re-propagation
+        tm.periodic("Node - re-propagate/expire stored data", Duration::hours(1).to_std().unwrap(), {
             let dir = dir.clone();
-            tm.periodic(Duration::hours(1).to_std().unwrap(), move || {
+            move || {
                 let dir = dir.clone();
                 async move {
                     let mut unfresh = vec![];
@@ -483,12 +482,13 @@ impl Node {
                         dir.start_find(node_protocol::latest::FindMode::Put(k.clone()), Some(v.value), None).await;
                     }
                 }
-            })
-        }
-        {
-            // Pings
+            }
+        });
+
+        // Pings
+        tm.periodic("Node - neighbor aliveness", Duration::minutes(10).to_std().unwrap(), {
             let dir = dir.clone();
-            tm.periodic(Duration::minutes(10).to_std().unwrap(), move || {
+            move || {
                 let ping_timeout_write = ping_timeout_write.clone();
                 let dir = dir.clone();
                 async move {
@@ -516,12 +516,13 @@ impl Node {
                         }
                     }
                 }
-            });
-        }
-        {
-            // Ping timeouts
+            }
+        });
+
+        // Ping timeouts
+        tm.stream("Node - ping timeouts", ping_timeout_recv, {
             let dir = dir.clone();
-            tm.stream(ping_timeout_recv, move |e| {
+            move |e| {
                 let dir = dir.clone();
                 async move {
                     tokio::time::sleep_until(e.end.to_instant()).await;
@@ -540,12 +541,13 @@ impl Node {
                     };
                     dir.mark_node_unresponsive(e.key.0, state.leading_zeros, true);
                 }
-            });
-        }
-        {
-            // Challenge timeouts
+            }
+        });
+
+        // Challenge timeouts
+        tm.stream("Node - challenge timeouts", challenge_timeout_recv, {
             let dir = dir.clone();
-            tm.stream(challenge_timeout_recv, move |e| {
+            move |e| {
                 let dir = dir.clone();
                 async move {
                     tokio::time::sleep_until(e.end.to_instant()).await;
@@ -561,19 +563,22 @@ impl Node {
                     }
                     state_entry.remove();
                 }
-            });
-        }
-        {
-            // Listen loop
+            }
+        });
+
+        // Listen loop
+        tm.task("Node - socket", {
             let log = log.fork(ea!(subsys = "listen"));
             let dir = dir.clone();
-            let tm1 = tm.clone();
-            tm.task(async move {
+            let tm = tm.clone();
+            async move {
                 let mut buf = [0u8; 1024];
                 loop {
-                    let packet = match tm1.if_alive(dir.0.as_ref().socket.recv_from(&mut buf)).await {
-                        None => return,
-                        Some(p) => p,
+                    let packet = select!{
+                        _ = tm.until_terminate() => {
+                            return;
+                        }
+                        p = dir.0.as_ref().socket.recv_from(&mut buf) => p,
                     };
                     match packet {
                         Ok((len, addr)) => {
@@ -598,13 +603,13 @@ impl Node {
                         },
                     };
                 }
-            });
-        }
+            }
+        });
         dir.start_find(node_protocol::latest::FindMode::Nodes(dir.0.own_id.clone()), None, None).await;
 
         // If running in a container or at boot, packets may be lost immediately after
         // getting an ip address so do it again in a minute.
-        tm.task({
+        tm.task("Node - retry startup find once", {
             let dir = dir.clone();
             async move {
                 sleep(Duration::seconds(60).to_std().unwrap()).await;
@@ -870,7 +875,11 @@ impl Node {
                         outstanding_entry = Some(e.clone());
                         return false;
                     } else {
-                        log.log(DEBUG_NODE, "Wrong challenge");
+                        log.log_with(
+                            DEBUG_NODE,
+                            "Wrong challenge",
+                            ea!(want = e.challenge, got = content.challenge),
+                        );
                     }
                 }
                 return true;
@@ -1043,10 +1052,22 @@ impl Node {
                 Some(state_entry.remove())
             } else {
                 state.timeout = Utc::now() + req_timeout();
-                self.0.find_timeouts.unbounded_send(NextFindTimeout {
+                match self.0.find_timeouts.unbounded_send(NextFindTimeout {
                     end: state.timeout,
                     key: (state.mode.clone(), state.req_id),
-                }).unwrap();
+                }) {
+                    Ok(_) => { },
+                    Err(e) => {
+                        let e = e.into_send_error();
+                        if e.is_disconnected() {
+                            // nop
+                        } else if e.is_full() {
+                            unreachable!();
+                        } else {
+                            unreachable!();
+                        }
+                    },
+                };
                 None
             }
         };

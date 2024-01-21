@@ -45,8 +45,8 @@ ed25519-dalek = { version = "2", features = ["serde", "digest", "rand_core"] }
 zbase32 = "0.1"
 itertools = "0.10"
 serde_json = "1"
-taskmanager = "0.3"
-loga = "0.3.7"
+taskmanager = "0.4"
+loga = "0.3"
 aargvark = { version = "0.0.8", features = ["serde_json", "http_types", "url"] }
 poem = { version = "2", features = [
     "rustls",

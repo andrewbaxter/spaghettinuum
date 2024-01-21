@@ -10,6 +10,7 @@ use crate::{
         log::{
             Log,
             WARN,
+            DEBUG_RESOLVE,
         },
         ResultVisErr,
         VisErr,
@@ -128,37 +129,35 @@ impl Resolver {
         }));
 
         // Bg core cleanup
-        {
-            tm.task({
-                let tm1 = tm.clone();
-                let db_pool = db_pool.clone();
-                let log = log.fork(ea!(subsys = "persist_cache"));
-                let cache = cache.clone();
-                async move {
-                    let log = &log;
-                    match async {
-                        ta_res!(());
-                        tm1.until_terminate().await;
-                        db_pool.get().await.stack_context(log, "Error gettting db connection")?.interact({
-                            let cache = cache.clone();
-                            move |db| {
-                                db::cache_clear(db)?;
-                                for (k, v) in cache.iter() {
-                                    db::cache_push(db, &k.0, &k.1, v.0, v.1.as_ref().map(|v| v.as_str()))?;
-                                }
-                                return Ok(()) as Result<_, loga::Error>;
+        tm.task("Resolver - cache persister", {
+            let tm1 = tm.clone();
+            let db_pool = db_pool.clone();
+            let log = log.fork(ea!(subsys = "persist_cache"));
+            let cache = cache.clone();
+            async move {
+                let log = &log;
+                match async {
+                    ta_res!(());
+                    tm1.until_terminate().await;
+                    db_pool.get().await.stack_context(log, "Error gettting db connection")?.interact({
+                        let cache = cache.clone();
+                        move |db| {
+                            db::cache_clear(db)?;
+                            for (k, v) in cache.iter() {
+                                db::cache_push(db, &k.0, &k.1, v.0, v.1.as_ref().map(|v| v.as_str()))?;
                             }
-                        }).await??;
-                        return Ok(());
-                    }.await {
-                        Ok(_) => { },
-                        Err(e) => {
-                            log.log_err(WARN, e.context("Failed to persist cache at shutdown"));
-                        },
-                    }
+                            return Ok(()) as Result<_, loga::Error>;
+                        }
+                    }).await??;
+                    return Ok(());
+                }.await {
+                    Ok(_) => { },
+                    Err(e) => {
+                        log.log_err(WARN, e.context("Failed to persist cache at shutdown"));
+                    },
                 }
-            });
-        }
+            }
+        });
         Ok(core)
     }
 
@@ -182,7 +181,7 @@ impl Resolver {
                         data: v,
                     });
                 } else {
-                    eprintln!("DEBUG resolver cache miss {} {}", ident, k);
+                    self.0.log.log_with(DEBUG_RESOLVE, "Cache miss", ea!(ident = ident, key = k));
                     break 'missing;
                 }
             }
@@ -300,11 +299,14 @@ impl Resolver {
             let resp_kvs = resp_kvs.clone();
             let cache = self.0.cache.clone();
             let identity = ident.clone();
+            let log = log.clone();
+            let ident = ident.clone();
             async move {
+                let log = &log;
                 match &resp_kvs {
                     resolve::ResolveKeyValues::V1(resp_kvs) => {
                         for (k, v) in &resp_kvs.0 {
-                            eprintln!("DEBUG cache store {} {}", identity, k);
+                            log.log_with(DEBUG_RESOLVE, "Cache store", ea!(ident = ident, key = k));
                             cache.insert((identity.clone(), k.to_owned()), (v.expires, v.data.clone())).await;
                         }
                     },

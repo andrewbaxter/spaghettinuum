@@ -69,6 +69,7 @@ use spaghettinuum::{
         log::{
             Log,
             INFO,
+            DEBUG_OTHER,
             DEBUG_DNS_S,
             DEBUG_DNS_OTHER,
             DEBUG_NODE,
@@ -87,9 +88,11 @@ use spaghettinuum::{
     self_tls::request_cert_stream,
     cap_fn,
 };
+use taskmanager::TaskManager;
 use tokio::{
     fs::create_dir_all,
     time::sleep,
+    select,
 };
 use tokio_stream::{
     StreamExt,
@@ -117,31 +120,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    async fn inner() -> Result<(), loga::Error> {
-        let args = aargvark::vark::<Args>();
-        let mut flags = NON_DEBUG;
-        if args.debug.is_some() {
-            flags |= DEBUG_NODE;
-            flags |= DEBUG_PUBLISH;
-            flags |= DEBUG_RESOLVE;
-            flags |= DEBUG_DNS_S;
-        }
-        if args.debug_node.is_some() {
-            flags |= DEBUG_NODE;
-        }
-        if args.debug_resolver.is_some() {
-            flags |= DEBUG_RESOLVE;
-        }
-        if args.debug_dns_s.is_some() {
-            flags |= DEBUG_DNS_S;
-        }
-        if args.debug_dns_other.is_some() {
-            flags |= DEBUG_DNS_OTHER;
-        }
-        if args.debug_publisher.is_some() {
-            flags |= DEBUG_PUBLISH;
-        }
-        let log = &Log::new().with_flags(flags);
+    async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Error> {
         let config = if let Some(p) = args.config {
             p.value
         } else if let Some(c) = match std::env::var(spagh_cli::ENV_CONFIG) {
@@ -222,7 +201,6 @@ async fn main() {
         } else {
             identity = None;
         }
-        let tm = taskmanager::TaskManager::new();
         let node = {
             let mut bootstrap = vec![];
             for e in config.node.bootstrap {
@@ -402,27 +380,55 @@ async fn main() {
                         Server::new(TcpListener::bind(bind_addr)).run(api_endpoints).boxed()
                     },
                 };
-                tm.critical_task({
+                tm.critical_task("API - Server", {
                     let log = log.clone();
-                    let tm1 = tm.clone();
+                    let tm = tm.clone();
                     async move {
-                        match tm1.if_alive(server).await {
-                            Some(r) => {
-                                return r.stack_context_with(&log, "Exited with error", ea!(addr = bind_addr));
-                            },
-                            None => {
+                        select!{
+                            _ = tm.until_terminate() => {
                                 return Ok(());
-                            },
-                        }
+                            }
+                            r = server => return r.stack_context_with(&log, "Exited with error", ea!(addr = bind_addr)),
+                        };
                     }
                 });
             }
         }
-        tm.join().await?;
         return Ok(());
     }
 
-    match inner().await {
+    let args = aargvark::vark::<Args>();
+    let mut flags = NON_DEBUG;
+    if args.debug.is_some() {
+        flags |= DEBUG_NODE;
+        flags |= DEBUG_PUBLISH;
+        flags |= DEBUG_RESOLVE;
+        flags |= DEBUG_DNS_S;
+        flags |= DEBUG_OTHER;
+    }
+    if args.debug_node.is_some() {
+        flags |= DEBUG_NODE;
+    }
+    if args.debug_resolver.is_some() {
+        flags |= DEBUG_RESOLVE;
+    }
+    if args.debug_dns_s.is_some() {
+        flags |= DEBUG_DNS_S;
+    }
+    if args.debug_dns_other.is_some() {
+        flags |= DEBUG_DNS_OTHER;
+    }
+    if args.debug_publisher.is_some() {
+        flags |= DEBUG_PUBLISH;
+    }
+    let log = &Log::new().with_flags(flags);
+    let tm = taskmanager::TaskManager::new();
+    match inner(log, &tm, args).await.map_err(|e| {
+        tm.terminate();
+        return e;
+    }).also({
+        tm.join(log, INFO).await.context("Critical services failed")
+    }) {
         Ok(_) => { },
         Err(e) => {
             loga::fatal(e);

@@ -2107,9 +2107,9 @@ checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 
 [[package]]
 name = "loga"
-version = "0.3.7"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "618e3d2aab11c3a3c98505bbe589f2686d9b406f100894e2009747e134027e31"
+checksum = "19b22fa61bb819173c38a2afc83291785b5e389acae7438022db01a5c3a08b0f"
 dependencies = [
  "bitflags 2.4.1",
  "chrono",
@@ -3870,9 +3870,9 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "taskmanager"
-version = "0.3.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39657d73ff0433677b9bc7d8e9aa06bbceb0d19840f618954eac40710600d2a6"
+checksum = "0413cc71e4835d16b66ed3a3b26053e1f81f321c5941ce4db4673b35b757290e"
 dependencies = [
  "futures",
  "loga",

@@ -1,6 +1,10 @@
 use std::{
-    time::SystemTime,
     sync::Arc,
+};
+use chrono::{
+    DateTime,
+    Duration,
+    Utc,
 };
 use loga::ResultContext;
 use pem::Pem;
@@ -14,16 +18,23 @@ pub fn encode_priv_pem(der: &[u8]) -> String {
     return Pem::new("PRIVATE KEY", der).to_string();
 }
 
-pub fn extract_expiry(pub_pem: &[u8]) -> Result<SystemTime, loga::Error> {
+pub fn extract_expiry(pub_pem: &[u8]) -> Result<DateTime<Utc>, loga::Error> {
     return Ok(
-        Certificate::load_pem_chain(pub_pem)
-            .context("Received invalid pub cert pem from certifier")?
-            .first()
-            .context("No certs in received pem")?
-            .tbs_certificate
-            .validity
-            .not_after
-            .to_system_time(),
+        DateTime::<Utc>::UNIX_EPOCH +
+            Duration::seconds(
+                Certificate::load_pem_chain(pub_pem)
+                    .context("Received invalid pub cert pem from certifier")?
+                    .first()
+                    .context("No certs in received pem")?
+                    .tbs_certificate
+                    .validity
+                    .not_after
+                    .to_system_time()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as
+                    i64,
+            ),
     );
 }
 

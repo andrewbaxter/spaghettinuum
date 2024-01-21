@@ -32,6 +32,10 @@ use chrono::{
 };
 use ipnet::IpAdd;
 use itertools::Itertools;
+use loga::{
+    StandardLog,
+    StandardFlags,
+};
 use spaghettinuum::{
     node::{
         Node,
@@ -57,7 +61,10 @@ use spaghettinuum::{
         blob::Blob,
     },
 };
-use tokio::fs::create_dir_all;
+use tokio::{
+    fs::create_dir_all,
+    select,
+};
 
 #[tokio::main]
 async fn main() {
@@ -86,7 +93,15 @@ async fn main() {
             nodes.push(node.clone());
             prev_node = Some((SerialAddr(addr), node.identity()));
         }
-        tm.if_alive(tokio::time::sleep(Duration::seconds(60).to_std().unwrap())).await;
+
+        select!{
+            _ = tm.until_terminate() => {
+                return Ok(());
+            },
+            _ = tokio:: time:: sleep(Duration::seconds(60).to_std().unwrap()) => {
+            }
+        }
+
         let (ident, mut ident_secret) = BackedIdentityLocal::new();
         let message_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(169, 168, 167, 165), 1111));
         let (_, message_signature) =
@@ -95,28 +110,42 @@ async fn main() {
                 cert_hash: Blob::new(0),
                 published: Utc::now(),
             }).unwrap();
-        match tm.if_alive(nodes.get(0).unwrap().put(ident.clone(), message_signature)).await {
-            None => return Ok(()),
-            Some(_) => { },
+
+        select!{
+            _ = tm.until_terminate() => {
+                return Ok(());
+            },
+            _ = nodes.get(0).unwrap().put(ident.clone(), message_signature) =>(),
         };
+
         let mut i = 0;
         let found = loop {
-            match tm.if_alive(nodes.get(1).unwrap().get(ident.clone())).await {
-                None => return Ok(()),
-                Some(x) => match x {
-                    Some(x) => break x,
-                    None => {
-                        if i > 10 {
-                            panic!("value never found");
-                        }
-                        tm.if_alive(tokio::time::sleep(Duration::seconds(10).to_std().unwrap())).await;
-                        i += 1;
-                    },
+            let x = select!{
+                _ = tm.until_terminate() => {
+                    return Ok(());
                 },
+                r = nodes.get(1).unwrap().get(ident.clone()) => r,
             };
+            match x {
+                Some(x) => break x,
+                None => {
+                    if i > 10 {
+                        panic!("value never found");
+                    }
+
+                    select!{
+                        _ = tm.until_terminate() => {
+                        },
+                        _ = tokio:: time:: sleep(Duration::seconds(10).to_std().unwrap()) => {
+                        }
+                    }
+
+                    i += 1;
+                },
+            }
         };
         assert_eq!(found.addr.0, message_addr);
-        tm.join().await?;
+        tm.join(&StandardLog::new(), StandardFlags::INFO).await?;
         return Ok(());
     }
 

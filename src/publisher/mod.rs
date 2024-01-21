@@ -52,6 +52,7 @@ use serde::{
 };
 use sha2::Sha256;
 use taskmanager::TaskManager;
+use tokio::select;
 use x509_cert::{
     spki::{
         SubjectPublicKeyInfoOwned,
@@ -426,7 +427,7 @@ impl<A: Admin + 'static> Publisher<A> {
             advertise_addr: advertise_addr,
             admin: admin,
         }));
-        tm.critical_task({
+        tm.critical_task("Publisher - network server", {
             let log = log.fork(ea!(subsys = "protocol"));
             let mut routes = Routes::new();
             let tm = tm.clone();
@@ -479,32 +480,31 @@ impl<A: Admin + 'static> Publisher<A> {
                 }
             })));
             async move {
-                match tm
-                    .if_alive(
-                        Server::new(
-                            TcpListener::bind(
-                                bind_addr.resolve()?,
-                            ).rustls(
-                                RustlsConfig
-                                ::new().fallback(
-                                    RustlsCertificate::new()
-                                        .key(encode_priv_pem(&certs.priv_der))
-                                        .cert(encode_pub_pem(&certs.pub_der)),
-                                ),
+                let server =
+                    Server::new(
+                        TcpListener::bind(
+                            bind_addr.resolve()?,
+                        ).rustls(
+                            RustlsConfig
+                            ::new().fallback(
+                                RustlsCertificate::new()
+                                    .key(encode_priv_pem(&certs.priv_der))
+                                    .cert(encode_pub_pem(&certs.pub_der)),
                             ),
-                        ).run(routes.build(log.fork(ea!(subsys = "router")), DEBUG_PUBLISH)),
-                    )
-                    .await {
-                    Some(r) => {
-                        return r.stack_context(&log, "Exited with error");
-                    },
-                    None => {
+                        ),
+                    ).run(routes.build(log.fork(ea!(subsys = "router")), DEBUG_PUBLISH));
+
+                select!{
+                    _ = tm.until_terminate() => {
                         return Ok(());
-                    },
+                    }
+                    r = server => {
+                        return r.stack_context(&log, "Exited with error");
+                    }
                 }
             }
         });
-        tm.periodic(Duration::hours(4).to_std().unwrap(), {
+        tm.periodic("Publisher - periodic announce", Duration::hours(4).to_std().unwrap(), {
             let log = log.fork(ea!(subsys = "periodic_announce"));
             cap_fn!(()(log, publisher, node) {
                 match async {

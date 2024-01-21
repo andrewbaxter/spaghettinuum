@@ -1,13 +1,12 @@
 use std::{
     env,
     path::Path,
-    time::{
-        SystemTime,
-    },
     collections::HashMap,
 };
 use chrono::{
     Utc,
+    Duration,
+    DateTime,
 };
 use deadpool_sqlite::Pool;
 use der::{
@@ -26,6 +25,7 @@ use tokio::{
     },
     select,
     time::{
+        sleep_until,
         sleep,
     },
 };
@@ -49,6 +49,7 @@ use crate::{
             WARN,
         },
         htreq,
+        time_util::ToInstant,
     },
     interface::{
         certify_protocol::{
@@ -117,9 +118,9 @@ pub async fn request_cert_stream(
     let db_pool = setup_db(&persistent_dir.join("self_tls.sqlite3"), db::migrate).await?;
     db_pool.get().await?.interact(|conn| db::api_certs_setup(conn)).await??;
 
-    fn decide_refresh_at(pub_pem: &str) -> Result<SystemTime, loga::Error> {
+    fn decide_refresh_at(pub_pem: &str) -> Result<DateTime<Utc>, loga::Error> {
         let not_after = extract_expiry(pub_pem.as_bytes())?;
-        return Ok(not_after - std::time::Duration::from_secs(60 * 60 * 24 * 7));
+        return Ok(not_after - Duration::hours(24 * 7));
     }
 
     async fn update_cert(
@@ -145,6 +146,7 @@ pub async fn request_cert_stream(
             let priv_pem = priv_pem.clone();
             move |conn| db::api_certs_set(conn, Some(&pub_pem), Some(&priv_pem))
         }).await??;
+        log.log_with(DEBUG_OTHER, "Received cert", ea!(pub_pem = pub_pem));
         return Ok(CertPair {
             priv_pem: priv_pem,
             pub_pem: pub_pem,
@@ -158,13 +160,15 @@ pub async fn request_cert_stream(
             priv_pem: priv_pem,
         },
         _ => {
-            update_cert(log, &db_pool, certifier_url, &mut signer).await?
+            update_cert(log, &db_pool, certifier_url, &mut signer)
+                .await
+                .stack_context(log, "Error retrieving initial certificates")?
         },
     };
     let refresh_at =
         decide_refresh_at(&initial_pair.pub_pem).context("Error extracting expiration time from cert pem")?;
     let (certs_stream_tx, certs_stream_rx) = channel(initial_pair);
-    tm.critical_task({
+    tm.critical_task("API - Self-TLS refresher", {
         let db_pool = db_pool.clone();
         let tm = tm.clone();
         let certifier_url = certifier_url.to_string();
@@ -174,11 +178,13 @@ pub async fn request_cert_stream(
             let mut refresh_at = refresh_at;
             let log = &log;
             loop {
+                log.log_with(DEBUG_OTHER, "Sleeping until cert needs refresh", ea!(deadline = refresh_at));
+
                 select!{
-                    _ = sleep(refresh_at.duration_since(SystemTime::now()).unwrap()) =>(),
                     _ = tm.until_terminate() => {
                         break;
                     }
+                    _ = sleep_until(refresh_at.to_instant()) =>(),
                 }
 
                 let mut backoff = std::time::Duration::from_secs(30);
@@ -201,7 +207,7 @@ pub async fn request_cert_stream(
                 }.stack_context_with(log, "Failed to get new cert after retrying", ea!(tries = max_tries))?;
                 refresh_at =
                     decide_refresh_at(&certs.pub_pem).context("Error extracting expiration time from cert pem")?;
-                certs_stream_tx.send(certs).unwrap();
+                _ = certs_stream_tx.send(certs);
             }
             return Ok(());
         }

@@ -47,6 +47,7 @@ use tokio::{
 use tower_service::Service;
 use crate::{
     ta_res,
+    utils::log::Log,
 };
 
 pub fn rustls_client_config() -> rustls::ClientConfig {
@@ -151,17 +152,18 @@ pub async fn send<
 /// Creates a new HTTPS/HTTP connection with default settings.  `base_uri` is just
 /// used for schema, host, and port.
 pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
-    let (scheme, host, port) = uri_parts(base_uri).context("Incomplete url")?;
+    let log = &Log::new().fork(ea!(uri = base_uri));
+    let (scheme, host, port) = uri_parts(base_uri).stack_context(log, "Incomplete url")?;
     let (try_ips, host) = match host {
         HostPart::Ip(i) => (vec![i], i.to_string()),
         HostPart::Name(host) => {
             let mut ipv4s = vec![];
             let mut ipv6s = vec![];
             for ip in hickory_resolver::TokioAsyncResolver::tokio_from_system_conf()
-                .context("Error reading resolv.conf")?
+                .stack_context(log, "Error reading resolv.conf")?
                 .lookup_ip(&format!("{}.", host))
                 .await
-                .context("Failed to look up lookup host ip addresses")? {
+                .stack_context(log, "Failed to look up lookup host ip addresses")? {
                 match ip {
                     std::net::IpAddr::V4(_) => {
                         ipv4s.push(ip);
@@ -207,35 +209,36 @@ pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
                                 ea!(err = e.to_string(), dest_addr = ip, host = host, port = port),
                             ),
                         )?;
-                _ = found_tx.send(conn);
+                _ = found_tx.try_send(conn);
                 return Ok(());
             }
         });
     }
-
-    select!{
-        results = join_all(bg) => {
-            if results.is_empty() {
-                return Err(loga::err("No addresses found when looking up host"));
-            }
-            let mut failed = vec![];
-            for res in results {
-                match res {
-                    Ok(_) => {
-                        let found = found_rx.recv().await.unwrap();
-                        return Ok(found);
-                    },
-                    Err(e) => {
-                        failed.push(e);
-                    },
-                }
-            }
-            return Err(loga::agg_err("Unable to connect to host", failed));
+    let results = select!{
+        _ = sleep(Duration::seconds(10).to_std().unwrap()) => {
+            return Err(log.err("Timeout connecting"))
         }
+        results = join_all(bg) => results,
         found = found_rx.recv() => {
             return Ok(found.unwrap());
         }
+    };
+    if results.is_empty() {
+        return Err(log.err("No addresses found when looking up host"));
     }
+    let mut failed = vec![];
+    for res in results {
+        match res {
+            Ok(_) => {
+                let found = found_rx.recv().await.unwrap();
+                return Ok(found);
+            },
+            Err(e) => {
+                failed.push(e);
+            },
+        }
+    }
+    return Err(loga::agg_err("All connections failed", failed)).stack_context(log, "Unable to connect to host");
 }
 
 pub async fn post(
@@ -251,13 +254,9 @@ pub async fn post(
     for (k, v) in headers.iter() {
         req = req.header(k, v);
     }
+    let conn = new_conn(&uri).await?;
     return Ok(
-        send(
-            new_conn(&uri).await?,
-            max_size,
-            Duration::seconds(10),
-            req.body(Full::new(Bytes::from(body))).unwrap(),
-        )
+        send(conn, max_size, Duration::seconds(10), req.body(Full::new(Bytes::from(body))).unwrap())
             .await
             .context_with("Error sending POST", ea!(uri = uri))?,
     );

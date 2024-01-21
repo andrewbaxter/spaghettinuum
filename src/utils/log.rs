@@ -22,6 +22,8 @@ pub const DEBUG_PUBLISH: Flags = Flags::DEBUG_PUBLISH;
 pub const DEBUG_RESOLVE: Flags = Flags::DEBUG_RESOLVE;
 pub const DEBUG_DNS_S: Flags = Flags::DEBUG_DNS_S;
 pub const DEBUG_DNS_OTHER: Flags = Flags::DEBUG_DNS_OTHER;
+
+// Aggregate
 pub const DEBUG_DNS: Flags = Flags::DEBUG_DNS_S.union(Flags::DEBUG_DNS_OTHER);
 pub const NON_DEBUG: Flags = WARN.union(INFO);
 
@@ -38,6 +40,7 @@ impl loga::Flags for Flags {
                 label_style: TextStyle::new().for_stderr().yellow(),
                 label: "WARN",
             },
+            Flags::DEBUG_OTHER |
             Flags::DEBUG_NODE |
             Flags::DEBUG_DNS_S |
             Flags::DEBUG_DNS_OTHER |
