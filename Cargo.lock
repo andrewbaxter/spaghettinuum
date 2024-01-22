@@ -1712,7 +1712,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "socket2 0.5.5",
+ "socket2 0.4.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -3854,9 +3854,9 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "taskmanager"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0413cc71e4835d16b66ed3a3b26053e1f81f321c5941ce4db4673b35b757290e"
+checksum = "50c891fe1540c8bfe446f878804ab27581b85221b1847a492dee695f665762ab"
 dependencies = [
  "futures",
  "loga",
