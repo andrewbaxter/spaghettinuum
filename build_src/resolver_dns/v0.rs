@@ -30,6 +30,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
     let singleton_pub = singleton.field(v, "zQTPPZ4K7", "pub_pem", field_str().opt().build());
     let singleton_priv = singleton.field(v, "zYLDNUW8V", "priv_pem", field_str().opt().build());
     let singleton_acme_key = singleton.field(v, "zJSQ3V4GN", "acme_api_key", field_str().opt().build());
+    let singleton_acme_dir = singleton.field(v, "z3RUIEM5W", "acme_dir", field_str().opt().build());
     let singleton_acme_key_kid = singleton.field(v, "zPMU3YUEM", "acme_api_key_kid", field_str().opt().build());
     singleton.constraint(
         v,
@@ -78,13 +79,13 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
         );
         queries.push(
             new_select(&singleton)
-                .return_field(&singleton_acme_key_kid)
+                .return_fields(&[&singleton_acme_dir, &singleton_acme_key_kid])
                 .build_query("acme_key_kid_get", QueryResCount::One),
         );
         queries.push(
             new_update(
                 &singleton,
-                vec![set_field("pub", &singleton_acme_key_kid)],
+                vec![set_field("dir", &singleton_acme_dir), set_field("pub", &singleton_acme_key_kid)],
             ).build_query("acme_key_kid_set", QueryResCount::None),
         );
     }

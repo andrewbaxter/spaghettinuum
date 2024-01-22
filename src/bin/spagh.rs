@@ -309,7 +309,7 @@ async fn main() {
             None => None,
         };
         if has_api_endpoints {
-            let log = log.fork(ea!(subsys = "api_http"));
+            let log = log.fork(ea!(sys = "api_http"));
             if config.api_bind_addrs.is_empty() {
                 return Err(
                     log.err(
@@ -357,8 +357,7 @@ async fn main() {
                         ).stack_context(&log, "Error building publisher endpoints")?,
                     );
                 }
-                let api_endpoints =
-                    api_endpoints.build(log.fork(ea!(subsubsys = "router")), DEBUG_PUBLISH | DEBUG_RESOLVE);
+                let api_endpoints = api_endpoints.build(log.fork(ea!(subsys = "router")));
                 let server = match &certs_stream_rx {
                     Some(certs_stream_rx) => {
                         Server::new(

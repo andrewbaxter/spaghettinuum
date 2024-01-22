@@ -45,7 +45,7 @@ use crate::{
         blob::ToBlob,
         log::{
             Log,
-            DEBUG_OTHER,
+            DEBUG_SELF_TLS,
             WARN,
         },
         htreq,
@@ -80,7 +80,7 @@ pub async fn request_cert(
         stamp: Utc::now(),
         spki_der: requester_spki.to_der().unwrap().blob(),
     }).unwrap().blob();
-    log.log_with(DEBUG_OTHER, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
+    log.log_with(DEBUG_SELF_TLS, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
     let (ident, signature) = message_signer.sign(&text).context("Error signing cert request params")?;
     let body = serde_json::to_vec(&CertRequest::V1(latest::CertRequest {
         identity: ident,
@@ -90,13 +90,12 @@ pub async fn request_cert(
         },
     })).unwrap();
     log.log_with(
-        DEBUG_OTHER,
+        DEBUG_SELF_TLS,
         "Sending cert request body",
         ea!(url = certifier_url, body = String::from_utf8_lossy(&body)),
     );
-    let body =
-        htreq::post(certifier_url, &HashMap::new(), body, 100 * 1024).await.context("Error reading cert response")?;
-    return Ok(serde_json::from_slice(&body).context("Error reading cert request response body")?);
+    let body = htreq::post(certifier_url, &HashMap::new(), body, 100 * 1024).await?;
+    return Ok(serde_json::from_slice(&body).context("Error parsing cert request response body as json")?);
 }
 
 #[derive(Clone)]
@@ -114,7 +113,7 @@ pub async fn request_cert_stream(
     mut signer: Box<dyn IdentitySigner>,
     persistent_dir: &Path,
 ) -> Result<Receiver<CertPair>, loga::Error> {
-    let log = &log.fork(ea!(subsys = "self_cert"));
+    let log = &log.fork(ea!(sys = "self_tls"));
     let db_pool = setup_db(&persistent_dir.join("self_tls.sqlite3"), db::migrate).await?;
     db_pool.get().await?.interact(|conn| db::api_certs_setup(conn)).await??;
 
@@ -146,7 +145,7 @@ pub async fn request_cert_stream(
             let priv_pem = priv_pem.clone();
             move |conn| db::api_certs_set(conn, Some(&pub_pem), Some(&priv_pem))
         }).await??;
-        log.log_with(DEBUG_OTHER, "Received cert", ea!(pub_pem = pub_pem));
+        log.log_with(DEBUG_SELF_TLS, "Received cert", ea!(pub_pem = pub_pem));
         return Ok(CertPair {
             priv_pem: priv_pem,
             pub_pem: pub_pem,
@@ -178,7 +177,7 @@ pub async fn request_cert_stream(
             let mut refresh_at = refresh_at;
             let log = &log;
             loop {
-                log.log_with(DEBUG_OTHER, "Sleeping until cert needs refresh", ea!(deadline = refresh_at));
+                log.log_with(DEBUG_SELF_TLS, "Sleeping until cert needs refresh", ea!(deadline = refresh_at));
 
                 select!{
                     _ = tm.until_terminate() => {

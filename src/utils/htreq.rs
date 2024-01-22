@@ -89,7 +89,7 @@ pub fn uri_parts(uri: &Uri) -> Result<(String, HostPart, u16), loga::Error> {
                 ).context("Invalid ipv6 address in URL")?,
             ),
         )
-    } else if host.as_bytes().iter().all(|b| ('0' ..= '9').contains(&(*b as char))) {
+    } else if host.as_bytes().iter().all(|b| (*b as char) == '.' || ('0' ..= '9').contains(&(*b as char))) {
         HostPart::Ip(IpAddr::V4(Ipv4Addr::from_str(host).context("Invalid ipv4 address in URL")?))
     } else {
         HostPart::Name(host.to_string())
@@ -205,7 +205,7 @@ pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
                         .await
                         .map_err(
                             |e| loga::err_with(
-                                "Error connecting to host",
+                                "Connection failed",
                                 ea!(err = e.to_string(), dest_addr = ip, host = host, port = port),
                             ),
                         )?;
@@ -238,7 +238,7 @@ pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
             },
         }
     }
-    return Err(loga::agg_err("All connections failed", failed)).stack_context(log, "Unable to connect to host");
+    return Err(log.agg_err("Unable to connect to host", failed));
 }
 
 pub async fn post(

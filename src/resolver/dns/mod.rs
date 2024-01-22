@@ -12,9 +12,6 @@ use crate::{
             },
         },
     },
-    resolver::{
-        config::DnsType,
-    },
     bb,
     utils::{
         db_util::{
@@ -79,9 +76,7 @@ use hickory_proto::{
 };
 use hickory_resolver::{
     config::{
-        NameServerConfig,
         NameServerConfigGroup,
-        ResolverOpts,
     },
     name_server::{
         TokioConnectionProvider,
@@ -166,7 +161,7 @@ pub async fn start_dns_bridge(
     dns_config: DnsBridgeConfig,
     persistent_dir: &Path,
 ) -> Result<(), loga::Error> {
-    let log = log.fork(ea!(subsys = "dns"));
+    let log = log.fork(ea!(sys = "dns"));
     let log = &log;
     let db_pool =
         setup_db(&persistent_dir.join("resolver_dns_bridge.sqlite3"), db::migrate)
@@ -201,7 +196,7 @@ pub async fn start_dns_bridge(
                     if request.query().name().num_labels() != 2 {
                         return Err(
                             loga::err_with(
-                                "Expected two parts in request (id., s.) but got different number",
+                                "Expected two parts in request (ident, .s) but got different number",
                                 ea!(name = request.query().name(), count = request.query().name().num_labels()),
                             ),
                         ).err_external();
@@ -451,7 +446,7 @@ pub async fn start_dns_bridge(
                                         );
                                     },
                                     _ => {
-                                        return Err(e).err_external();
+                                        return Err(e).context("Upstream DNS server returned error").err_external();
                                     },
                                 },
                             };
@@ -492,7 +487,7 @@ pub async fn start_dns_bridge(
                 Err(e) => {
                     match e {
                         VisErr::External(e) => {
-                            self1.log.log_err(DEBUG_DNS_S, e.context("Request failed due to requester issue"));
+                            self1.log.log_err(DEBUG_DNS_S, e.context("Request failed due to external issue"));
                             match response_handle
                                 .send_response(
                                     MessageResponseBuilder::from_message_request(
@@ -533,33 +528,21 @@ pub async fn start_dns_bridge(
     }
 
     let upstream = {
-        let upstream = dns_config.upstream.resolve()?;
+        let (config, options) =
+            hickory_resolver
+            ::system_conf
+            ::read_system_conf().stack_context(
+                log,
+                "Error reading system dns resolver config for dns bridge upstream",
+            )?;
         let mut name_servers = NameServerConfigGroup::new();
-        name_servers.push({
-            let mut c = NameServerConfig::new(upstream, match (dns_config.upstream_type, upstream.port()) {
-                (Some(DnsType::Udp), _) | (None, 53) => {
-                    hickory_resolver::config::Protocol::Udp
-                },
-                (Some(DnsType::Tls), _) | (None, 853) => {
-                    hickory_resolver::config::Protocol::Tls
-                },
-                _ => {
-                    return Err(
-                        log.err_with(
-                            "Unable to guess upstream DNS protocol from port number, please specify explicitly with `upstream_type`",
-                            ea!(port = upstream.port()),
-                        ),
-                    );
-                },
-            });
-            c.tls_dns_name = Some(upstream.ip().to_string());
-            c
-        });
-        NameServerPool::from_config(
-            name_servers,
-            ResolverOpts::default(),
-            GenericConnector::new(TokioRuntimeProvider::new()),
-        )
+        for n in config.name_servers() {
+            name_servers.push(n.clone());
+        }
+        if let Some(client_config) = config.client_config() {
+            name_servers = name_servers.with_client_config(client_config.0.clone());
+        }
+        NameServerPool::from_config(name_servers, options, GenericConnector::new(TokioRuntimeProvider::new()))
     };
     let mut server = hickory_server::ServerFuture::new(Handler(Arc::new(HandlerInner {
         log: log.clone(),
@@ -691,14 +674,18 @@ pub async fn start_dns_bridge(
                             if let Some(k) = &kid0 {
                                 break k;
                             }
-                            if let Some(k) = db_pool.tx(move |txn| Ok(db::acme_key_kid_get(txn)?)).await? {
-                                kid0 = Some(k);
-                                break kid0.as_ref().unwrap();
+                            let kid_dir_pair = db_pool.tx(move |txn| Ok(db::acme_key_kid_get(txn)?)).await?;
+                            if let (Some(d), Some(k)) = (kid_dir_pair.acme_dir, kid_dir_pair.acme_api_key_kid) {
+                                if d == tls.acme_directory_url {
+                                    kid0 = Some(k);
+                                    break kid0.as_ref().unwrap();
+                                }
                             }
                             let k = create_acme_account(&acme_client, eab.as_ref()).await?;
                             db_pool.tx({
                                 let k = k.clone();
-                                move |txn| Ok(db::acme_key_kid_set(txn, Some(&k))?)
+                                let dir = tls.acme_directory_url.clone();
+                                move |txn| Ok(db::acme_key_kid_set(txn, Some(&dir), Some(&k))?)
                             }).await?;
                             kid0 = Some(k);
                             break kid0.as_ref().unwrap();

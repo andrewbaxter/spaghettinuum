@@ -85,7 +85,7 @@ impl Resolver {
         max_cache: Option<u64>,
         persistent_dir: &Path,
     ) -> Result<Resolver, loga::Error> {
-        let log = &log.fork(ea!(subsys = "core"));
+        let log = &log.fork(ea!(sys = "resolver"));
         let db_pool =
             setup_db(&persistent_dir.join("resolver.sqlite3"), db::migrate)
                 .await

@@ -598,8 +598,6 @@ async fn main() {
                             max_cache: None,
                             dns_bridge: if config.dns_bridge.is_some() {
                                 Some(spaghettinuum::resolver::config::DnsBridgeConfig {
-                                    upstream: StrSocketAddr::new_fake("[2606:4700:4700::1111]:853".to_string()),
-                                    upstream_type: None,
                                     udp_bind_addrs: vec![StrSocketAddr::new_fake("[::]:53".to_string())],
                                     tcp_bind_addrs: vec![],
                                     tls: None,

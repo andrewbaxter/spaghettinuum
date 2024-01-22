@@ -25,7 +25,7 @@ use super::{
     },
     log::{
         Log,
-        Flags,
+        DEBUG_API,
     },
 };
 
@@ -108,7 +108,6 @@ pub enum Tree {
 
 pub struct Handler {
     root: Tree,
-    debug_flag: Flags,
     log: Log,
 }
 
@@ -155,7 +154,7 @@ impl Endpoint for Handler {
                         self
                             .log
                             .log_with(
-                                self.debug_flag,
+                                DEBUG_API,
                                 "Path matching ended at branch",
                                 ea!(path = path.dbg_str(), seg = i),
                             );
@@ -170,7 +169,7 @@ impl Endpoint for Handler {
                             self
                                 .log
                                 .log_with(
-                                    self.debug_flag,
+                                    DEBUG_API,
                                     "No route for path segment in parent branch",
                                     ea!(path = path.dbg_str(), seg = i),
                                 );
@@ -182,22 +181,14 @@ impl Endpoint for Handler {
                     match method.as_str() {
                         "GET" => {
                             let Some(m) =& l.get else {
-                                self
-                                    .log
-                                    .log_with(self.debug_flag, "No GET handler", ea!(path = path.dbg_str(), seg = i));
+                                self.log.log_with(DEBUG_API, "No GET handler", ea!(path = path.dbg_str(), seg = i));
                                 return Ok(StatusCode::NOT_FOUND.into_response());
                             };
                             break 'recurse m;
                         },
                         "POST" => {
                             let Some(m) =& l.post else {
-                                self
-                                    .log
-                                    .log_with(
-                                        self.debug_flag,
-                                        "No POST handler",
-                                        ea!(path = path.dbg_str(), seg = i),
-                                    );
+                                self.log.log_with(DEBUG_API, "No POST handler", ea!(path = path.dbg_str(), seg = i));
                                 return Ok(StatusCode::NOT_FOUND.into_response());
                             };
                             break 'recurse m;
@@ -206,11 +197,7 @@ impl Endpoint for Handler {
                             let Some(m) =& l.delete else {
                                 self
                                     .log
-                                    .log_with(
-                                        self.debug_flag,
-                                        "No DELETE handler",
-                                        ea!(path = path.dbg_str(), seg = i),
-                                    );
+                                    .log_with(DEBUG_API, "No DELETE handler", ea!(path = path.dbg_str(), seg = i));
                                 return Ok(StatusCode::NOT_FOUND.into_response());
                             };
                             break 'recurse m;
@@ -374,7 +361,7 @@ impl Routes {
         return self;
     }
 
-    pub fn build(&mut self, log: Log, debug_flag: Flags) -> Handler {
+    pub fn build(&mut self, log: Log) -> Handler {
         fn compact(t: &mut Tree) {
             match t {
                 Tree::Branch(b) => {
@@ -392,7 +379,6 @@ impl Routes {
         return Handler {
             root: t,
             log: log,
-            debug_flag: debug_flag,
         };
     }
 }
