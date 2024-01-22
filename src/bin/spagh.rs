@@ -75,6 +75,8 @@ use spaghettinuum::{
             DEBUG_NODE,
             DEBUG_PUBLISH,
             DEBUG_RESOLVE,
+            DEBUG_API,
+            DEBUG_SELF_TLS,
             NON_DEBUG,
         },
         publish_util::generate_publish_announce,
@@ -116,6 +118,7 @@ struct Args {
     pub debug_dns_other: Option<()>,
     /// Enable publisher debug logging, additive with other debug options.
     pub debug_publisher: Option<()>,
+    pub debug_other: Option<()>,
 }
 
 #[tokio::main]
@@ -403,7 +406,6 @@ async fn main() {
         flags |= DEBUG_PUBLISH;
         flags |= DEBUG_RESOLVE;
         flags |= DEBUG_DNS_S;
-        flags |= DEBUG_OTHER;
     }
     if args.debug_node.is_some() {
         flags |= DEBUG_NODE;
@@ -419,6 +421,11 @@ async fn main() {
     }
     if args.debug_publisher.is_some() {
         flags |= DEBUG_PUBLISH;
+    }
+    if args.debug_other.is_some() {
+        flags |= DEBUG_API;
+        flags |= DEBUG_SELF_TLS;
+        flags |= DEBUG_OTHER;
     }
     let log = &Log::new().with_flags(flags);
     let tm = taskmanager::TaskManager::new();

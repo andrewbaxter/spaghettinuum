@@ -33,6 +33,7 @@ use sha2::{
 };
 use loga::{
     ea,
+    DebugDisplay,
     ResultContext,
 };
 use poem::{
@@ -83,6 +84,7 @@ use crate::{
         },
         log::{
             Log,
+            DEBUG_PUBLISH,
             WARN,
         },
         htserve::{
@@ -430,9 +432,10 @@ impl<A: Admin + 'static> Publisher<A> {
             let log = log.fork(ea!(subsys = "protocol"));
             let mut routes = Routes::new();
             let tm = tm.clone();
-            routes.add("", Leaf::new().get(cap_fn!((mut r)(publisher) {
+            routes.add("", Leaf::new().get(cap_fn!((mut r)(publisher, log) {
                 match async {
                     ta_vis_res!(Response);
+                    log.log_with(DEBUG_PUBLISH, "Recieved request", ea!(path = r.path.dbg_str()));
 
                     // Params
                     let Some(ident) = r.path.pop() else {
@@ -461,6 +464,12 @@ impl<A: Admin + 'static> Publisher<A> {
                                 }
                             },
                         }
+                    } else {
+                        log.log_with(
+                            DEBUG_PUBLISH,
+                            "No published data for identity, sending empty response",
+                            ea!(path = r.path.dbg_str()),
+                        );
                     }
                     return Ok(Response::json(ResolveKeyValues::V1(kvs)));
                 }.await {

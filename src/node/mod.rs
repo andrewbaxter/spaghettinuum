@@ -714,27 +714,15 @@ impl Node {
         store: Option<node_protocol::latest::PublisherAnnouncement>,
         fut: Option<ManualFutureCompleter<Option<node_protocol::latest::PublisherAnnouncement>>>,
     ) {
-        let key_coord = match &mode {
-            node_protocol::latest::FindMode::Nodes(k) => node_ident_coord(k),
-            node_protocol::latest::FindMode::Put(k) => ident_coord(k),
-            node_protocol::latest::FindMode::Get(k) => ident_coord(k),
-        };
-        let closest_peers = self.get_closest_peers(key_coord, PARALLEL);
-        if closest_peers.is_empty() {
-            self
-                .0
-                .log
-                .log_with(WARN, "Start find - no peers found. Empty neighbor table?", ea!(mode = mode.dbg_str()));
-            if let Some(f) = fut {
-                f.complete(None).await;
-            }
-            return;
-        }
-
         // store state by key, with futures
         let timeout = Utc::now() + req_timeout();
         let mut defer = vec![];
         let req_id = {
+            let key_coord = match &mode {
+                node_protocol::latest::FindMode::Nodes(k) => node_ident_coord(k),
+                node_protocol::latest::FindMode::Put(k) => ident_coord(k),
+                node_protocol::latest::FindMode::Get(k) => ident_coord(k),
+            };
             let mut borrowed_states = self.0.find_states.lock().unwrap();
             let state = match borrowed_states.entry(mode.clone()) {
                 Entry::Occupied(mut e) => {
@@ -761,6 +749,7 @@ impl Node {
             if let Some(f) = fut {
                 state.futures.push(f);
             }
+            let closest_peers = self.get_closest_peers(key_coord, PARALLEL);
             for p in closest_peers {
                 let challenge = generate_challenge();
                 let (leading_zeros, dist) = dist(&node_ident_coord(&p.ident), &state.target_hash);
