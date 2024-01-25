@@ -41,6 +41,7 @@ use hyper_rustls::HttpsConnectorBuilder;
 use itertools::Itertools;
 use loga::{
     ea,
+    ErrContext,
     ResultContext,
 };
 use moka::future::Cache;
@@ -176,6 +177,24 @@ impl Resolver {
                     if expiry + Duration::minutes(5) < now {
                         break 'missing;
                     }
+                    let v = match v {
+                        Some(v) => {
+                            match serde_json::from_str::<serde_json::Value>(&v) {
+                                Ok(v) => Some(v),
+                                Err(e) => {
+                                    self
+                                        .0
+                                        .log
+                                        .log_err(
+                                            WARN,
+                                            e.context_with("Couldn't parse cache value as json", ea!(key = k)),
+                                        );
+                                    break 'missing;
+                                },
+                            }
+                        },
+                        None => None,
+                    };
                     kvs.insert(k.to_string(), resolve::latest::ResolveValue {
                         expires: expiry,
                         data: v,
@@ -307,7 +326,12 @@ impl Resolver {
                     resolve::ResolveKeyValues::V1(resp_kvs) => {
                         for (k, v) in &resp_kvs.0 {
                             log.log_with(DEBUG_RESOLVE, "Cache store", ea!(ident = ident, key = k));
-                            cache.insert((identity.clone(), k.to_owned()), (v.expires, v.data.clone())).await;
+                            cache
+                                .insert(
+                                    (identity.clone(), k.to_owned()),
+                                    (v.expires, v.data.as_ref().map(|v| serde_json::to_string(v).unwrap())),
+                                )
+                                .await;
                         }
                     },
                 }

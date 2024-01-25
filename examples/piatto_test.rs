@@ -91,7 +91,7 @@ async fn main() {
                     &path,
                 ).await?;
             nodes.push(node.clone());
-            prev_node = Some((SerialAddr(addr), node.identity()));
+            prev_node = Some((SerialAddr(addr), node.node_identity()));
         }
 
         select!{

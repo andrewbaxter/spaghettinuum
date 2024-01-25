@@ -1,14 +1,16 @@
 use std::{
-    env,
-    path::Path,
     collections::HashMap,
+    env,
+    sync::{
+        Arc,
+        Mutex,
+    },
 };
 use chrono::{
     Utc,
     Duration,
     DateTime,
 };
-use deadpool_sqlite::Pool;
 use der::{
     Encode,
 };
@@ -17,6 +19,7 @@ use loga::{
     ResultContext,
 };
 use p256::pkcs8::EncodePrivateKey;
+use rustls::server::ResolvesServerCert;
 use taskmanager::TaskManager;
 use tokio::{
     sync::watch::{
@@ -37,7 +40,6 @@ use x509_cert::{
 use crate::{
     utils::{
         backed_identity::IdentitySigner,
-        db_util::setup_db,
         tls_util::{
             encode_priv_pem,
             extract_expiry,
@@ -56,7 +58,10 @@ use crate::{
             latest,
             CertRequest,
         },
-        spagh_cli::DEFAULT_CERTIFIER_URL,
+        spagh_cli::{
+            DEFAULT_CERTIFIER_URL,
+            ENV_CERTIFIER,
+        },
     },
     bb,
     ta_res,
@@ -65,7 +70,7 @@ use crate::{
 pub mod db;
 
 pub fn certifier_url() -> String {
-    return env::var("CERTIPASTA").unwrap_or(DEFAULT_CERTIFIER_URL.to_string());
+    return env::var(ENV_CERTIFIER).unwrap_or(DEFAULT_CERTIFIER_URL.to_string());
 }
 
 /// Requests a TLS public cert from the certifier for the `.s` domain associated
@@ -111,11 +116,9 @@ pub async fn request_cert_stream(
     tm: &TaskManager,
     certifier_url: &str,
     mut signer: Box<dyn IdentitySigner>,
-    persistent_dir: &Path,
+    initial_pair: Option<CertPair>,
 ) -> Result<Receiver<CertPair>, loga::Error> {
     let log = &log.fork(ea!(sys = "self_tls"));
-    let db_pool = setup_db(&persistent_dir.join("self_tls.sqlite3"), db::migrate).await?;
-    db_pool.get().await?.interact(|conn| db::api_certs_setup(conn)).await??;
 
     fn decide_refresh_at(pub_pem: &str) -> Result<DateTime<Utc>, loga::Error> {
         let not_after = extract_expiry(pub_pem.as_bytes())?;
@@ -124,7 +127,6 @@ pub async fn request_cert_stream(
 
     async fn update_cert(
         log: &Log,
-        db_pool: &Pool,
         certifier_url: &str,
         identity: &mut Box<dyn IdentitySigner>,
     ) -> Result<CertPair, loga::Error> {
@@ -140,11 +142,6 @@ pub async fn request_cert_stream(
                 .context("Error requesting api server tls cert from certifier")?
                 .pub_pem;
         let priv_pem = encode_priv_pem(priv_key.to_pkcs8_der().unwrap().as_bytes());
-        db_pool.get().await?.interact({
-            let pub_pem = pub_pem.clone();
-            let priv_pem = priv_pem.clone();
-            move |conn| db::api_certs_set(conn, Some(&pub_pem), Some(&priv_pem))
-        }).await??;
         log.log_with(DEBUG_SELF_TLS, "Received cert", ea!(pub_pem = pub_pem));
         return Ok(CertPair {
             priv_pem: priv_pem,
@@ -152,14 +149,10 @@ pub async fn request_cert_stream(
         });
     }
 
-    let initial_pair = db_pool.get().await?.interact(|conn| db::api_certs_get(conn)).await??;
-    let initial_pair = match (initial_pair.pub_pem, initial_pair.priv_pem) {
-        (Some(pub_pem), Some(priv_pem)) => CertPair {
-            pub_pem: pub_pem,
-            priv_pem: priv_pem,
-        },
+    let initial_pair = match initial_pair {
+        Some(p) => p,
         _ => {
-            update_cert(log, &db_pool, certifier_url, &mut signer)
+            update_cert(log, certifier_url, &mut signer)
                 .await
                 .stack_context(log, "Error retrieving initial certificates")?
         },
@@ -168,7 +161,6 @@ pub async fn request_cert_stream(
         decide_refresh_at(&initial_pair.pub_pem).context("Error extracting expiration time from cert pem")?;
     let (certs_stream_tx, certs_stream_rx) = channel(initial_pair);
     tm.critical_task("API - Self-TLS refresher", {
-        let db_pool = db_pool.clone();
         let tm = tm.clone();
         let certifier_url = certifier_url.to_string();
         let log = log.clone();
@@ -191,7 +183,7 @@ pub async fn request_cert_stream(
                 let certs = bb!{
                     'ok _;
                     for _ in 0 .. max_tries {
-                        match update_cert(log, &db_pool, &certifier_url, &mut signer).await {
+                        match update_cert(log, &certifier_url, &mut signer).await {
                             Ok(certs) => {
                                 break 'ok Some(certs);
                             },
@@ -212,4 +204,21 @@ pub async fn request_cert_stream(
         }
     });
     return Ok(certs_stream_rx);
+}
+
+pub struct SimpleResolvesServerCert(pub Arc<Mutex<Option<Arc<rustls::sign::CertifiedKey>>>>);
+
+impl std::fmt::Debug for SimpleResolvesServerCert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return self.0.lock().unwrap().fmt(f);
+    }
+}
+
+impl ResolvesServerCert for SimpleResolvesServerCert {
+    fn resolve(
+        &self,
+        _client_hello: rustls::server::ClientHello,
+    ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
+        return self.0.lock().unwrap().clone();
+    }
 }

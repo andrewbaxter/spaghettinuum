@@ -22,8 +22,12 @@ use network_interface::{
     NetworkInterface,
     NetworkInterfaceConfig,
 };
+use tokio::time::sleep;
 use crate::{
-    config::IpVer,
+    config::{
+        GlobalAddrConfig,
+        IpVer,
+    },
     utils::{
         htreq::{
             self,
@@ -37,7 +41,10 @@ use super::{
         UnstableIpv4,
         UnstableIpv6,
     },
-    log::Log,
+    log::{
+        Log,
+        INFO,
+    },
 };
 
 pub async fn local_resolve_global_ip(
@@ -159,4 +166,40 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
     let ip = String::from_utf8(resp.to_vec()).stack_context(log, "Failed to parse response as utf8")?;
     let ip = IpAddr::from_str(&ip).stack_context_with(log, "Failed to parse response as socket addr", ea!(ip = ip))?;
     return Ok(ip);
+}
+
+pub async fn resolve_global_ip(log: &Log, config: GlobalAddrConfig) -> Result<IpAddr, loga::Error> {
+    return Ok(match config {
+        GlobalAddrConfig::Fixed(s) => {
+            log.log_with(INFO, "Identified fixed public ip address from config", ea!(addr = s));
+            s
+        },
+        GlobalAddrConfig::FromInterface { name, ip_version } => {
+            let res = loop {
+                if let Some(res) = local_resolve_global_ip(&name, &ip_version).await? {
+                    break res;
+                }
+                log.log_with(INFO, "Waiting for public ip address on interface", ea!());
+                sleep(Duration::seconds(10).to_std().unwrap()).await;
+            };
+            log.log_with(INFO, "Identified public ip address via interface", ea!(addr = res));
+            res
+        },
+        GlobalAddrConfig::Lookup(lookup) => {
+            let res = loop {
+                match remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await {
+                    Ok(r) => break r,
+                    Err(e) => {
+                        log.log_err(
+                            INFO,
+                            e.context("Error looking up public ip through external service, retrying"),
+                        );
+                    },
+                }
+                sleep(Duration::seconds(10).to_std().unwrap()).await;
+            };
+            log.log_with(INFO, "Identified public ip address via external lookup", ea!(addr = res));
+            res
+        },
+    });
 }

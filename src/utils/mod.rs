@@ -149,18 +149,17 @@ macro_rules! cap_block{
     };
 }
 
-pub fn unreachable_value<T>() -> T {
-    panic!();
-}
-
 /// Explicitly communicate the async block return type to the compiler via
 /// unexecuting code.
 #[macro_export]
 macro_rules! ta_res{
     ($t: ty) => {
         if false {
+            fn unreachable_value<T>() -> T {
+                panic!();
+            }
             return std:: result:: Result::< $t,
-            loga::Error > ::Ok(crate::utils::unreachable_value());
+            loga::Error > ::Ok(unreachable_value());
         }
     }
 }
@@ -171,8 +170,11 @@ macro_rules! ta_res{
 macro_rules! ta_vis_res{
     ($t: ty) => {
         if false {
+            fn unreachable_value<T>() -> T {
+                panic!();
+            }
             return std:: result:: Result::< $t,
-            crate::utils::VisErr > ::Ok(crate::utils::unreachable_value());
+            crate::utils::VisErr > ::Ok(unreachable_value());
         }
     }
 }

@@ -1,5 +1,6 @@
 pub mod v1;
 
+use schemars::JsonSchema;
 pub use v1 as latest;
 use serde::{
     Deserialize,
@@ -62,25 +63,25 @@ pub const COMMON_KEYS_DNS: &[&'static str] = &[KEY_DNS_A, KEY_DNS_AAAA, KEY_DNS_
 //. pub const KEY_DNS_TSIG: &'static str = "1rqocmfbnpg8dg4rp54ucggqoa";
 //. pub const KEY_DNS_URI: &'static str = "rskkuenpmffbbpqxfo5kkwueqy";
 //. pub const KEY_DNS_ZONEMD: &'static str = "yar9fu1px7f3pygrfuxjejm61a";
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DnsA {
     V1(v1::DnsA),
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DnsAaaa {
     V1(v1::DnsAaaa),
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DnsCname {
     V1(v1::DnsCname),
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DnsTxt {
     V1(v1::DnsTxt),

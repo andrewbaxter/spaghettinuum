@@ -19,7 +19,7 @@ use crate::{
             DbTx,
         },
         tls_util::{
-            load_certified_key,
+            rustls21_load_certified_key,
             extract_expiry,
             encode_priv_pem,
         },
@@ -243,7 +243,7 @@ pub async fn start_dns_bridge(
                         None => None,
                     };
                     if let Some((expires, data)) = res.remove(KEY_DNS_CNAME).map(filter_some).flatten() {
-                        match serde_json::from_str::<resolve::DnsCname>(&data)
+                        match serde_json::from_value::<resolve::DnsCname>(data.clone())
                             .context_with("Failed to parse received record json", ea!(json = data))
                             .err_external()? {
                             resolve::DnsCname::V1(n) => {
@@ -280,7 +280,7 @@ pub async fn start_dns_bridge(
                     } else if let Some((expires, data)) = res.remove(lookup_key).map(filter_some).flatten() {
                         match lookup_key {
                             KEY_DNS_A => {
-                                match serde_json::from_str::<resolve::DnsA>(&data)
+                                match serde_json::from_value::<resolve::DnsA>(data.clone())
                                     .context_with("Failed to parse received record json", ea!(json = data))
                                     .err_external()? {
                                     resolve::DnsA::V1(n) => {
@@ -316,7 +316,7 @@ pub async fn start_dns_bridge(
                                 }
                             },
                             KEY_DNS_AAAA => {
-                                match serde_json::from_str::<resolve::DnsAaaa>(&data)
+                                match serde_json::from_value::<resolve::DnsAaaa>(data.clone())
                                     .context_with("Failed to parse received record json", ea!(json = data))
                                     .err_external()? {
                                     resolve::DnsAaaa::V1(n) => {
@@ -352,7 +352,7 @@ pub async fn start_dns_bridge(
                                 }
                             },
                             KEY_DNS_TXT => {
-                                match serde_json::from_str::<resolve::DnsA>(&data)
+                                match serde_json::from_value::<resolve::DnsA>(data.clone())
                                     .context_with("Failed to parse received record json", ea!(json = data))
                                     .err_external()? {
                                     resolve::DnsA::V1(n) => {
@@ -588,7 +588,7 @@ pub async fn start_dns_bridge(
                 "Loaded existing cert",
                 ea!(expiry = <DateTime<Utc>>::from(expires_at).to_rfc3339()),
             );
-            (*cert.lock().unwrap()) = Some(load_certified_key(pub_pem.as_bytes(), priv_pem.as_bytes())?);
+            (*cert.lock().unwrap()) = Some(rustls21_load_certified_key(pub_pem.as_bytes(), priv_pem.as_bytes())?);
             (*cert_expiry.lock().unwrap()) = Some(expires_at);
         }
 
@@ -732,7 +732,7 @@ pub async fn start_dns_bridge(
                         }
                         (*cert.lock().unwrap()) =
                             Some(
-                                load_certified_key(
+                                rustls21_load_certified_key(
                                     &res.public_pem,
                                     &res.private_pem,
                                 ).stack_context(log, "Error loading received new certs")?,

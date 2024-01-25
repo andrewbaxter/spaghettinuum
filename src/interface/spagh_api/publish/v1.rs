@@ -7,6 +7,7 @@ use chrono::{
     Utc,
     DateTime,
 };
+use schemars::JsonSchema;
 use serde::{
     Serialize,
     Deserialize,
@@ -34,15 +35,15 @@ pub struct JsonSignature<T: Serialize + DeserializeOwned, I> {
     pub _p: PhantomData<(T, I)>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct PublishValue {
     /// duration in minutes
     pub ttl: u32,
-    pub data: String,
+    pub data: serde_json::Value,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct Publish {
     /// duration in minutes

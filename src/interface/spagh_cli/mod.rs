@@ -36,17 +36,18 @@ use crate::utils::blob::{
 use super::identity::Identity;
 
 // Server
-pub const ENV_CONFIG: &'static str = "SPAGH_CONFIG";
+pub const ENV_CONFIG: &'static str = "SPAGH_NODE_CONFIG";
 
 // Client
-/// SocketAddr (host + port) for resolver.
+/// URL of a resolver instance
 pub const ENV_API_ADDR: &'static str = "SPAGH";
 
-/// SocketAddr (host + port) for publisher.
-pub const ENV_API_ADMIN_ADDR: &'static str = "SPAGH_ADMIN";
+/// URL of certifier... I don't expect this to ever be anything than
+/// `DEFAULT_CERTIFIER_URL` below.
+pub const ENV_CERTIFIER: &'static str = "SPAGH_CERTIFIER";
 
 /// Bearer token for admin operations.
-pub const ENV_API_ADMIN_TOKEN: &'static str = "SPAGH_ADMIN_TOKEN";
+pub const ENV_API_ADMIN_TOKEN: &'static str = "SPAGH_TOKEN";
 pub const PORT_NODE: u16 = 43890;
 pub const PORT_PUBLISHER: u16 = 43891;
 pub const DEFAULT_CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";

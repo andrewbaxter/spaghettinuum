@@ -297,9 +297,20 @@ impl<
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct Persisted {
     own_secret: node_identity::NodeSecret,
     initial_buckets: Vec<Vec<node_protocol::latest::NodeState>>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct HealthDetail {
+    pub responsive_neighbors: usize,
+    pub unresponsive_neighbors: usize,
+    pub active_finds: usize,
+    pub active_challenges: usize,
+    pub active_pings: usize,
 }
 
 impl Node {
@@ -608,8 +619,29 @@ impl Node {
         return Ok(dir);
     }
 
+    pub fn health_detail(&self) -> HealthDetail {
+        let mut responsive = 0;
+        let mut unresponsive = 0;
+        for bucket in self.0.buckets.lock().unwrap().buckets.clone().into_iter() {
+            for n in bucket {
+                if n.unresponsive {
+                    unresponsive += 1;
+                } else {
+                    responsive += 1;
+                }
+            }
+        }
+        return HealthDetail {
+            responsive_neighbors: responsive,
+            unresponsive_neighbors: unresponsive,
+            active_challenges: self.0.challenge_states.lock().unwrap().len(),
+            active_finds: self.0.find_states.lock().unwrap().len(),
+            active_pings: self.0.ping_states.lock().unwrap().len(),
+        };
+    }
+
     /// Identity of node
-    pub fn identity(&self) -> node_identity::NodeIdentity {
+    pub fn node_identity(&self) -> node_identity::NodeIdentity {
         return self.0.own_ident.clone();
     }
 
