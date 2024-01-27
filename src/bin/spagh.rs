@@ -48,11 +48,12 @@ use spaghettinuum::{
         spagh_api::{
             publish::self,
             resolve::{
-                KEY_DNS_TXT,
-                KEY_DNS_AAAA,
-                KEY_DNS_A,
-                KEY_DNS_CNAME,
                 self,
+                KEY_DNS_A,
+                KEY_DNS_AAAA,
+                KEY_DNS_CNAME,
+                KEY_DNS_MX,
+                KEY_DNS_TXT,
             },
         },
         identity::Identity,
@@ -145,8 +146,8 @@ mod args {
                 BackedIdentityLocal,
             },
             spagh_api::publish,
+            spagh_node::GlobalAddrConfig,
         },
-        config::GlobalAddrConfig,
     };
 
     #[derive(Aargvark)]
@@ -178,11 +179,19 @@ mod args {
     pub struct PublishDns {
         /// Identity to publish as
         pub identity: BackedIdentityArg,
+        /// TTL for hits and misses, in minutes
         pub ttl: u32,
+        /// A list of other DNS names.
         pub dns_cname: Vec<String>,
+        /// A list of Ipv4 addresses
         pub dns_a: Vec<String>,
+        /// A list of Ipv6 addresses
         pub dns_aaaa: Vec<String>,
+        /// A list of valid TXT record strings
         pub dns_txt: Vec<String>,
+        /// Mail server names. These are automatically prioritized, with the first having
+        /// priority 0, second 1, etc.
+        pub dns_mx: Vec<String>,
     }
 
     #[derive(Aargvark)]
@@ -311,7 +320,7 @@ async fn main() {
                     missing_ttl: config.ttl,
                     data: {
                         let mut kvs = HashMap::new();
-                        if !config.dns_cname.is_empty() {
+                        if !config.dns_mx.is_empty() {
                             kvs.insert(KEY_DNS_CNAME.to_string(), publish::latest::PublishValue {
                                 ttl: config.ttl,
                                 data: serde_json::to_value(
@@ -340,6 +349,14 @@ async fn main() {
                                 ttl: config.ttl,
                                 data: serde_json::to_value(
                                     &resolve::DnsTxt::V1(resolve::latest::DnsTxt(config.dns_txt)),
+                                ).unwrap(),
+                            });
+                        }
+                        if !config.dns_mx.is_empty() {
+                            kvs.insert(KEY_DNS_MX.to_string(), publish::latest::PublishValue {
+                                ttl: config.ttl,
+                                data: serde_json::to_value(
+                                    &resolve::DnsMx::V1(resolve::latest::DnsMx(config.dns_mx)),
                                 ).unwrap(),
                             });
                         }

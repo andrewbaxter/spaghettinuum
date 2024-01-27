@@ -1,266 +1,143 @@
 ![spaghettinuum](logo.svg)
 
-Spaghettinuum is an alternative to DNS based around a distributed hash table. Replacing the web with a plate of pasta. A little less centralized and a little more noodly.
+The spaghettinuum is an alternative to DNS based around a distributed hash table (DHT). Replacing the web with a plate of pasta. A little less centralized and a little more noodly.
 
-Featuring:
+Why it's cool:
 
-- DNS bridge
-- Smartcard/PCSC/GPG-card identities, optionally, as an excuse to buy a new Yubikey 5 Nano
-- A simple RESTy API
+- Own your identity - even if you quit, nobody else can use your identity
+- No hoops to jump through to get an ID, no WHOIS information
+- Simple, both design and use
+- DNS bridge for compatibility with existing software
+- Smartcard/PCSC/GPG-card backed identities, optionally, as an excuse to buy a Yubikey 5 Nano
 
-Current status: Planned features implemented, but not thoroughly tested
-
-# What is this
-
-_Conceptually_ Spaghettinuum is a distributed two-level key-value store, like DNS
-
-- Level 1: an identity (like a DNS name, but based on your public key)
-- Level 2: an arbitrary key (like a DNS record type, but arbitrary)
-- Value: a string
-
-You can use it for hosting your websites (or at least, the name bit, almost, several huge caveats below) and providing public service discovery for various services that don't exist yet.
+**Current status**: Feature complete but very new -- expect bugs.
 
 _This repo_ is
 
-- A reference implementation `spagh`, including a fully static as well as a database-backed configuration, plus an HTTP resolver, and a DNS bridge for people still using DNS
-- A command line tool `spagh-cli` for interacting with your node, managing identities, publishing data, and generating basic configs
+- An implementation of a node, DNS bridge, CLI, and content hosting tools
 - A Rust library for embedding a resolver/publisher in your own software
 
-# Installing
+_Try it out!_
 
-To get the server `spagh` and CLI `spagh-cli`, install with `cargo install spaghettinuum`.
+Set up your system to browse the spaghettinuum with [this guide](./guide_browse.md), then try visting my blog at [here](TODO)
 
-If you're just interacting with a server, `curl` is all you need.
+Try using it to host a site, send email, or do service discovery.
 
-# Try it on the public node
+# Guides
 
-There's a public node at `spaghettinuum.isandrew.com`, ip `149.248.205.99` featuring a resolver and DNS bridge.
+- [Browse the spaghettinuum](./guide_browse.md)
+- [Publishing](./guide_publishing.md)
+- [Identities](./guide_identities.md)
 
-## Resolver
+# Reference
 
-The resolver runs on port `43891`.
-
-You can query arbitrary keys using the CLI (`cargo install spaghettinuum`):
-
-```
-spagh-cli query https://spaghettinuum.isandrew.com:43891 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r dsf9oyfz83fatqpscp9yt8wkuw
-```
-
-or using `curl`:
-
-```
-curl https://spaghettinuum.isandrew.com:43891/yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r?key1,key2,...
-```
-
-## DNS bridge
-
-Spaghettinuum supports a DNS bridge, limited to a set of keys mapped to DNS types. The DNS bridge runs on UDP port `53`.
-
-Try it out with `dig`:
-
-```
-dig @149.248.205.99 yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s
-```
-
-If you set your DNS resolver to `149.248.205.99` you can read my writings (WIP) in your browser at <https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s/5987> (WIP - note SSL issues working with traditional infrastructure, discussed below).
-
-# Querying
-
-## Resolver API
-
-To query a resolver, send an HTTP `GET` to `RESOLVER/v1/IDENTITY?KEY1,KEY2,...`.
-
-The response has this format:
-
-```json
-{
-  "v1": {
-    "key": {
-      "expires": "RFC3339 datetime...",
-      "data": "value"
-    }
-  }
-}
-```
-
-If the identity can't be resolved you'll get an empty `{"v1": {}}` response.
-
-All resolvers must have this API.
-
-## The CLI and environment variables
-
-`spagh-cli` uses environment variable `SPAGH_RESOLVER` to find the server if none is specified. This should be a `host:port` pair.
-
-# Hosting a publisher or resolver
-
-1. Do `cargo install spaghettinuum`
-2. Run `spagh-cli generate-config` to generate a config
-3. Run `spagh --config YOURCONFIG.json` to start the server
-
-The `spagh` server has a number of child services:
-
-- The node (DHT node), required
-- A resolver, which provides the REST API for querying, optional
-- A publisher, which publishes your key/value pairs, optional
-- A DNS bridge, which provides a DNS frontend for querying, optional
-
-# Publishing
-
-## Set up an identity
-
-You need an identity to publish.
-
-There are two types of identities:
-
-- Local (a file on your computer)
-- Card (a PCSC/GPG smart card)
-
-To create a local identity, do `spagh-cli new-local-identity me.ident`. It will save the identity and secret in the file, and print out the identity. Anyone who has this file can publish under the identity, so be careful with it.
-
-To use a card identity, with a Yubikey straight out of the extruder,
-
-1. Make sure `pcscd` is running and your Yubikey is plugged in
-2. Do `cargo install openpgp-card-tools` which installs `opgpcard`
-3. Do `opgpcard list`, which should show your card with an id like `0006:123456789`
-4. Install a new private key by doing `opgpcard admin --card 0006:123456789 generate cv25519` with the default `12345678` admin PIN (at the moment, only Ed25519 is supported so to get that you must use `cv25519`). Alternatively you can use Sequoia or something to generate a key then do `opgpcard admin --card XYZ import` instead, if you want to back up your identity. By the way, Sequoia is super cool and the people who work on it are equally amazing.
-5. Do `spagh-cli list-card-identities` to confim it's detected and get the identity for the card ID (required for publishing)
-
-The card must be plugged into the server so the server can sign publications.
-
-## Approve the identity
-
-## Publish your records
-
-To publish you need a server with the publisher service enabled.
-
-Create a json file named `data.json` containing the data you want to publish under your identity:
-
-```json
-{
-  "missing_ttl": 60,
-  "data": {
-    "any key you want": {
-      "ttl": 60,
-      "data": "I love you"
-    }
-  }
-}
-```
-
-TTLs are in minutes.
-
-`missing_ttl` is how long keys not in `data` can be assummed to be missing.
-
-Then call
-
-```
-spagh-cli publish --server http://localhost local ./identity.json ./data.json
-```
-
-to publish using a local identity or
-
-```
-spagh-cli publish --server http://localhost card 0006:12345678 - ./data.json
-```
-
-to publish using a card.
-
-## Publishing DNS
-
-DNS is normal published data with DNS-bridge specific keys, with a specific value JSON format understood by the DNS bridge service.
-
-You can use `spagh-cli generate-dns-data` to generate data for use with `spagh-cli publish` or `spagh-cli publish-dns` to publish records directly to a dynamic publisher.
-
-If you want to modify the data, the recognized DNS keys are listed in [tree/master/src/data/standard.rs](tree/master/src/data/standard.rs).
-
-## Publishing a website
-
-This is about hacking spaghettinuum into the old technologies, so you can use a plain browser to access your website over the spaghettinuum.
-
-Note that spaghetinium only handles name resolution - you still need a server to publish the HTTP content, APIs, etc.
-
-The main sticking point here is SSL. There are a couple theoretical options for getting SSL worked out on your website:
-
-1. DNSSEC TLSA records - you could theoretically store a self signed cert in DNS and everything would be great. Unfortunately, anti-progress browsers (Chrome and Firefox) both stonewalled tickets to support TLSA records because who wants the future.
-2. A new CA - I'm hoping to set one up, verifying signing requests based on a cert signature using the identity the cert is for. This is a slightly worse approach since everyone would need to add the new CA to their browser (I think you can limit CAs to certain domains, but it's still risky and painful)
-3. A SSL MITM proxy - I was thinking about setting a public proxy up, but I was worried about paying for bandwidth
-4. Browser extensions(?) that resolve `.s` domains and do the cert validation themselves - I really wanted to avoid this, since browser extensions are getting less capable (ex: manifest v3), require custom extensions for N types of browser, need to deal with hostile publishing review/policies, need to work with Javascript, so on and so forth
-
-TLDR: There's no good options available immediately.
-
-# Self hosting
-
-You need:
-
-- `spaghettinuum` installed
-- A little disk space for caches, databases
-- A UDP port for DHT access
-- Optional: HTTP port (and maybe a TLS reverse proxy) for resolving and publishing if either are enabled
-- Optional: HTTP port (no TLS wrapper, it uses its own TLS) for publisher-publisher communication if publishing is enabled
-
-See `spagh -h` for instructions on running. See [server_config.schema.json](tree/master/src/server_config.schema.json) for the config schema and field explanations. `spagh-cli` will generate a default config for you if you want.
-
-# Architecture
-
-When you do a lookup, what happens is
-
-1. You send a request to the resolver
-2. The resolver queries the DHT to find the address of the authoritative publisher for the identity. This is like a DNS NS record - it says who is allowed to dictate records for a name.
-3. Once the resolver gets the publisher, it opens a TLS connection to the publisher and asks for the keys.
-4. It sends you the results
-
-The information in the DHT includes the public key of the TLS cert for the publisher - this is verified when connecting to the publisher.
-
-The DHT is a modified Kademlia which uses public keys for node ids and requires all stored values to be signed with the identity used for the key. This approach is used by other decentralized protocols such as IPFS and Ethereum for their DHTs.
+- [`spagh-node`](./reference_spagh_node.md) - the network node server, resolver, and publisher
+- [`spagh`](./reference_spagh.md) - the CLI
+- [`spagh-auto`](./reference_spagh_auto.md) - a small static file server/reverse proxy
+- [API reference](./reference_api.md)
+- [Architecture](./architecture.md)
 
 # Why
 
 ## Why not DNS
 
-You have a penchant for anarchy.
+DNS often functions as an identity - who you are online is often tied to a domain name, like your email address. Every day more things rely on DNS: encryption (TLS cert issuing validations), Matrix, that new Twitter replacement.
 
-Just kidding. The real reasons for disliking DNS are:
+Having an such an identity is important, but despite regulations the DNS system locks you in to all sorts of abuse:
 
 - Paying large amounts of money to rent seeking middlemen
-- Pay up or lose everything
-- Global competition over an artificially limited resource
+
+- Keep paying or lose everything
+
+- Compete (financially) over an artificially limited resource
+
 - Poor DNS registrar security/tech casting your domain names into the void
+
 - Large corporations can take over bit player domains
+
 - IANA granting tiny fiefdoms to despots
 
-More and more things rely on DNS: Getting SSL certificates, email, Matrix, that new Twitter replacement. For all the reasons above, the faster we have an alternative the better.
+The sooner we have a good decentralized alternative the better.
 
-## Gibberish names
+## Gibberish names are OK
 
-Yeah, `google.com` is a lot more memorable than `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s` for sure.
+Yeah, `google.com` is a lot more memorable than `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s`.
 
-But I live in Japan, and for all intents and purposes people are already living in a world like this:
+But I live in Japan, and for all intents and purposes people are already living in a world where domain names are just gibberish:
 
-- Domain names are gibberish - they're heavily biased towards ASCII, which many Japanese find hard to read. In fact, nobody uses domain names directly already - all advertisements say "Search for ABCD" and never include a URL. Browsers search by default so you don't even need to know `google.com`.
-- Everyone uses a messenger called Line, which doesn't use any absolute identifiers (no ID or phone number) - instead, you connect with people by adding them via QR code when you meet _in person_, or by adding them via co-membership in a group chat you joined via other people. Companies put QR codes for adding them on Line on posters, advertisements, etc.
+- Domain names are heavily biased towards ASCII, which many Japanese find hard to read. In fact, nobody here uses domain names directly - all advertisements say "Search for ABCD" and never include a URL. Browsers come with search engines preconfigured so you don't even need to know how to type in `google.com` (is there a `www`? do you need to add `https://`?).
+- Everyone uses a messenger called Line, which doesn't use any visible absolute identifiers (ID or phone number) - instead, you connect with people by adding them via QR code when you meet _in person_, or by adding them via co-membership in a group chat you joined via other people. Companies put QR codes for adding them on Line on posters, advertisements, etc.
 
-While I'm not claiming the googling-companies-thing is great, the Line bit works perfectly and shows how a web of trust model can work in the real world.
+While I'm not claiming the googling-companies-thing is great, the Line bit works well and shows how a world with no absolute names is still perfectly navigable.
 
-In my own internet usage, there are only a couple types of websites I use:
+In my own internet usage too I don't rely on domain names to establish trust:
 
-- Stuff I access all the time, which I've bookmarked: Amazon, my bank, Twitter, etc. The bookmark only shows the website title, and I've already vetted them and know they're safe (unless DNS is compromised).
-- Stuff I google, which is a _low-trust_ interaction: technical information, blogs, reviews, etc. I confirm all the information is legit independently before relying on it, often from multiple sources. In this case I don't look at the domain anyway.
+- Stuff that I rely on (_high-trust_) and access all the time: Amazon, my bank, Twitter, etc.
 
-As more and more domains get used and the number of meaningless suffixes proliferate, the trust provided by a domain name continues to decrease. Is that new bank at `futurebank.io` or `futurebank.cash` or `futurebank.xyz` or `futurebank.it` or (etc). What about typo squatting? What about creative names, like `lyft` vs `lift`?
+  I was introduced to them by trusted connections like friends, family, pamphlets from branches of physical stores. These may have been sent as hyperlinks or QR codes where unless I dug in I didn't see the actual domain name.
+
+  Once I accessed them I bookmarked them, and again the bookmark only shows the website title (or a bookmark title I gave it myself).
+
+- Stuff I find in search results, which is a _low-trust_ interaction: technical information, blogs, reviews, etc.
+
+  I confirm all the information is legitimate independently before relying on it, often from multiple sources. In this case I (again) don't look at the domain.
+
+As more and more domains are purchased and the number of meaningless suffixes proliferate, the trust provided by a domain name continues to decrease. Is that new bank at `futurebank.io` or `futurebank.cash` or `futurebank.xyz` or `futurebank.it` or (etc). What about typo squatting? What about creative names, like `lyft` vs `lift`?
 
 So safely browsing the web _today_ requires:
 
-1. Establishing trust for new websites via trusted channels: a friend linking you to a website, a company you're doing business with providing a pamphlet with their official website in-person
-2. Treating any other websites as untrustworthy: not typing in credit cards, providing your email address, etc
+1. Establishing trust for new websites via other trusted channels
+2. Establishing personally relevant non-absolute identifiers (ex: bookmark titles, hyperlink text) because nobody remembers domain names anyways
+3. Treating any other websites as untrustworthy
 
 Which would all be the same with gibberish names.
 
-## Text based API
+## Why not Namecoin, Handshake, etc.
 
-My thoughts were:
+Namecoin and similar share the issue of competition over a scarce resource with DNS. A common criticism I've heard about Namecoin is that the good names were quickly taken and now cost astronomic sums to purchase. The main differentiator vs DNS is that a blockchain is the arbitor, not an organization.
 
-- Being able to use curl and/or javascript to create the requests is important for adoption
-- Performance isn't critical: DNS isn't in any hot paths, DNS results can be cached and change infrequently so performance isn't as critical
-- Encoding binary in UTF-8 isn't hard. Base64 is widely available
+## Why not Gnu Name System
 
-A binary API may be available in the future.
+Gnu Name System (GNS) is very similar to Spaghettinuum: globally unique names, DHT storage. The parallels extend to how many issues are solved.
+
+I think the fundamental differences are:
+
+- Spaghettinuum is small and focused. GNS is part of GNUNet and has many modes of operation, commands and command line flags, subsystems and components.
+
+- Spaghettinuum has a light-client + server model, where local usage can be done with just a standard DNS or HTTP client (ex: curl). GNS is a heavy-client model, where you're expected to have a full installation on each device you use it on, which will then be a member of the network.
+
+- Spaghettinuum is an HTTP JSON key-value store, with support for bridging to DNS. GNS is primarily a DNS replacement, storing DNS(-like) records internally.
+
+Some more subtle differences:
+
+- GNS operates under the assumption that users will establish human readable DNS names mapping public keys, rather than use the public key ids directly. It comes with predefined mappings including one that acts as a centralized registry for other users, with the same name scarcity issues. You can also use the public key ids directly, so there are multiple ways to access a site.
+
+  Spaghettinuum has only one access method - using the public key (identity) id. There are no central registries. I don't believe establishing human readable labels at the DNS level is a good interface - see "Gibberish names are OK" for more info.
+
+- GNS stores all records in the DHT. Spaghettinuum only stores pointers to the authoritative publisher in the DHT, everything else is stored on the publisher.
+
+- GNS uses a local MITM HTTPS proxy (with local CA cert) to handle TLS certificates, Spaghettinuum uses a new root CA cert and public issuer (Certipasta). For both, these are expected to be temporary measures until browsers support other channles for distributing TLS certificates.
+
+# Privacy
+
+Communication between the client and the resolver (lookup) is secured by HTTPS, or optionally DoT for the DNS bridge.
+
+Communication between the nodes in the DHT (announcement) is public.
+
+Communication between the resolver and publisher (lookup) is secured by HTTPS.
+
+The resolver knows what records the clients request.
+
+The publisher knows which resolvers request which records. If K users share a resolver they have K-anonymity to the publisher.
+
+An external observer can see which clients communicate with which resolvers, and which resolvers communicate with which publishers. If K users share a resolver, and L users share a publisher, they have KL-anonymity to the external observer regarding which records they may look up.
+
+Once the lookup is complete, clients communicate directly with hosts, the same way they do currently with HTTP after DNS lookups.
+
+# Security
+
+1. All publisher announcements (DHT data saying which publisher is authoritative for an identity's data) are signed by an identity. The announcements are dated and conforming nodes will ignore older announcements when a newer announcement is available.
+
+2. All records on the publisher are also signed by the publishing identity.
+
+The resolver validates the signatures against the identity id (the identity's public key) when it receives them before returning the data.

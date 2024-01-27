@@ -46,6 +46,7 @@ use poem::{
         Listener,
     },
 };
+use crate::interface::spagh_cli::StrSocketAddr;
 use serde::{
     Deserialize,
     Serialize,
@@ -98,7 +99,6 @@ use crate::{
     },
     interface::{
         identity::Identity,
-        spagh_cli::StrSocketAddr,
         spagh_api::{
             resolve::{
                 ResolveKeyValues,
@@ -121,7 +121,6 @@ use crate::{
 };
 
 pub mod admin_db;
-pub mod config;
 
 pub trait PublishIdentSignatureMethods<B, I>
 where

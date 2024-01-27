@@ -1,5 +1,7 @@
 pub mod spagh_internal;
 pub mod spagh_api;
+pub mod spagh_node;
+pub mod spagh_auto;
 pub mod spagh_cli;
 pub mod certify_protocol;
 pub mod node_identity;

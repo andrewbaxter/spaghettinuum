@@ -56,7 +56,6 @@ use taskmanager::TaskManager;
 use tokio::spawn;
 
 pub mod db;
-pub mod config;
 pub mod dns;
 
 struct Resolver_ {
@@ -362,7 +361,7 @@ pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
     let mut r = Routes::new();
     r.add("v1", htserve::Leaf::new().get(cap_fn!((mut req)(state) {
         match async {
-            ta_vis_res!(resolve::ResolveKeyValues);
+            ta_vis_res!(resolve::latest::ResolveKeyValues);
             let ident_src = req.path.pop().context("Missing identity final path element").err_external()?;
             let kvs =
                 state
@@ -375,7 +374,7 @@ pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
                     )
                     .await
                     .err_internal()?;
-            return Ok(resolve::ResolveKeyValues::V1(resolve::latest::ResolveKeyValues(kvs)));
+            return Ok(resolve::latest::ResolveKeyValues(kvs));
         }.await {
             Ok(r) => Response::json(r),
             Err(e) => match e {

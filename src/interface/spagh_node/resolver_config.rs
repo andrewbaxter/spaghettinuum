@@ -3,7 +3,9 @@ use serde::{
     Deserialize,
     Serialize,
 };
-use crate::interface::spagh_cli::StrSocketAddr;
+use crate::interface::{
+    spagh_cli::StrSocketAddr,
+};
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

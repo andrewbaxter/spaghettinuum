@@ -9,8 +9,10 @@ use crate::{
                 COMMON_KEYS_DNS,
                 KEY_DNS_A,
                 KEY_DNS_AAAA,
+                KEY_DNS_MX,
             },
         },
+        spagh_node::resolver_config::DnsBridgeConfig,
     },
     bb,
     utils::{
@@ -49,9 +51,10 @@ use futures::StreamExt;
 use hickory_proto::{
     rr::{
         rdata::{
-            CNAME,
-            AAAA,
             A,
+            AAAA,
+            CNAME,
+            MX,
             TXT,
         },
         LowerName,
@@ -140,7 +143,6 @@ use hickory_server::{
 };
 use super::{
     Resolver,
-    config::DnsBridgeConfig,
 };
 
 pub mod db;
@@ -221,6 +223,7 @@ pub async fn start_dns_bridge(
                             (KEY_DNS_CNAME, COMMON_KEYS_DNS)
                         },
                         RecordType::TXT => (KEY_DNS_TXT, COMMON_KEYS_DNS),
+                        RecordType::MX => (KEY_DNS_MX, COMMON_KEYS_DNS),
                         _ => {
                             // Unsupported key pairs
                             return Ok(
@@ -278,6 +281,12 @@ pub async fn start_dns_bridge(
                             },
                         }
                     } else if let Some((expires, data)) = res.remove(lookup_key).map(filter_some).flatten() {
+                        let expires =
+                            expires
+                                .signed_duration_since(Utc::now())
+                                .num_seconds()
+                                .try_into()
+                                .unwrap_or(i32::MAX as u32);
                         match lookup_key {
                             KEY_DNS_A => {
                                 match serde_json::from_value::<resolve::DnsA>(data.clone())
@@ -303,11 +312,7 @@ pub async fn start_dns_bridge(
                                             answers.push(
                                                 Record::from_rdata(
                                                     request.query().name().into(),
-                                                    expires
-                                                        .signed_duration_since(Utc::now())
-                                                        .num_seconds()
-                                                        .try_into()
-                                                        .unwrap_or(i32::MAX as u32),
+                                                    expires,
                                                     RData::A(A(n)),
                                                 ),
                                             );
@@ -339,11 +344,7 @@ pub async fn start_dns_bridge(
                                             answers.push(
                                                 Record::from_rdata(
                                                     request.query().name().into(),
-                                                    expires
-                                                        .signed_duration_since(Utc::now())
-                                                        .num_seconds()
-                                                        .try_into()
-                                                        .unwrap_or(i32::MAX as u32),
+                                                    expires,
                                                     RData::AAAA(AAAA(n)),
                                                 ),
                                             );
@@ -360,12 +361,40 @@ pub async fn start_dns_bridge(
                                             answers.push(
                                                 Record::from_rdata(
                                                     request.query().name().into(),
-                                                    expires
-                                                        .signed_duration_since(Utc::now())
-                                                        .num_seconds()
-                                                        .try_into()
-                                                        .unwrap_or(i32::MAX as u32),
+                                                    expires,
                                                     RData::TXT(TXT::new(vec![n])),
+                                                ),
+                                            );
+                                        }
+                                    },
+                                }
+                            },
+                            KEY_DNS_MX => {
+                                match serde_json::from_value::<resolve::DnsMx>(data.clone())
+                                    .context_with("Failed to parse received record json", ea!(json = data))
+                                    .err_external()? {
+                                    resolve::DnsMx::V1(n) => {
+                                        for (i, n) in n.0.into_iter().enumerate() {
+                                            let n = match Name::from_utf8(&n) {
+                                                Err(e) => {
+                                                    self1
+                                                        .log
+                                                        .log_err(
+                                                            DEBUG_DNS_S,
+                                                            e.context_with(
+                                                                "Mx name in record invalid for DNS",
+                                                                ea!(name = n),
+                                                            ),
+                                                        );
+                                                    continue;
+                                                },
+                                                Ok(n) => n,
+                                            };
+                                            answers.push(
+                                                Record::from_rdata(
+                                                    request.query().name().into(),
+                                                    expires,
+                                                    RData::MX(MX::new(i as u16, n)),
                                                 ),
                                             );
                                         }

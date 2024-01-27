@@ -9,6 +9,7 @@ use crate::interface::node_identity::{
 use crate::interface::node_protocol::latest::{
     BincodeSignature,
 };
+use crate::interface::spagh_cli::StrSocketAddr;
 use crate::interface::node_protocol::v1::FindResponseContent;
 use crate::utils::backed_identity::IdentitySigner;
 use crate::utils::blob::{
@@ -29,7 +30,6 @@ use crate::interface::node_protocol::{
     Protocol,
     self,
 };
-use crate::interface::spagh_cli::StrSocketAddr;
 use crate::utils::db_util::setup_db;
 use chrono::{
     Utc,
@@ -72,7 +72,6 @@ use std::sync::Mutex;
 use tokio::net::UdpSocket;
 
 pub mod db;
-pub mod config;
 
 const HASH_SIZE: usize = 256usize;
 type DhtCoord = GenericArray<u8, generic_array::typenum::U32>;

@@ -11,7 +11,6 @@ pub mod publisher;
 
 /// Methods for obtaining a `.s` TLS cert
 pub mod self_tls;
-pub mod config;
 
 /// Shared data structures, constants, etc
 pub mod interface;

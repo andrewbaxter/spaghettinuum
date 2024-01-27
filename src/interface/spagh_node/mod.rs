@@ -11,16 +11,15 @@ use serde::{
     Serialize,
 };
 use crate::{
-    node::{
-        self,
-    },
-    resolver,
-    publisher,
     interface::spagh_cli::{
         StrSocketAddr,
         BackedIdentityArg,
     },
 };
+
+pub mod publisher_config;
+pub mod resolver_config;
+pub mod node_config;
 
 #[derive(Deserialize, Serialize, JsonSchema, Aargvark, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -87,13 +86,13 @@ pub struct Config {
     #[serde(default)]
     pub global_addrs: Vec<GlobalAddrConfig>,
     /// Core DHT node config, for publishing and looking up addresses
-    pub node: node::config::NodeConfig,
+    pub node: node_config::NodeConfig,
     /// Specify to enable resolver functionality.
     #[serde(default)]
-    pub resolver: Option<resolver::config::ResolverConfig>,
+    pub resolver: Option<resolver_config::ResolverConfig>,
     /// Specify to enable publisher functionality.
     #[serde(default)]
-    pub publisher: Option<publisher::config::PublisherConfig>,
+    pub publisher: Option<publisher_config::PublisherConfig>,
     /// Addresses for client interaction - resolver lookups, publishing, and admin.
     /// Required for publisher and resolver.  This serves both token-protected and
     /// public endpoints.

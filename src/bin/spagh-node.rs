@@ -28,19 +28,12 @@ use poem::{
 use spaghettinuum::{
     bb,
     cap_fn,
-    config::{
-        Config,
-    },
     interface::{
         node_protocol::{
             latest::{
                 NodeInfo,
                 SerialAddr,
             },
-        },
-        spagh_cli::{
-            self,
-            DEFAULT_CERTIFIER_URL,
         },
         spagh_api::{
             publish,
@@ -50,6 +43,11 @@ use spaghettinuum::{
                 self,
             },
         },
+        spagh_cli::{
+            self,
+            DEFAULT_CERTIFIER_URL,
+        },
+        spagh_node::Config,
     },
     node::Node,
     publisher::{
