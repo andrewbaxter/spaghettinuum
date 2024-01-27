@@ -15,8 +15,9 @@ use good_ormning::sqlite::{
     new_delete,
     schema::{
         field::{
-            field_str,
             field_i32,
+            field_i64,
+            field_str,
         },
         constraint::{
             PrimaryKeyDef,
@@ -41,7 +42,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             v,
             "zJ0MPA5DK",
             "certs",
-            field_str().custom("crate::interface::proto::resolve::PublisherCerts").build(),
+            field_str().custom("crate::interface::stored::publisher::Certs").build(),
         );
     if let Some(queries) = &mut queries {
         queries.push(
@@ -70,7 +71,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             v,
             "zZ9J6717C",
             "value",
-            field_str().custom("crate::interface::proto::node::Announcement").build(),
+            field_str().custom("crate::interface::stored::announcement::Announcement").build(),
         );
     announce.index("zDZXPBB1L", "announce_ident", &[&announce_ident]).unique().build(v);
     if let Some(queries) = &mut queries {
@@ -105,7 +106,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
     {
         let t = v.table("zX3JY9PDC", "publish_idents");
         let f_ident = t.field(v, "zXQXWUVLT", "identity", field_ident());
-        let f_missing_ttl = t.field(v, "z2BLD4BI2", "missing_ttl", field_i32().build());
+        let f_missing_ttl = t.field(v, "z2BLD4BI2", "missing_ttl", field_i64().build());
         t.constraint(
             v,
             "z183FPXF9",
@@ -140,7 +141,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
                 v,
                 "zMC0B1T32",
                 "values",
-                field_str().custom("crate::interface::proto::resolve::RecordValue").build(),
+                field_str().custom("crate::interface::stored::record::RecordValue").build(),
             );
         publish.constraint(
             v,
@@ -169,9 +170,29 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             );
             queries.push(
                 new_select(&publish)
-                    .return_fields(&[&publish_key, &publish_value])
+                    .return_fields(&[&publish_key])
                     .where_(eq_field("ident", &publish_ident))
-                    .build_query("values_get_all", QueryResCount::MaybeOne),
+                    .order_from_iter(
+                        [
+                            (Expr::Field(publish_ident.clone()), Order::Asc),
+                            (Expr::Field(publish_key.clone()), Order::Asc),
+                        ].into_iter(),
+                    )
+                    .limit(Expr::LitI32(50))
+                    .build_query("values_keys_list_start", QueryResCount::Many),
+            );
+            queries.push(
+                new_select(&publish)
+                    .return_fields(&[&publish_key])
+                    .where_(expr_and(vec![eq_field("ident", &publish_ident), gt_field("after", &publish_key)]))
+                    .order_from_iter(
+                        [
+                            (Expr::Field(publish_ident.clone()), Order::Asc),
+                            (Expr::Field(publish_key.clone()), Order::Asc),
+                        ].into_iter(),
+                    )
+                    .limit(Expr::LitI32(50))
+                    .build_query("values_keys_list_after", QueryResCount::Many),
             );
             queries.push(
                 new_delete(&publish)

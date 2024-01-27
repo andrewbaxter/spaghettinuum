@@ -5,7 +5,7 @@ use serde::{
 };
 use crate::interface::{
     config::shared::StrSocketAddr,
-    node_identity::NodeIdentity,
+    stored::node_identity::NodeIdentity,
 };
 
 pub const PORT_NODE: u16 = 43890;

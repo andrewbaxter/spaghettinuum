@@ -30,6 +30,7 @@ pub mod blob;
 pub mod htserve;
 pub mod htreq;
 pub mod log;
+pub mod signed;
 
 #[derive(Clone)]
 pub struct AsyncBus<T: Clone + Unpin>(Arc<Mutex<Vec<ManualFutureCompleter<T>>>>);

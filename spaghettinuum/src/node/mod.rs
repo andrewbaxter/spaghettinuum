@@ -1,20 +1,28 @@
+use crate::interface::stored::shared::SerialAddr;
+use crate::interface::wire::node::latest::FindGoal;
+use crate::interface::wire::node::v1::DhtCoord;
 use crate::{
     bb,
     cap_fn,
 };
 use crate::interface::config::shared::StrSocketAddr;
-use crate::interface::identity::Identity;
-use crate::interface::node_identity::{
+use crate::interface::stored::identity::Identity;
+use crate::interface::stored::node_identity::{
     self,
     NodeIdentityMethods,
     NodeSecretMethods,
     NodeIdentity,
 };
-use crate::interface::proto;
-use crate::utils::backed_identity::IdentitySigner;
+use crate::interface::{
+    stored,
+    wire,
+};
+use crate::utils::signed::{
+    IdentSignatureMethods,
+    NodeIdentSignatureMethods,
+};
 use crate::utils::blob::{
     Blob,
-    ToBlob,
 };
 use crate::utils::log::{
     Log,
@@ -45,7 +53,6 @@ use loga::{
 use manual_future::ManualFuture;
 use manual_future::ManualFutureCompleter;
 use rand::RngCore;
-use serde::de::DeserializeOwned;
 use taskmanager::TaskManager;
 use serde::Deserialize;
 use serde::Serialize;
@@ -70,7 +77,6 @@ use tokio::net::UdpSocket;
 pub mod db;
 
 const HASH_SIZE: usize = 256usize;
-type DhtCoord = GenericArray<u8, generic_array::typenum::U32>;
 const NEIGHBORHOOD: usize = 8usize;
 const PARALLEL: usize = 3;
 
@@ -88,7 +94,7 @@ fn expiry() -> Duration {
     return Duration::hours(24);
 }
 
-fn dist<N: ArrayLength<u8>>(a: &GenericArray<u8, N>, b: &GenericArray<u8, N>) -> (usize, GenericArray<u8, N>) {
+fn dist_<N: ArrayLength<u8>>(a: &GenericArray<u8, N>, b: &GenericArray<u8, N>) -> (usize, GenericArray<u8, N>) {
     let mut leading_zeros = 0usize;
     let mut first_one = false;
     let mut out: GenericArray<u8, N> = GenericArray::default();
@@ -105,6 +111,11 @@ fn dist<N: ArrayLength<u8>>(a: &GenericArray<u8, N>, b: &GenericArray<u8, N>) ->
     return (leading_zeros, out);
 }
 
+fn dist(a: &DhtCoord, b: &DhtCoord) -> (usize, DhtCoord) {
+    let (leading_zeros, out) = dist_(&a.0, &b.0);
+    return (leading_zeros, DhtCoord(out));
+}
+
 #[cfg(test)]
 mod dist_tests {
     // Note this useful idiom: importing names from outer (for mod tests) scope.
@@ -114,43 +125,43 @@ mod dist_tests {
 
     #[test]
     fn test_same() {
-        let (lz, d) = dist(SmallBytes::from_slice(&[0u8, 0u8]), SmallBytes::from_slice(&[0u8, 0u8]));
+        let (lz, d) = dist_(SmallBytes::from_slice(&[0u8, 0u8]), SmallBytes::from_slice(&[0u8, 0u8]));
         assert_eq!(lz, 16);
         assert_eq!(d.as_slice(), &[0u8, 0u8]);
     }
 
     #[test]
     fn test_lsb_dist() {
-        let (lz, d) = dist(SmallBytes::from_slice(&[0u8, 1u8]), SmallBytes::from_slice(&[0u8, 0u8]));
+        let (lz, d) = dist_(SmallBytes::from_slice(&[0u8, 1u8]), SmallBytes::from_slice(&[0u8, 0u8]));
         assert_eq!(lz, 15);
         assert_eq!(d.as_slice(), &[0u8, 1u8]);
     }
 
     #[test]
     fn test_msb_dist() {
-        let (lz, d) = dist(SmallBytes::from_slice(&[128u8, 0u8]), SmallBytes::from_slice(&[0u8, 0u8]));
+        let (lz, d) = dist_(SmallBytes::from_slice(&[128u8, 0u8]), SmallBytes::from_slice(&[0u8, 0u8]));
         assert_eq!(lz, 0);
         assert_eq!(d.as_slice(), &[128u8, 0u8]);
     }
 }
 
 fn node_ident_coord(x: &NodeIdentity) -> DhtCoord {
-    return <sha2::Sha256 as Digest>::digest(x.to_bytes());
+    return DhtCoord(<sha2::Sha256 as Digest>::digest(x.to_bytes()));
 }
 
 fn ident_coord(x: &Identity) -> DhtCoord {
-    return <sha2::Sha256 as Digest>::digest(x.to_bytes());
+    return DhtCoord(<sha2::Sha256 as Digest>::digest(x.to_bytes()));
 }
 
 #[derive(Debug)]
 struct NextFindTimeout {
     updated: DateTime<Utc>,
-    key: (proto::node::latest::FindMode, usize),
+    key: (FindGoal, usize),
 }
 
 #[derive(Clone)]
 struct ValueState {
-    value: proto::node::latest::Announcement,
+    value: stored::announcement::Announcement,
     updated: DateTime<Utc>,
 }
 
@@ -165,7 +176,7 @@ struct NextChallengeTimeout {
 }
 
 struct Buckets {
-    buckets: [Vec<proto::node::latest::NodeState>; HASH_SIZE],
+    buckets: [Vec<wire::node::latest::NodeState>; HASH_SIZE],
     addrs: HashMap<SocketAddr, NodeIdentity>,
 }
 
@@ -180,7 +191,7 @@ struct NodeInner {
     socket: UdpSocket,
     next_req_id: AtomicUsize,
     find_timeouts: UnboundedSender<NextFindTimeout>,
-    find_states: Mutex<HashMap<proto::node::latest::FindMode, FindState>>,
+    find_states: Mutex<HashMap<FindGoal, FindState>>,
     ping_states: Mutex<HashMap<node_identity::NodeIdentity, PingState>>,
     challenge_timeouts: UnboundedSender<NextChallengeTimeout>,
     challenge_states: Mutex<HashMap<node_identity::NodeIdentity, ChallengeState>>,
@@ -194,30 +205,37 @@ struct OutstandingNodeEntry {
     dist: DhtCoord,
     leading_zeros: usize,
     challenge: Blob,
-    node: proto::node::latest::NodeInfo,
+    node: wire::node::latest::NodeInfo,
 }
 
-enum BestNodeEntryNode {
+#[derive(Clone)]
+enum NearestNodeEntryNode {
     Self_,
-    Node(proto::node::latest::NodeInfo),
+    Node(wire::node::latest::NodeInfo),
 }
 
-struct BestNodeEntry {
+#[derive(Clone)]
+struct NearestNodeEntry {
     dist: DhtCoord,
-    node: BestNodeEntryNode,
+    node: NearestNodeEntryNode,
 }
 
 struct FindState {
     req_id: usize,
-    mode: proto::node::latest::FindMode,
-    target_hash: DhtCoord,
+    goal: FindGoal,
     updated: DateTime<Utc>,
-    best: Vec<BestNodeEntry>,
+    nearest: Vec<NearestNodeEntry>,
     outstanding: Vec<OutstandingNodeEntry>,
+    // TODO rename -> seen
     requested: HashSet<node_identity::NodeIdentity>,
     // for storing value, or retrieving value
-    value: Option<proto::node::latest::Announcement>,
-    futures: Vec<ManualFutureCompleter<Option<proto::node::latest::Announcement>>>,
+    value: Option<stored::announcement::Announcement>,
+    futures: Vec<ManualFutureCompleter<FindResult>>,
+}
+
+struct FindResult {
+    nearest: Vec<NearestNodeEntry>,
+    value: Option<stored::announcement::Announcement>,
 }
 
 struct PingState {
@@ -228,7 +246,7 @@ struct PingState {
 struct ChallengeState {
     req_id: usize,
     challenge: Blob,
-    node: proto::node::latest::NodeInfo,
+    node: wire::node::latest::NodeInfo,
 }
 
 fn generate_challenge() -> Blob {
@@ -237,65 +255,11 @@ fn generate_challenge() -> Blob {
     return out;
 }
 
-pub trait IdentSignatureMethods<B: DeserializeOwned, I>
-where
-    Self: Sized {
-    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(I, Self), loga::Error>;
-    fn verify(&self, identity: &Identity) -> Result<B, ()>;
-    fn parse_unwrap(&self) -> B;
-}
-
-impl<
-    B: Serialize + DeserializeOwned,
-> IdentSignatureMethods<B, Identity> for proto::node::v1::BincodeSignature<B, Identity> {
-    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(Identity, Self), loga::Error> {
-        let message = bincode::serialize(&body).unwrap().blob();
-        let (ident, signature) = signer.sign(&message)?;
-        return Ok((ident, Self {
-            message: message,
-            signature: signature,
-            _p: Default::default(),
-        }));
-    }
-
-    fn verify(&self, identity: &Identity) -> Result<B, ()> {
-        identity.verify(&self.message, &self.signature).map_err(|_| ())?;
-        return Ok(bincode::deserialize(&self.message).map_err(|_| ())?);
-    }
-
-    fn parse_unwrap(&self) -> B {
-        return bincode::deserialize(&self.message).map_err(|_| ()).unwrap();
-    }
-}
-
-pub trait NodeIdentSignatureMethods<B: DeserializeOwned> {
-    fn sign(identity: &node_identity::NodeSecret, body: B) -> Self;
-    fn verify(&self, identity: &node_identity::NodeIdentity) -> Result<B, ()>;
-}
-
-impl<
-    B: Serialize + DeserializeOwned,
-> NodeIdentSignatureMethods<B> for proto::node::v1::BincodeSignature<B, node_identity::NodeIdentity> {
-    fn verify(&self, identity: &node_identity::NodeIdentity) -> Result<B, ()> {
-        identity.verify(&self.message, &self.signature).map_err(|_| ())?;
-        return Ok(bincode::deserialize(&self.message).map_err(|_| ())?);
-    }
-
-    fn sign(identity: &node_identity::NodeSecret, body: B) -> Self {
-        let message = bincode::serialize(&body).unwrap().blob();
-        return Self {
-            signature: identity.sign(&message),
-            message: message,
-            _p: Default::default(),
-        };
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct Persisted {
     own_secret: node_identity::NodeSecret,
-    initial_buckets: Vec<Vec<proto::node::latest::NodeState>>,
+    initial_buckets: Vec<Vec<wire::node::latest::NodeState>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -322,7 +286,7 @@ impl Node {
         log: &Log,
         tm: TaskManager,
         bind_addr: StrSocketAddr,
-        bootstrap: &[proto::node::latest::NodeInfo],
+        bootstrap: &[wire::node::latest::NodeInfo],
         persistent_path: &Path,
     ) -> Result<Node, loga::Error> {
         let log = &log.fork(ea!(sys = "node"));
@@ -360,7 +324,7 @@ impl Node {
                 .stack_context(log, "Error interacting with database")?
                 .stack_context(log, "Error retrieving old neighbors")? {
                 let state = match e {
-                    proto::node::NodeState::V1(s) => s,
+                    wire::node::NodeState::V1(s) => s,
                 };
                 let (leading_zeros, _) = dist(&node_ident_coord(&state.node.ident), &own_coord);
                 match initial_buckets.addrs.entry(state.node.address.0) {
@@ -440,7 +404,7 @@ impl Node {
                     db::neighbors_clear(conn)?;
                     for bucket in dir.0.buckets.lock().unwrap().buckets.clone().into_iter() {
                         for n in bucket {
-                            db::neighbors_insert(conn, &proto::node::NodeState::V1(n))?;
+                            db::neighbors_insert(conn, &wire::node::NodeState::V1(n))?;
                         }
                     }
                     return Ok(()) as Result<_, loga::Error>;
@@ -458,7 +422,7 @@ impl Node {
             tokio::time::sleep_until(deadline.to_instant()).await;
             let state = {
                 let mut borrowed_states = dir.0.find_states.lock().unwrap();
-                let mut state_entry = match borrowed_states.entry(e.key.0.clone()) {
+                let mut state_entry = match borrowed_states.entry(e.key.0) {
                     Entry::Occupied(s) => s,
                     Entry::Vacant(_) => return,
                 };
@@ -475,7 +439,7 @@ impl Node {
                 state_entry.remove()
             };
             for o in &state.outstanding {
-                dir.mark_node_unresponsive(o.node.ident.clone(), o.leading_zeros, true);
+                dir.mark_node_unresponsive(o.node.ident, o.leading_zeros, true);
             }
             dir.complete_state(state).await;
         }));
@@ -483,19 +447,23 @@ impl Node {
         // Stored data expiry or maybe re-propagation
         tm.periodic("Node - re-propagate/expire stored data", Duration::hours(1).to_std().unwrap(), cap_fn!(()(dir) {
             let mut unfresh = vec![];
+            let now = Utc::now();
             dir.0.store.lock().unwrap().retain(|k, v| {
-                let now = Utc::now();
-                if v.value.parse_unwrap().published + expiry() < now {
-                    return false;
+                match &v.value {
+                    stored::announcement::Announcement::V1(value) => {
+                        if value.parse_unwrap().published + expiry() < now {
+                            return false;
+                        }
+                    },
                 }
                 if v.updated + store_fresh_duration() < now {
                     v.updated = now;
-                    unfresh.push((k.clone(), v.clone()));
+                    unfresh.push((k.clone(), v.value.clone()));
                 }
                 return true;
             });
             for (k, v) in unfresh {
-                dir.start_find(proto::node::latest::FindMode::Put(k.clone()), Some(v.value), None).await;
+                dir.put(k, v).await;
             }
         }));
 
@@ -517,7 +485,7 @@ impl Node {
                             leading_zeros: leading_zeros,
                         }),
                     };
-                    dir.send(&addr.0, proto::node::Protocol::V1(proto::node::latest::Message::Ping)).await;
+                    dir.send(&addr.0, wire::node::Protocol::V1(wire::node::latest::Message::Ping)).await;
                     ping_timeout_write.unbounded_send(NextPingTimeout {
                         end: Utc::now() + req_timeout(),
                         key: (id, req_id),
@@ -577,7 +545,7 @@ impl Node {
                     };
                     match packet {
                         Ok((len, addr)) => {
-                            match match proto::node::Protocol::from_bytes(&buf[..len]) {
+                            match match wire::node::Protocol::from_bytes(&buf[..len]) {
                                 Ok(ver) => match dir.handle(ver, &addr).await {
                                     Ok(()) => Ok(()),
                                     Err(e) => Err(e),
@@ -600,7 +568,7 @@ impl Node {
                 }
             }
         });
-        dir.start_find(proto::node::latest::FindMode::Nodes(dir.0.own_ident.clone()), None, None).await;
+        dir.start_find(FindGoal::Coord(node_ident_coord(&dir.0.own_ident)), None).await;
 
         // If running in a container or at boot, packets may be lost immediately after
         // getting an ip address so do it again in a minute.
@@ -608,7 +576,7 @@ impl Node {
             let dir = dir.clone();
             async move {
                 sleep(Duration::seconds(60).to_std().unwrap()).await;
-                dir.start_find(proto::node::latest::FindMode::Nodes(dir.0.own_ident.clone()), None, None).await;
+                dir.start_find(FindGoal::Coord(node_ident_coord(&dir.0.own_ident)), None).await;
             }
         });
         return Ok(dir);
@@ -641,18 +609,68 @@ impl Node {
     }
 
     /// Look up a value in the network
-    pub async fn get(&self, key: Identity) -> Option<proto::node::latest::AnnouncementContent> {
+    pub async fn get(&self, key: Identity) -> Option<stored::announcement::Announcement> {
         let (f, c) = ManualFuture::new();
-        let local_value = self.0.store.lock().unwrap().get(&key).map(|v| v.value.clone());
-        self.start_find(proto::node::latest::FindMode::Get(key), local_value, Some(c)).await;
-        return f.await.map(|v| v.parse_unwrap());
+        self.start_find(FindGoal::Identity(key), Some(c)).await;
+        return f.await.value;
     }
 
     /// Store a value in the network. `value` message must be `ValueBody::to_bytes()`
     /// and `signature` is the signature of those bytes using the corresponding
     /// `IdentitySecret`
-    pub async fn put(&self, key: Identity, value: proto::node::latest::Announcement) {
-        self.start_find(proto::node::latest::FindMode::Put(key), Some(value), None).await;
+    pub async fn put(
+        &self,
+        key: Identity,
+        value: stored::announcement::Announcement,
+    ) -> Option<stored::announcement::Announcement> {
+        let (f, c) = ManualFuture::new();
+        self.start_find(FindGoal::Identity(key), Some(c)).await;
+        let res = f.await;
+
+        bb!{
+            'skip_store _;
+            match &res.value {
+                Some(accepted) => match accepted {
+                    stored::announcement::Announcement::V1(accepted) => {
+                        let new_published = match &value {
+                            stored::announcement::Announcement::V1(a) => {
+                                a.parse_unwrap().published
+                            },
+                        };
+                        if accepted.parse_unwrap().published >= new_published {
+                            break 'skip_store;
+                        }
+                    },
+                },
+                _ => (),
+            }
+            for nearest in res.nearest {
+                match nearest.node {
+                    NearestNodeEntryNode::Self_ => {
+                        self.0.log.log_with(DEBUG_NODE, "Storing", ea!(value = key.dbg_str()));
+                        self.0.store.lock().unwrap().insert(key.clone(), ValueState {
+                            value: value.clone(),
+                            updated: Utc::now(),
+                        });
+                    },
+                    NearestNodeEntryNode::Node(node) => {
+                        self
+                            .send(
+                                &node.address.0,
+                                wire::node::Protocol::V1(
+                                    wire::node::latest::Message::Store(wire::node::latest::StoreRequest {
+                                        key: key.clone(),
+                                        value: value.clone(),
+                                    }),
+                                ),
+                            )
+                            .await;
+                    },
+                }
+            }
+        };
+
+        return res.value;
     }
 
     fn mark_node_unresponsive(&self, key: node_identity::NodeIdentity, leading_zeros: usize, unresponsive: bool) {
@@ -681,39 +699,34 @@ impl Node {
                     (challenge.clone(), e.insert(ChallengeState {
                         challenge: challenge,
                         req_id: self.0.next_req_id.fetch_add(1, Ordering::Relaxed),
-                        node: proto::node::latest::NodeInfo {
+                        node: wire::node::latest::NodeInfo {
                             ident: id.clone(),
-                            address: proto::node::latest::SerialAddr(addr.clone()),
+                            address: SerialAddr(addr.clone()),
                         },
                     }))
                 },
             };
             (challenge, state.req_id)
         };
-        self.send(addr, proto::node::Protocol::V1(proto::node::latest::Message::Challenge(challenge))).await;
+        self.send(addr, wire::node::Protocol::V1(wire::node::latest::Message::Challenge(challenge))).await;
         self.0.challenge_timeouts.unbounded_send(NextChallengeTimeout {
             end: timeout,
             key: (id, req_id),
         }).unwrap();
     }
 
-    async fn start_find(
-        &self,
-        mode: proto::node::latest::FindMode,
-        store: Option<proto::node::latest::Announcement>,
-        fut: Option<ManualFutureCompleter<Option<proto::node::latest::Announcement>>>,
-    ) {
+    async fn start_find(&self, goal: FindGoal, fut: Option<ManualFutureCompleter<FindResult>>) {
+        let goal_coord = match goal {
+            FindGoal::Coord(c) => c,
+            FindGoal::Identity(i) => ident_coord(&i),
+        };
+
         // store state by key, with futures
         let updated = Utc::now();
         let mut defer = vec![];
         let req_id = {
-            let key_coord = match &mode {
-                proto::node::latest::FindMode::Nodes(k) => node_ident_coord(k),
-                proto::node::latest::FindMode::Put(k) => ident_coord(k),
-                proto::node::latest::FindMode::Get(k) => ident_coord(k),
-            };
             let mut borrowed_states = self.0.find_states.lock().unwrap();
-            let state = match borrowed_states.entry(mode.clone()) {
+            let state = match borrowed_states.entry(goal) {
                 Entry::Occupied(mut e) => {
                     if let Some(f) = fut {
                         e.get_mut().futures.push(f);
@@ -722,26 +735,25 @@ impl Node {
                 },
                 Entry::Vacant(e) => e.insert(FindState {
                     req_id: self.0.next_req_id.fetch_add(1, Ordering::Relaxed),
-                    mode: mode.clone(),
-                    target_hash: key_coord,
+                    goal: goal,
                     updated: updated.clone(),
-                    best: vec![BestNodeEntry {
-                        dist: dist(&key_coord, &self.0.own_coord).1,
-                        node: BestNodeEntryNode::Self_,
+                    nearest: vec![NearestNodeEntry {
+                        dist: dist(&goal_coord, &self.0.own_coord).1,
+                        node: NearestNodeEntryNode::Self_,
                     }],
                     outstanding: vec![],
                     requested: HashSet::new(),
-                    value: store,
+                    value: None,
                     futures: vec![],
                 }),
             };
             if let Some(f) = fut {
                 state.futures.push(f);
             }
-            let closest_peers = self.get_closest_peers(key_coord, PARALLEL);
+            let closest_peers = self.get_closest_peers(goal_coord, PARALLEL);
             for p in closest_peers {
                 let challenge = generate_challenge();
-                let (leading_zeros, dist) = dist(&node_ident_coord(&p.ident), &state.target_hash);
+                let (leading_zeros, dist) = dist(&node_ident_coord(&p.ident), &goal_coord);
                 state.outstanding.push(OutstandingNodeEntry {
                     dist: dist,
                     leading_zeros: leading_zeros,
@@ -765,10 +777,10 @@ impl Node {
             self
                 .send(
                     &d.addr,
-                    proto::node::Protocol::V1(
-                        proto::node::latest::Message::FindRequest(proto::node::latest::FindRequest {
+                    wire::node::Protocol::V1(
+                        wire::node::latest::Message::FindRequest(wire::node::latest::FindRequest {
                             challenge: d.challenge,
-                            mode: mode.clone(),
+                            goal: goal,
                             sender: self.0.own_ident.clone(),
                         }),
                     ),
@@ -777,7 +789,7 @@ impl Node {
         }
         match self.0.find_timeouts.unbounded_send(NextFindTimeout {
             updated: updated,
-            key: (mode, req_id),
+            key: (goal, req_id),
         }) {
             Ok(_) => { },
             Err(e) => {
@@ -794,46 +806,15 @@ impl Node {
     }
 
     async fn complete_state(&self, state: FindState) {
-        match state.mode {
-            proto::node::latest::FindMode::Nodes(_) => {
-                // Do nothing, this is just internal initial route population
-            },
-            proto::node::latest::FindMode::Put(k) => {
-                let v = state.value.unwrap();
-                for best in state.best {
-                    match best.node {
-                        BestNodeEntryNode::Self_ => {
-                            self.0.log.log_with(DEBUG_NODE, "Storing", ea!(value = k.dbg_str()));
-                            self.0.store.lock().unwrap().insert(k.clone(), ValueState {
-                                value: v.clone(),
-                                updated: Utc::now(),
-                            });
-                        },
-                        BestNodeEntryNode::Node(node) => {
-                            self
-                                .send(
-                                    &node.address.0,
-                                    proto::node::Protocol::V1(
-                                        proto::node::latest::Message::Store(proto::node::latest::StoreRequest {
-                                            key: k.clone(),
-                                            value: v.clone(),
-                                        }),
-                                    ),
-                                )
-                                .await;
-                        },
-                    }
-                }
-            },
-            proto::node::latest::FindMode::Get(_) => {
-                for f in state.futures {
-                    f.complete(state.value.clone()).await;
-                }
-            },
+        for f in state.futures {
+            f.complete(FindResult {
+                value: state.value.clone(),
+                nearest: state.nearest.clone(),
+            }).await;
         }
     }
 
-    async fn handle_challenge_resp(&self, resp: proto::node::latest::ChallengeResponse) {
+    async fn handle_challenge_resp(&self, resp: wire::node::latest::ChallengeResponse) {
         let log = self.0.log.fork(ea!(action = "challenge_response", from_node_ident = resp.sender.dbg_str()));
 
         // Lookup request state
@@ -857,28 +838,19 @@ impl Node {
         self.add_good_node(resp.sender.clone(), Some(state.node));
     }
 
-    async fn handle_find_resp(&self, resp: proto::node::latest::FindResponse) {
+    async fn handle_find_resp(&self, resp: wire::node::latest::FindResponse) {
         let Ok(content) = resp.content.verify(&resp.sender) else {
             self.0.log.log(DEBUG_NODE, "Find response has invalid signature");
             return;
         };
-        let log: Log =
-            self
-                .0
-                .log
-                .fork(
-                    ea!(
-                        action = "find_response",
-                        from_node_ident = resp.sender.dbg_str(),
-                        mode = &content.mode.dbg_str()
-                    ),
-                );
+        let log: Log = self.0.log.fork(ea!(action = "find_response", from_node_ident = resp.sender.dbg_str()));
+        let goal;
         let mut defer_next_req = vec![];
         let mut transfer_stored_addr: Option<SocketAddr> = None;
         let state = {
             // Lookup request state, discard if unsolicited (or obsolete) find response
             let mut borrowed_states = self.0.find_states.lock().unwrap();
-            let mut state_entry = match borrowed_states.entry(content.mode.clone()) {
+            let mut state_entry = match borrowed_states.entry(content.goal.clone()) {
                 Entry::Occupied(s) => s,
                 Entry::Vacant(_) => {
                     log.log(DEBUG_NODE, "No request state matching response target");
@@ -886,6 +858,7 @@ impl Node {
                 },
             };
             let state = state_entry.get_mut();
+            goal = state.goal;
             let mut outstanding_entry: Option<OutstandingNodeEntry> = None;
             state.outstanding.retain(|e| {
                 if e.node.ident == resp.sender {
@@ -926,160 +899,143 @@ impl Node {
                 }
             }
 
-            // The node responded and is legit, add it to the best node set
+            // The node responded and is legit, add it to the nearest node set
             loop {
-                let mut replace_best = false;
-                if state.best.len() == NEIGHBORHOOD {
-                    if sender_dist >= state.best.last().unwrap().dist {
+                let mut replace_nearest = false;
+                if state.nearest.len() == NEIGHBORHOOD {
+                    if sender_dist >= state.nearest.last().unwrap().dist {
                         break;
                     }
-                    replace_best = true;
+                    replace_nearest = true;
                 }
-                if state.best.iter().any(|e| match &e.node {
-                    BestNodeEntryNode::Self_ => self.0.own_ident == outstanding_entry.node.ident,
-                    BestNodeEntryNode::Node(f) => f.ident == outstanding_entry.node.ident,
+                if state.nearest.iter().any(|e| match &e.node {
+                    NearestNodeEntryNode::Self_ => self.0.own_ident == outstanding_entry.node.ident,
+                    NearestNodeEntryNode::Node(f) => f.ident == outstanding_entry.node.ident,
                 }) {
                     break;
                 }
-                if replace_best {
-                    state.best.pop();
+                if replace_nearest {
+                    state.nearest.pop();
                 }
-                state.best.push(BestNodeEntry {
+                state.nearest.push(NearestNodeEntry {
                     dist: sender_dist,
-                    node: BestNodeEntryNode::Node(outstanding_entry.node.clone()),
+                    node: NearestNodeEntryNode::Node(outstanding_entry.node.clone()),
                 });
-                state.best.sort_by_key(|e| e.dist);
+                state.nearest.sort_by_key(|e| e.dist);
                 break;
             }
 
-            // Gather data for response processing (response deferred due to borrow checker
-            // issue with mutex guards)
-            match content.inner {
-                proto::node::latest::FindResponseModeContent::Nodes(nodes) => {
-                    // Send requests to each of the next hop nodes that are closer than what we've
-                    // seen + that don't already have outgoing requests...
-                    for n in nodes {
-                        if !state.requested.insert(n.ident.clone()) {
-                            // Already considered/requested this node previously - this overlaps info in
-                            // best/outstanding partially, but if we reject a response (ex: bad signature) it
-                            // will never go into the best/outstanding collections so we could request it
-                            // repeatedly. This is an explicit check on that.
-                            continue;
-                        }
-                        let candidate_hash = node_ident_coord(&n.ident);
-                        let (leading_zeros, candidate_dist) = dist(&candidate_hash, &state.target_hash);
+            // Send requests to each of the next hop nodes that are closer than what we've
+            // seen + that don't already have outgoing requests...
+            let goal_coord = match &goal {
+                FindGoal::Coord(c) => *c,
+                FindGoal::Identity(i) => ident_coord(i),
+            };
+            for n in content.nodes {
+                if !state.requested.insert(n.ident.clone()) {
+                    // Already considered/requested this node previously - this overlaps info in
+                    // nearest/outstanding partially, but if we reject a response (ex: bad signature)
+                    // it will never go into the nearest/outstanding collections so we could request
+                    // it repeatedly. This is an explicit check on that.
+                    continue;
+                }
+                let candidate_hash = node_ident_coord(&n.ident);
+                let (leading_zeros, candidate_dist) = dist(&candidate_hash, &goal_coord);
 
-                        // If best list is full and found node is farther away than any current nodes,
-                        // drop it
-                        if state.best.len() == NEIGHBORHOOD && candidate_dist >= state.best.last().unwrap().dist {
-                            continue;
-                        }
+                // If nearest list is full and found node is farther away than any current nodes,
+                // drop it
+                if state.nearest.len() == NEIGHBORHOOD && candidate_dist >= state.nearest.last().unwrap().dist {
+                    continue;
+                }
 
-                        // If outstanding list is full and found node is farther away than any current
-                        // nodes, drop it
-                        let mut replace_outstanding = false;
-                        if state.outstanding.len() == PARALLEL {
-                            if candidate_dist >= state.outstanding.last().unwrap().dist {
-                                continue;
-                            }
-
-                            // Not farther away, we can pop the farther one off and add the found node below
-                            replace_outstanding = true;
-                        }
-
-                        // If found node already in best, drop (ignore) it
-                        if state.best.iter().any(|e| n.ident == *match &e.node {
-                            BestNodeEntryNode::Self_ => &self.0.own_ident,
-                            BestNodeEntryNode::Node(f) => &f.ident,
-                        }) {
-                            continue;
-                        }
-
-                        // If found node already in outstanding, drop (ignore) it
-                        if state.outstanding.iter().any(|e| e.node.ident == n.ident) {
-                            continue;
-                        }
-                        let challenge = generate_challenge();
-                        if replace_outstanding {
-                            state.outstanding.pop();
-                        }
-                        state.outstanding.push(OutstandingNodeEntry {
-                            dist: candidate_dist,
-                            challenge: challenge.clone(),
-                            node: n.clone(),
-                            leading_zeros: leading_zeros,
-                        });
-                        state.outstanding.sort_by_key(|e| e.dist);
-
-                        struct Defer {
-                            challenge: Blob,
-                            addr: SocketAddr,
-                        }
-
-                        defer_next_req.push(Defer {
-                            challenge: challenge,
-                            addr: n.address.0.clone(),
-                        });
+                // If outstanding list is full and found node is farther away than any current
+                // nodes, drop it
+                let mut replace_outstanding = false;
+                if state.outstanding.len() == PARALLEL {
+                    if candidate_dist >= state.outstanding.last().unwrap().dist {
+                        continue;
                     }
-                },
-                proto::node::latest::FindResponseModeContent::Value(value) => {
-                    match &content.mode {
-                        // bad response
-                        proto::node::latest::FindMode::Nodes(_) => { },
-                        proto::node::latest::FindMode::Put(k) => bb!{
-                            let Ok(content) = value.verify(k) else {
-                                break;
-                            };
-                            if content.published + expiry() < Utc::now() {
-                                break;
-                            }
-                            match &mut state.value {
-                                Some(state_value) => {
-                                    let have_published = state_value.parse_unwrap().published;
-                                    if have_published > content.published {
-                                        break;
-                                    }
-                                },
-                                _ => (),
-                            }
-                            state.value = Some(value);
-                            break;
-                        },
-                        proto::node::latest::FindMode::Get(k) => bb!{
-                            let Ok(content) = value.verify(k) else {
+
+                    // Not farther away, we can pop the farther one off and add the found node below
+                    replace_outstanding = true;
+                }
+
+                // If found node already in nearest, drop (ignore) it
+                if state.nearest.iter().any(|e| n.ident == *match &e.node {
+                    NearestNodeEntryNode::Self_ => &self.0.own_ident,
+                    NearestNodeEntryNode::Node(f) => &f.ident,
+                }) {
+                    continue;
+                }
+
+                // If found node already in outstanding, drop (ignore) it
+                if state.outstanding.iter().any(|e| e.node.ident == n.ident) {
+                    continue;
+                }
+                let challenge = generate_challenge();
+                if replace_outstanding {
+                    state.outstanding.pop();
+                }
+                state.outstanding.push(OutstandingNodeEntry {
+                    dist: candidate_dist,
+                    challenge: challenge.clone(),
+                    node: n.clone(),
+                    leading_zeros: leading_zeros,
+                });
+                state.outstanding.sort_by_key(|e| e.dist);
+
+                struct Defer {
+                    challenge: Blob,
+                    addr: SocketAddr,
+                }
+
+                defer_next_req.push(Defer {
+                    challenge: challenge,
+                    addr: n.address.0.clone(),
+                });
+            }
+
+            // Process received value
+            if let (Some(value), FindGoal::Identity(goal_identity)) = (content.value, goal) {
+                bb!{
+                    let found_published;
+                    match &value {
+                        stored::announcement::Announcement::V1(found) => {
+                            let Ok(content) = found.verify(&goal_identity) else {
                                 log.log(DEBUG_NODE, "Got value with bad signature");
                                 break;
                             };
-                            if content.published + expiry() < Utc::now() {
+                            found_published = content.published;
+                        },
+                    }
+                    if found_published + expiry() < Utc::now() {
+                        log.log_with(DEBUG_NODE, "Got expired value", ea!(published = found_published.to_rfc3339()));
+                        break;
+                    }
+                    match &mut state.value {
+                        Some(state_value) => {
+                            let have_published;
+                            match state_value {
+                                stored::announcement::Announcement::V1(have_value) => {
+                                    have_published = have_value.parse_unwrap().published;
+                                },
+                            }
+                            if have_published > found_published {
                                 log.log_with(
                                     DEBUG_NODE,
-                                    "Got expired value",
-                                    ea!(published = content.published.to_rfc3339()),
+                                    "Received value older than one we already have",
+                                    ea!(
+                                        have_published = have_published.to_rfc3339(),
+                                        found_published = found_published.to_rfc3339()
+                                    ),
                                 );
                                 break;
                             }
-                            match &mut state.value {
-                                Some(state_value) => {
-                                    let have_published = state_value.parse_unwrap().published;
-                                    if have_published > content.published {
-                                        log.log_with(
-                                            DEBUG_NODE,
-                                            "Got value older than one we already found",
-                                            ea!(
-                                                have_published = have_published.to_rfc3339(),
-                                                got_published = content.published.to_rfc3339()
-                                            ),
-                                        );
-                                        break;
-                                    }
-                                },
-                                _ => (),
-                            }
-                            state.value = Some(value);
-                            break;
                         },
+                        _ => (),
                     }
-                },
+                    state.value = Some(value);
+                };
             }
 
             // If done cleanup or else update timeouts
@@ -1091,7 +1047,7 @@ impl Node {
                 state.updated = Utc::now();
                 match self.0.find_timeouts.unbounded_send(NextFindTimeout {
                     updated: state.updated,
-                    key: (state.mode.clone(), state.req_id),
+                    key: (state.goal.clone(), state.req_id),
                 }) {
                     Ok(_) => { },
                     Err(e) => {
@@ -1120,12 +1076,10 @@ impl Node {
                 self
                     .send(
                         &addr,
-                        proto::node::Protocol::V1(
-                            proto::node::latest::Message::Store(proto::node::latest::StoreRequest {
-                                key: k,
-                                value: v,
-                            }),
-                        ),
+                        wire::node::Protocol::V1(wire::node::latest::Message::Store(wire::node::latest::StoreRequest {
+                            key: k,
+                            value: v,
+                        })),
                     )
                     .await;
             }
@@ -1137,10 +1091,10 @@ impl Node {
             self
                 .send(
                     &d.addr,
-                    proto::node::Protocol::V1(
-                        proto::node::latest::Message::FindRequest(proto::node::latest::FindRequest {
+                    wire::node::Protocol::V1(
+                        wire::node::latest::Message::FindRequest(wire::node::latest::FindRequest {
                             challenge: d.challenge,
-                            mode: content.mode.clone(),
+                            goal: goal,
                             sender: self.0.own_ident.clone(),
                         }),
                     ),
@@ -1149,10 +1103,10 @@ impl Node {
         }
     }
 
-    fn get_closest_peers(&self, target_hash: DhtCoord, count: usize) -> Vec<proto::node::latest::NodeInfo> {
+    fn get_closest_peers(&self, goal_coord: DhtCoord, count: usize) -> Vec<wire::node::latest::NodeInfo> {
         let buckets = self.0.buckets.lock().unwrap();
-        let (leading_zeros, _) = dist(&target_hash, &self.0.own_coord);
-        let mut nodes: Vec<proto::node::latest::NodeInfo> = vec![];
+        let (leading_zeros, _) = dist(&goal_coord, &self.0.own_coord);
+        let mut nodes: Vec<wire::node::latest::NodeInfo> = vec![];
         'outer1: for bucket in leading_zeros .. HASH_SIZE {
             for state in &buckets.buckets[bucket] {
                 if nodes.len() >= count {
@@ -1174,56 +1128,37 @@ impl Node {
         return nodes;
     }
 
-    async fn handle(&self, m: proto::node::Protocol, reply_to: &SocketAddr) -> Result<(), loga::Error> {
+    async fn handle(&self, m: wire::node::Protocol, reply_to: &SocketAddr) -> Result<(), loga::Error> {
         let log = self.0.log.fork(ea!(from_addr = reply_to, message = m.dbg_str()));
         log.log(DEBUG_NODE, "Received");
         match m {
-            proto::node::Protocol::V1(v1) => match v1 {
-                proto::node::latest::Message::FindRequest(m) => {
-                    let body = proto::node::latest::FindResponseContent {
+            wire::node::Protocol::V1(v1) => match v1 {
+                wire::node::latest::Message::FindRequest(m) => {
+                    let body = wire::node::latest::FindResponseContent {
                         challenge: m.challenge,
-                        mode: m.mode.clone(),
+                        goal: m.goal,
                         sender: self.0.own_ident.clone(),
-                        inner: match &m.mode {
-                            proto::node::latest::FindMode::Nodes(k) => proto
-                            ::node
-                            ::latest
-                            ::FindResponseModeContent
-                            ::Nodes(
-                                self.get_closest_peers(node_ident_coord(k), NEIGHBORHOOD),
-                            ),
-                            proto::node::latest::FindMode::Put(k) => proto
-                            ::node
-                            ::latest
-                            ::FindResponseModeContent
-                            ::Nodes(
-                                self.get_closest_peers(ident_coord(k), NEIGHBORHOOD),
-                            ),
-                            proto::node::latest::FindMode::Get(k) => match self
-                                .0
-                                .store
-                                .lock()
-                                .unwrap()
-                                .entry(k.clone()) {
-                                Entry::Occupied(v) => {
-                                    proto::node::latest::FindResponseModeContent::Value(v.get().value.clone())
-                                },
-                                Entry::Vacant(_) => proto::node::latest::FindResponseModeContent::Nodes(
-                                    self.get_closest_peers(ident_coord(k), NEIGHBORHOOD),
-                                ),
-                            },
+                        nodes: self.get_closest_peers(match m.goal {
+                            FindGoal::Coord(c) => c,
+                            FindGoal::Identity(i) => ident_coord(&i),
+                        }, NEIGHBORHOOD),
+                        value: bb!{
+                            let FindGoal:: Identity(ident) = m.goal else {
+                                break None;
+                            };
+                            break self.0.store.lock().unwrap().get(&ident).map(|v| v.value.clone());
                         },
                     };
                     self
                         .send(
                             reply_to,
-                            proto::node::Protocol::V1(
-                                proto::node::latest::Message::FindResponse(proto::node::latest::FindResponse {
+                            wire::node::Protocol::V1(
+                                wire::node::latest::Message::FindResponse(wire::node::latest::FindResponse {
                                     sender: self.0.own_ident.clone(),
-                                    content: <proto
+                                    content: <wire
                                     ::node
                                     ::latest
-                                    ::BincodeSignature<proto::node::latest::FindResponseContent, NodeIdentity>>::sign(
+                                    ::BincodeSignature<wire::node::latest::FindResponseContent, NodeIdentity>>::sign(
                                         &self.0.own_secret,
                                         body,
                                     ),
@@ -1235,73 +1170,75 @@ impl Node {
                         self.start_challenge(m.sender, reply_to).await;
                     }
                 },
-                proto::node::latest::Message::FindResponse(m) => {
+                wire::node::latest::Message::FindResponse(m) => {
                     self.handle_find_resp(m).await;
                 },
-                proto::node::latest::Message::Store(m) => {
+                wire::node::latest::Message::Store(m) => {
                     self.0.log.log_with(DEBUG_NODE, "Storing", ea!(value = m.key.dbg_str()));
-                    let Ok(new_content) = m.value.verify(&m.key) else {
-                        return Err(self.0.log.err("Store request failed signature validation"));
-                    };
-                    if Utc::now() + Duration::minutes(1) > new_content.published {
+                    let new_published;
+                    match &m.value {
+                        stored::announcement::Announcement::V1(value) => {
+                            let Ok(new_content) = value.verify(&m.key) else {
+                                return Err(self.0.log.err("Store request failed signature validation"));
+                            };
+                            new_published = new_content.published;
+                        },
+                    }
+                    if new_published > Utc::now() + Duration::minutes(1) {
                         return Err(self.0.log.err("Store request published date too far in the future"));
                     }
-                    let accepted_value = match self.0.store.lock().unwrap().entry(m.key) {
+                    match self.0.store.lock().unwrap().entry(m.key) {
                         Entry::Occupied(mut e) => {
-                            let stored_value = e.get().value;
-                            let stored_content = stored_value.parse_unwrap();
-                            if new_content.published > stored_content.published {
+                            let have_published;
+                            match &e.get().value {
+                                stored::announcement::Announcement::V1(have_value) => {
+                                    have_published = have_value.parse_unwrap().published;
+                                },
+                            }
+                            if new_published > have_published {
                                 e.insert(ValueState {
                                     value: m.value,
                                     updated: Utc::now(),
                                 });
                             }
-                            stored_value
                         },
                         Entry::Vacant(e) => {
                             e.insert(ValueState {
                                 value: m.value,
                                 updated: Utc::now(),
                             });
-                            m.value
                         },
                     };
-                    self.send(reply_to, proto::node::Protocol::V1(proto::node::latest::Message::StoreResponse {
-                        key: m.key.clone(),
-                        value: accepted_value,
-                    })).await;
                 },
-                proto::node::latest::Message::Ping => {
+                wire::node::latest::Message::Ping => {
                     self
                         .send(
                             reply_to,
-                            proto::node::Protocol::V1(proto::node::latest::Message::Pung(self.0.own_ident.clone())),
+                            wire::node::Protocol::V1(wire::node::latest::Message::Pung(self.0.own_ident.clone())),
                         )
                         .await;
                 },
-                proto::node::latest::Message::Pung(k) => {
+                wire::node::latest::Message::Pung(k) => {
                     let state = match self.0.ping_states.lock().unwrap().entry(k.clone()) {
                         Entry::Occupied(s) => s.remove(),
                         Entry::Vacant(_) => return Ok(()),
                     };
                     self.mark_node_unresponsive(k, state.leading_zeros, false);
                 },
-                proto::node::latest::Message::Challenge(challenge) => {
+                wire::node::latest::Message::Challenge(challenge) => {
                     self
                         .send(
                             reply_to,
-                            proto::node::Protocol::V1(
-                                proto::node::latest::Message::ChallengeResponse(
-                                    proto::node::latest::ChallengeResponse {
-                                        sender: self.0.own_ident.clone(),
-                                        signature: self.0.own_secret.sign(&challenge),
-                                    },
-                                ),
+                            wire::node::Protocol::V1(
+                                wire::node::latest::Message::ChallengeResponse(wire::node::latest::ChallengeResponse {
+                                    sender: self.0.own_ident.clone(),
+                                    signature: self.0.own_secret.sign(&challenge),
+                                }),
                             ),
                         )
                         .await;
                 },
-                proto::node::latest::Message::ChallengeResponse(resp) => {
+                wire::node::latest::Message::ChallengeResponse(resp) => {
                     self.handle_challenge_resp(resp).await;
                 },
             },
@@ -1310,7 +1247,7 @@ impl Node {
     }
 
     /// Add a node, or check if adding a node would be new (returns whether id is new)
-    fn add_good_node(&self, id: node_identity::NodeIdentity, node: Option<proto::node::latest::NodeInfo>) -> bool {
+    fn add_good_node(&self, id: node_identity::NodeIdentity, node: Option<wire::node::latest::NodeInfo>) -> bool {
         let log = self.0.log.fork(ea!(activity = "add_good_node", node = id.dbg_str()));
         let log = &log;
         if id == self.0.own_ident {
@@ -1360,7 +1297,7 @@ impl Node {
                             bucket_entry.unresponsive = false;
                         }
                         buckets.addrs.remove(&bucket_entry.node.address.0);
-                        let new_state = proto::node::latest::NodeState {
+                        let new_state = wire::node::latest::NodeState {
                             node: node.clone(),
                             unresponsive: false,
                         };
@@ -1382,7 +1319,7 @@ impl Node {
             // Empty slot
             if bucket.len() < NEIGHBORHOOD {
                 if let Some(node) = node {
-                    bucket.insert(0, proto::node::latest::NodeState {
+                    bucket.insert(0, wire::node::latest::NodeState {
                         node: node.clone(),
                         unresponsive: false,
                     });
@@ -1398,7 +1335,7 @@ impl Node {
                 if let Some(node) = node {
                     buckets.addrs.remove(&bucket[i].node.address.0);
                     bucket.remove(i);
-                    bucket.push(proto::node::latest::NodeState {
+                    bucket.push(wire::node::latest::NodeState {
                         node: node.clone(),
                         unresponsive: false,
                     });
@@ -1414,7 +1351,7 @@ impl Node {
         return new_node;
     }
 
-    async fn send(&self, addr: &SocketAddr, data: proto::node::Protocol) {
+    async fn send(&self, addr: &SocketAddr, data: wire::node::Protocol) {
         let bytes = data.to_bytes();
         self.0.log.log_with(DEBUG_NODE, "Sending", ea!(to_addr = addr, message = data.dbg_str()));
         self.0.socket.send_to(&bytes, addr).await.unwrap();

@@ -1,7 +1,20 @@
 use crate::{
+    bb,
+    cap_fn,
+    interface::{
+        stored::{
+            self,
+            identity::Identity,
+        },
+        wire,
+    },
+    publisher::publisher_cert_hash,
+    ta_res,
+    ta_vis_res,
     utils::{
-        db_util::setup_db,
         blob::Blob,
+        db_util::setup_db,
+        htreq,
         htserve::{
             Routes,
             self,
@@ -12,17 +25,10 @@ use crate::{
             WARN,
             DEBUG_RESOLVE,
         },
+        signed::IdentSignatureMethods,
         ResultVisErr,
         VisErr,
-        htreq,
     },
-    interface::{
-        identity::Identity,
-    },
-    publisher::publisher_cert_hash,
-    ta_res,
-    cap_fn,
-    ta_vis_res,
 };
 use crate::node::Node;
 use chrono::{
@@ -164,10 +170,12 @@ impl Resolver {
         &self,
         ident: &Identity,
         request_keys: &[&str],
-    ) -> Result<HashMap<String, resolve::latest::ResolveValue>, loga::Error> {
+    ) -> Result<wire::resolve::ResolveKeyValues, loga::Error> {
         // First check cache
         let now = Utc::now();
-        'missing : loop {
+
+        bb!{
+            'missing _;
             let mut kvs = HashMap::new();
             for k in request_keys {
                 if let Some(found) = self.0.cache.get(&(ident.clone(), k.to_string())) {
@@ -193,7 +201,7 @@ impl Resolver {
                         },
                         None => None,
                     };
-                    kvs.insert(k.to_string(), resolve::latest::ResolveValue {
+                    kvs.insert(k.to_string(), wire::resolve::v1::ResolveValue {
                         expires: expiry,
                         data: v,
                     });
@@ -202,17 +210,26 @@ impl Resolver {
                     break 'missing;
                 }
             }
-            return Ok(kvs);
-        }
+            return Ok(wire::resolve::ResolveKeyValues::V1(kvs));
+        };
 
         // Not in cache, find publisher via nodes
         let resp = match self.0.node.get(ident.clone()).await {
             Some(v) => v,
-            None => return Ok(HashMap::new()),
+            None => return Ok(wire::resolve::ResolveKeyValues::V1(HashMap::new())),
+        };
+        let p_addr;
+        let p_cert_hash;
+        match resp {
+            stored::announcement::Announcement::V1(a) => {
+                let a = a.parse_unwrap();
+                p_addr = a.addr;
+                p_cert_hash = a.cert_hash;
+            },
         };
 
         // Request values via publisher
-        let log = self.0.log.fork(ea!(publisher = resp.addr, action = "publisher_request"));
+        let log = self.0.log.fork(ea!(publisher = p_addr, action = "publisher_request"));
         let log = &log;
 
         #[derive(Debug)]
@@ -281,14 +298,14 @@ impl Resolver {
             }
         }
 
-        let uri = Uri::from_str(&format!("https://{}/{}?{}", resp.addr, ident, request_keys.join(","))).unwrap();
+        let uri = Uri::from_str(&format!("https://{}/{}?{}", p_addr, ident, request_keys.join(","))).unwrap();
         let pub_resp_bytes =
             htreq::send(
                 HttpsConnectorBuilder::new()
                     .with_tls_config(
                         rustls::ClientConfig::builder()
                             .dangerous()
-                            .with_custom_certificate_verifier(SingleKeyVerifier::new(resp.cert_hash))
+                            .with_custom_certificate_verifier(SingleKeyVerifier::new(p_cert_hash))
                             .with_no_client_auth(),
                     )
                     .https_only()
@@ -302,14 +319,16 @@ impl Resolver {
                 Request::builder()
                     .method("GET")
                     .uri(uri)
-                    .header(hyper::header::HOST, resp.addr.to_string())
+                    .header(hyper::header::HOST, p_addr.to_string())
                     .body(Empty::<Bytes>::new())
                     .unwrap(),
             )
                 .await
                 .stack_context(log, "Error getting response from publisher")?;
-        let resp_kvs: resolve::ResolveKeyValues =
-            serde_json::from_slice(&pub_resp_bytes).stack_context(&log, "Couldn't parse response")?;
+        let resp_kvs =
+            serde_json::from_slice::<wire::resolve::ResolveKeyValues>(
+                &pub_resp_bytes,
+            ).stack_context(&log, "Couldn't parse response")?;
 
         // Store found values
         spawn({
@@ -321,8 +340,8 @@ impl Resolver {
             async move {
                 let log = &log;
                 match &resp_kvs {
-                    resolve::ResolveKeyValues::V1(resp_kvs) => {
-                        for (k, v) in &resp_kvs.0 {
+                    wire::resolve::ResolveKeyValues::V1(resp_kvs) => {
+                        for (k, v) in resp_kvs {
                             log.log_with(DEBUG_RESOLVE, "Cache store", ea!(ident = ident, key = k));
                             cache
                                 .insert(
@@ -335,13 +354,7 @@ impl Resolver {
                 }
             }
         });
-
-        // Respond with found values
-        match resp_kvs {
-            resolve::ResolveKeyValues::V1(kvs) => {
-                return Ok(kvs.0);
-            },
-        }
+        return Ok(resp_kvs);
     }
 }
 
@@ -360,7 +373,7 @@ pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
     let mut r = Routes::new();
     r.add("v1", htserve::Leaf::new().get(cap_fn!((mut req)(state) {
         match async {
-            ta_vis_res!(resolve::latest::ResolveKeyValues);
+            ta_vis_res!(wire::api::resolve::v1::ResolveValues);
             let ident_src = req.path.pop().context("Missing identity final path element").err_external()?;
             let kvs =
                 state
@@ -373,7 +386,9 @@ pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
                     )
                     .await
                     .err_internal()?;
-            return Ok(resolve::latest::ResolveKeyValues(kvs));
+            return Ok(wire::api::resolve::v1::ResolveValues(match kvs {
+                wire::resolve::ResolveKeyValues::V1(kvs) => kvs,
+            }));
         }.await {
             Ok(r) => Response::json(r),
             Err(e) => match e {

@@ -24,31 +24,27 @@ use spaghettinuum::{
     bb,
     cap_fn,
     interface::{
-        node_protocol::{
-            latest::{
-                NodeInfo,
-                SerialAddr,
-            },
+        config::{
+            node::Config,
+            ENV_CONFIG,
         },
-        spagh_api::{
-            publish,
-            resolve::{
-                KEY_DNS_A,
-                KEY_DNS_AAAA,
-                self,
-            },
-        },
-        spagh_cli::{
+        stored::{
             self,
-            DEFAULT_CERTIFIER_URL,
+            dns_record::{
+                format_dns_key,
+                RecordType,
+            },
+            shared::SerialAddr,
         },
-        spagh_node::Config,
+        wire::{
+            self,
+            node::latest::NodeInfo,
+        },
     },
     node::Node,
     publisher::{
         self,
         Publisher,
-        DbAdmin,
     },
     resolver::{
         self,
@@ -119,12 +115,12 @@ struct Args {
 async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Error> {
     let config = if let Some(p) = args.config {
         p.value
-    } else if let Some(c) = match std::env::var(spagh_cli::ENV_CONFIG) {
+    } else if let Some(c) = match std::env::var(ENV_CONFIG) {
         Ok(c) => Some(c),
         Err(e) => match e {
             std::env::VarError::NotPresent => None,
             std::env::VarError::NotUnicode(_) => {
-                return Err(loga::err_with("Error parsing env var as unicode", ea!(env = spagh_cli::ENV_CONFIG)))
+                return Err(loga::err_with("Error parsing env var as unicode", ea!(env = ENV_CONFIG)))
             },
         },
     } {
@@ -132,10 +128,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         serde_json::from_str::<Config>(&c).stack_context(&log, "Parsing config")?
     } else {
         return Err(
-            log.err_with(
-                "No config passed on command line, and no config set in env var",
-                ea!(env = spagh_cli::ENV_CONFIG),
-            ),
+            log.err_with("No config passed on command line, and no config set in env var", ea!(env = ENV_CONFIG)),
         );
     };
     create_dir_all(&config.persistent_dir)
@@ -192,9 +185,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                     node.clone(),
                     publisher_config.bind_addr,
                     advertise_addr,
-                    DbAdmin::new(&config.persistent_dir)
-                        .await
-                        .stack_context(log, "Error setting up publisher db-admin")?,
+                    &config.persistent_dir,
                 )
                     .await
                     .stack_context(log, "Error setting up publisher")?;
@@ -208,30 +199,48 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                         ).map_err(
                             |e| log.err_with("Failed to generate announcement for self publication", ea!(err = e)),
                         )?;
-                    publisher.publish(&identity, announcement, publish::latest::Publish {
-                        missing_ttl: 60 * 24,
-                        data: {
+                    publisher.announce(&identity, announcement).await?;
+                    publisher.modify_values(&identity, wire::api::publish::v1::PublishRequestContent {
+                        clear_all: true,
+                        set: {
                             let mut out = HashMap::new();
-                            match advertise_ip {
-                                std::net::IpAddr::V4(ip) => {
-                                    out.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
-                                        ttl: 60,
-                                        data: serde_json::to_value(
-                                            &resolve::DnsA::V1(resolve::v1::DnsA(vec![ip.to_string()])),
-                                        ).unwrap(),
-                                    });
-                                },
-                                std::net::IpAddr::V6(ip) => {
-                                    out.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
-                                        ttl: 60,
-                                        data: serde_json::to_value(
-                                            &resolve::DnsAaaa::V1(resolve::v1::DnsAaaa(vec![ip.to_string()])),
-                                        ).unwrap(),
-                                    });
-                                },
+                            for ip in &global_ips {
+                                let key;
+                                let data;
+                                match ip {
+                                    std::net::IpAddr::V4(ip) => {
+                                        key = RecordType::A;
+                                        data =
+                                            serde_json::to_value(
+                                                &stored::dns_record::DnsA::V1(
+                                                    stored::dns_record::latest::DnsA(vec![ip.to_string()]),
+                                                ),
+                                            ).unwrap();
+                                    },
+                                    std::net::IpAddr::V6(ip) => {
+                                        key = RecordType::AAAA;
+                                        data =
+                                            serde_json::to_value(
+                                                &stored::dns_record::DnsAaaa::V1(
+                                                    stored::dns_record::latest::DnsAaaa(vec![ip.to_string()]),
+                                                ),
+                                            ).unwrap();
+                                    },
+                                }
+                                let key = format_dns_key(".", key);
+                                if !out.contains_key(&key) {
+                                    out.insert(
+                                        key,
+                                        stored::record::RecordValue::latest(stored::record::latest::RecordValue {
+                                            ttl: 60,
+                                            data: Some(data),
+                                        }),
+                                    );
+                                }
                             }
                             out
                         },
+                        ..Default::default()
                     }).await?;
                 }
             }
@@ -268,12 +277,6 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             let Some(identity) = identity else {
                 break;
             };
-            let certifier_url = match &config.identity.as_ref().unwrap().self_tls {
-                false => {
-                    break;
-                },
-                true => DEFAULT_CERTIFIER_URL.to_string(),
-            };
             let db_pool =
                 db_util::setup_db(&config.persistent_dir.join("self_tls.sqlite3"), self_tls::db::migrate).await?;
             db_pool.get().await?.interact(|conn| self_tls::db::api_certs_setup(conn)).await??;
@@ -285,7 +288,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 }),
                 _ => None,
             };
-            let certs_stream = request_cert_stream(&log, &tm, &certifier_url, identity, initial_pair).await?;
+            let certs_stream = request_cert_stream(&log, &tm, identity, initial_pair).await?;
             tm.stream("API - persist certs", WatchStream::new(certs_stream.clone()), cap_fn!((pair)(db_pool, log) {
                 match async move {
                     ta_res!(());
@@ -332,7 +335,10 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                             .admin_token
                             .as_ref()
                             .stack_context(&log, "The publisher is enabled but admin token is missing in the config")?,
-                    ).stack_context(&log, "Error building publisher endpoints")?,
+                        &config.persistent_dir,
+                    )
+                        .await
+                        .stack_context(&log, "Error building publisher endpoints")?,
                 );
             }
             let api_endpoints = api_endpoints.build(log.fork(ea!(subsys = "router")));

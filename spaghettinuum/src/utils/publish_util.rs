@@ -12,18 +12,13 @@ use loga::{
 };
 use crate::{
     interface::{
-        identity::Identity,
-        node_protocol::{
+        stored::{
             self,
-            v1::SerialAddr,
+            identity::Identity,
+            shared::SerialAddr,
         },
-        spagh_api::publish::{
-            self,
-            latest::JsonSignature,
-        },
+        wire,
     },
-    node::IdentSignatureMethods,
-    publisher::PublishIdentSignatureMethods,
 };
 use super::{
     backed_identity::IdentitySigner,
@@ -33,20 +28,21 @@ use super::{
         Log,
         DEBUG_OTHER,
     },
+    signed::IdentSignatureMethods,
 };
 
 pub fn generate_publish_announce(
     signer: &mut Box<dyn IdentitySigner>,
     publisher_advertise_addr: SocketAddr,
     publisher_cert_hash: &[u8],
-) -> Result<(Identity, node_protocol::PublisherAnnouncement), String> {
-    let announce_message = bincode::serialize(&node_protocol::latest::PublisherAnnouncementContent {
+) -> Result<(Identity, stored::announcement::Announcement), String> {
+    let announce_message = bincode::serialize(&stored::announcement::latest::AnnouncementContent {
         addr: SerialAddr(publisher_advertise_addr),
         cert_hash: publisher_cert_hash.blob(),
         published: Utc::now(),
     }).unwrap().blob();
     let (identity, request_message_sig) = signer.sign(&announce_message).map_err(|e| e.to_string())?;
-    return Ok((identity, node_protocol::PublisherAnnouncement::V1(node_protocol::latest::PublisherAnnouncement {
+    return Ok((identity, stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
         message: announce_message,
         signature: request_message_sig,
         _p: Default::default(),
@@ -58,7 +54,7 @@ pub async fn announce(log: &Log, server: &Uri, identity_signer: &mut dyn Identit
         htreq::get(&format!("{}info", server), &HashMap::new(), 100 * 1024)
             .await
             .stack_context(log, "Error getting publisher info")?;
-    let info: publish::latest::InfoResponse =
+    let info: wire::api::publish::latest::InfoResponse =
         serde_json::from_slice(
             &info_body,
         ).stack_context_with(
@@ -71,7 +67,7 @@ pub async fn announce(log: &Log, server: &Uri, identity_signer: &mut dyn Identit
         "Got publisher information",
         ea!(info = serde_json::to_string_pretty(&info_body).unwrap()),
     );
-    let announcement_content = node_protocol::latest::PublisherAnnouncementContent {
+    let announcement_content = stored::announcement::latest::AnnouncementContent {
         addr: SerialAddr(info.advertise_addr),
         cert_hash: info.cert_pub_hash,
         published: Utc::now(),
@@ -82,11 +78,15 @@ pub async fn announce(log: &Log, server: &Uri, identity_signer: &mut dyn Identit
         ea!(message = serde_json::to_string_pretty(&announcement_content).unwrap()),
     );
     let (identity, signed_announcement_content) =
-        node_protocol::latest::PublisherAnnouncement::sign(
+        stored::announcement::latest::Announcement::sign(
             identity_signer,
             announcement_content,
         ).stack_context(&log, "Failed to sign announcement")?;
-    let request = node_protocol::PublisherAnnouncement::V1(signed_announcement_content);
+    let request = wire::api::publish::v1::AnnounceRequest {
+        identity: identity,
+        announcement: stored::announcement::Announcement::V1(signed_announcement_content),
+    };
+    let url = format!("{}publish/v1/announce", server);
     htreq::post(&url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
         .await
         .stack_context(log, "Error making announce request")?;
@@ -97,18 +97,18 @@ pub async fn publish(
     log: &Log,
     server: &Uri,
     identity_signer: &mut dyn IdentitySigner,
-    keyvalues: publish::latest::Publish,
+    args: wire::api::publish::latest::PublishRequestContent,
 ) -> Result<(), loga::Error> {
-    let (_, signed_request_content) =
-        JsonSignature::sign(
+    let (identity, signed_request_content) =
+        wire::api::publish::v1::JsonSignature::sign(
             identity_signer,
-            request_content,
+            args,
         ).stack_context(&log, "Failed to sign publish request content")?;
-    let request = publish::PublishRequest::V1(publish::latest::PublishRequest {
+    let request = wire::api::publish::latest::PublishRequest {
         identity: identity,
         content: signed_request_content,
-    });
-    let url = format!("{}publish/publish", server);
+    };
+    let url = format!("{}publish/v1/publish", server);
     log.log_with(
         DEBUG_OTHER,
         "Sending publish request",

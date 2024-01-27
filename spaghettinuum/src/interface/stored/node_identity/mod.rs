@@ -1,5 +1,8 @@
 use good_ormning_runtime::sqlite::GoodOrmningCustomString;
-use loga::ea;
+use loga::{
+    ea,
+    ResultContext,
+};
 use schemars::{
     JsonSchema,
     schema::{
@@ -18,6 +21,8 @@ pub mod v1;
 
 pub use v1 as latest;
 
+const NODE_IDENT_PREFIX: &'static str = "n_";
+
 versioned!(
     NodeIdentity,
     PartialEq,
@@ -30,7 +35,7 @@ versioned!(
 
 impl Display for NodeIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <dyn Display>::fmt(&zbase32::encode_full_bytes(&self.to_bytes()), f)
+        <dyn Display>::fmt(&format!("{}{}", NODE_IDENT_PREFIX, zbase32::encode_full_bytes(&self.to_bytes())), f)
     }
 }
 
@@ -79,6 +84,10 @@ impl NodeIdentity {
     }
 
     pub fn from_str(text: &str) -> Result<Self, loga::Error> {
+        let text =
+            text
+                .strip_prefix(NODE_IDENT_PREFIX)
+                .context(format!("Missing {} prefix, not a node identity", NODE_IDENT_PREFIX))?;
         Ok(Self::from_bytes(&zbase32::decode_full_bytes_str(text).map_err(|e| {
             loga::err_with("Unable to decode node identity zbase32", ea!(text = e))
         })?)?)

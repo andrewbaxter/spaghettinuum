@@ -38,7 +38,7 @@ use x509_cert::{
 };
 use crate::{
     bb,
-    interface::proto,
+    interface::wire,
     ta_res,
     utils::{
         backed_identity::IdentitySigner,
@@ -65,19 +65,18 @@ pub const CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";
 /// with the provided identity and returns the result as PEM.
 pub async fn request_cert(
     log: &Log,
-    certifier_url: &str,
     requester_spki: &SubjectPublicKeyInfoOwned,
     message_signer: &mut Box<dyn IdentitySigner>,
-) -> Result<proto::certify::latest::CertResponse, loga::Error> {
-    let text = serde_json::to_vec(&proto::certify::latest::CertRequestParams {
+) -> Result<wire::certify::latest::CertResponse, loga::Error> {
+    let text = serde_json::to_vec(&wire::certify::latest::CertRequestParams {
         stamp: Utc::now(),
         spki_der: requester_spki.to_der().unwrap().blob(),
     }).unwrap().blob();
     log.log_with(DEBUG_SELF_TLS, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
     let (ident, signature) = message_signer.sign(&text).context("Error signing cert request params")?;
-    let body = serde_json::to_vec(&proto::certify::CertRequest::V1(proto::certify::latest::CertRequest {
+    let body = serde_json::to_vec(&wire::certify::CertRequest::V1(wire::certify::latest::CertRequest {
         identity: ident,
-        params: proto::certify::latest::SignedCertRequestParams {
+        params: wire::certify::latest::SignedCertRequestParams {
             sig: signature,
             text: text,
         },
@@ -85,9 +84,9 @@ pub async fn request_cert(
     log.log_with(
         DEBUG_SELF_TLS,
         "Sending cert request body",
-        ea!(url = certifier_url, body = String::from_utf8_lossy(&body)),
+        ea!(url = CERTIFIER_URL, body = String::from_utf8_lossy(&body)),
     );
-    let body = htreq::post(certifier_url, &HashMap::new(), body, 100 * 1024).await?;
+    let body = htreq::post(CERTIFIER_URL, &HashMap::new(), body, 100 * 1024).await?;
     return Ok(serde_json::from_slice(&body).context("Error parsing cert request response body as json")?);
 }
 
@@ -102,7 +101,6 @@ pub struct CertPair {
 pub async fn request_cert_stream(
     log: &Log,
     tm: &TaskManager,
-    certifier_url: &str,
     mut signer: Box<dyn IdentitySigner>,
     initial_pair: Option<CertPair>,
 ) -> Result<Receiver<CertPair>, loga::Error> {
@@ -113,19 +111,10 @@ pub async fn request_cert_stream(
         return Ok(not_after - Duration::hours(24 * 7));
     }
 
-    async fn update_cert(
-        log: &Log,
-        certifier_url: &str,
-        identity: &mut Box<dyn IdentitySigner>,
-    ) -> Result<CertPair, loga::Error> {
+    async fn update_cert(log: &Log, identity: &mut Box<dyn IdentitySigner>) -> Result<CertPair, loga::Error> {
         let priv_key = p256::SecretKey::random(&mut rand::thread_rng());
         let pub_pem =
-            request_cert(
-                log,
-                &certifier_url,
-                &SubjectPublicKeyInfoOwned::from_key(priv_key.public_key()).unwrap(),
-                identity,
-            )
+            request_cert(log, &SubjectPublicKeyInfoOwned::from_key(priv_key.public_key()).unwrap(), identity)
                 .await
                 .context("Error requesting api server tls cert from certifier")?
                 .pub_pem;
@@ -140,9 +129,7 @@ pub async fn request_cert_stream(
     let initial_pair = match initial_pair {
         Some(p) => p,
         _ => {
-            update_cert(log, certifier_url, &mut signer)
-                .await
-                .stack_context(log, "Error retrieving initial certificates")?
+            update_cert(log, &mut signer).await.stack_context(log, "Error retrieving initial certificates")?
         },
     };
     let refresh_at =
@@ -150,7 +137,6 @@ pub async fn request_cert_stream(
     let (certs_stream_tx, certs_stream_rx) = channel(initial_pair);
     tm.critical_task("API - Self-TLS refresher", {
         let tm = tm.clone();
-        let certifier_url = certifier_url.to_string();
         let log = log.clone();
         async move {
             ta_res!(());
@@ -171,7 +157,7 @@ pub async fn request_cert_stream(
                 let certs = bb!{
                     'ok _;
                     for _ in 0 .. max_tries {
-                        match update_cert(log, &certifier_url, &mut signer).await {
+                        match update_cert(log, &mut signer).await {
                             Ok(certs) => {
                                 break 'ok Some(certs);
                             },

@@ -28,7 +28,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             v,
             "zNNMCRDDB",
             "secret",
-            field_str().custom("crate::interface::node_identity::NodeSecret").build(),
+            field_str().custom("crate::interface::stored::node_identity::NodeSecret").build(),
         );
     if let Some(queries) = &mut queries {
         queries.push(
@@ -48,7 +48,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             v,
             "zF8F58Y52",
             "neighbor",
-            field_str().custom("crate::interface::proto::node::NodeState").build(),
+            field_str().custom("crate::interface::wire::node::NodeState").build(),
         );
     if let Some(queries) = &mut queries {
         queries.push(

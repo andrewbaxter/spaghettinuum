@@ -11,30 +11,34 @@ In order to publish, you'll need:
 
 To manually publish, you'll need the [`spagh`](./reference_spagh.md) - follow that link for setup instructions.
 
-Suppose you have a JSON file
+Suppose you have a JSON file `data.json`
 
 ```json
 {
-  "data": {
-    "serial_number": {
-      "ttl": 60,
-      "data": {
-        "long": "1234123412341234-1234",
-        "short": "1234"
-      }
+  "serial_number": {
+    "ttl": 60,
+    "data": {
+      "long": "1234123412341234-1234",
+      "short": "1234"
     }
-  },
-  "missing_ttl": 5
+  }
 }
 ```
+
+- `data` is an arbitrary JSON value associated with the key that will be returned from queries.
+
+- `ttl` (minutes) is how long a successfully resolved value can be cached by a resolver.
 
 and you want to publish it under your identity `me.spagh` with ID `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r`.
 
 Set the environment variable `SPAGH` to the URL of your publisher and run
 
 ```
+$ spagh announce
 $ spagh set local me.spagh ./data.json
 ```
+
+(in any order). The first advertises the publisher you're connecting to as authoritative for the identity, the second puts the data in the database.
 
 Anyone can now look it up by doing
 
@@ -45,20 +49,6 @@ $ spagh get yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r serial
     "short": "1234"
 }
 ```
-
-### Notes about published data
-
-All key/value pairs you want to publish for this identity must be in the JSON - this is in order to support negative caching via `missing_ttl`.
-
-The JSON matches [this schema](TODO).
-
-- The first `data` contains the key value pairs of data to be published.
-
-- The second `data` is an arbitrary JSON value associated with the key that will be returned from queries.
-
-- `missing_ttl` (minutes) is how long a "missing" response will be cached (a resolver can say the data is missing for this long without performing another lookup).
-
-- `ttl` (minutes) is how long a successfully resolved value can be cached by a resolver.
 
 ### Publishing DNS bridge records
 
@@ -78,11 +68,11 @@ In that case, the keys must be in the format `dns/SUBDOMAIN/RECORDTYPE` (subdoma
 
 DNS record types each have different structures that must be mapped to and from JSON. For that reason, only the following are supported:
 
-- CNAME records, with data in [this format](./schemas/publish_data_dns_cname.schema.json)
-- A records, with data in [this format](./schemas/publish_data_dns_a.schema.json)
-- AAAA records, with data in [this format](./schemas/publish_data_dns_aaaa.schema.json)
-- TXT records, with data in [this format](./schemas/publish_data_dns_txt.schema.json)
-- MX records, with data in [this format](./schemas/publish_data_dns_mx.schema.json)
+- CNAME records, with data in [this format](./schemas/record_dns_cname.schema.json)
+- A records, with data in [this format](./schemas/record_dns_a.schema.json)
+- AAAA records, with data in [this format](./schemas/record_dns_aaaa.schema.json)
+- TXT records, with data in [this format](./schemas/record_dns_txt.schema.json)
+- MX records, with data in [this format](./schemas/record_dns_mx.schema.json)
 
 ## Setting up a static file server
 

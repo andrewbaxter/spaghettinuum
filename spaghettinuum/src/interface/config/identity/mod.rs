@@ -3,8 +3,11 @@ use serde::{
     Serialize,
 };
 use crate::{
-    interface::identity::Identity,
-    utils::blob::Blob,
+    interface::stored::identity::Identity,
+    utils::blob::{
+        Blob,
+        ToBlob,
+    },
 };
 
 pub mod v1;

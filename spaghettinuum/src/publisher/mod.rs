@@ -37,7 +37,6 @@ use loga::{
     ResultContext,
 };
 use poem::{
-    async_trait,
     Server,
     listener::{
         TcpListener,
@@ -49,7 +48,6 @@ use poem::{
 use serde::{
     Deserialize,
     Serialize,
-    de::DeserializeOwned,
 };
 use sha2::Sha256;
 use taskmanager::TaskManager;
@@ -69,12 +67,15 @@ use x509_cert::{
     Certificate,
 };
 use crate::{
-    bb,
     cap_fn,
     interface::{
         config::shared::StrSocketAddr,
-        identity::Identity,
-        proto,
+        stored::{
+            self,
+            announcement::Announcement,
+            identity::Identity,
+        },
+        wire,
     },
     node::{
         Node,
@@ -82,59 +83,36 @@ use crate::{
     ta_res,
     ta_vis_res,
     utils::{
-        VisErr,
-        ResultVisErr,
-        db_util::setup_db,
-        tls_util::{
-            encode_priv_pem,
-            encode_pub_pem,
-        },
-        backed_identity::IdentitySigner,
         blob::{
             Blob,
             ToBlob,
         },
-        log::{
-            Log,
-            DEBUG_PUBLISH,
-            WARN,
+        db_util::{
+            setup_db,
+            DbTx,
         },
         htserve::{
             Routes,
             Leaf,
             Response,
         },
+        log::{
+            Log,
+            DEBUG_PUBLISH,
+            WARN,
+        },
+        signed::IdentSignatureMethods,
+        tls_util::{
+            encode_priv_pem,
+            encode_pub_pem,
+        },
+        ResultVisErr,
+        VisErr,
     },
 };
 
 pub mod db;
 pub mod admin_db;
-
-pub trait PublishIdentSignatureMethods<B, I>
-where
-    Self: Sized {
-    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(I, Self), loga::Error>;
-    fn verify(&self, identity: &Identity) -> Result<B, ()>;
-}
-
-impl<
-    B: Serialize + DeserializeOwned,
-> PublishIdentSignatureMethods<B, Identity> for proto::api::publish::JsonSignature<B, Identity> {
-    fn verify(&self, identity: &Identity) -> Result<B, ()> {
-        identity.verify(self.message.as_bytes(), &self.signature).map_err(|_| ())?;
-        return Ok(serde_json::from_str(&self.message).map_err(|_| ())?);
-    }
-
-    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(Identity, Self), loga::Error> {
-        let message = serde_json::to_string(&body).unwrap();
-        let (ident, signature) = signer.sign(message.as_bytes())?;
-        return Ok((ident, Self {
-            message: message,
-            signature: signature,
-            _p: Default::default(),
-        }));
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 struct SerialTlsCert {
@@ -164,34 +142,6 @@ pub fn auth(want: &[u8], got: &Option<String>) -> bool {
         return false;
     };
     return auth_hash(got).as_ref() == want;
-}
-
-#[async_trait]
-impl Admin for DbAdmin {
-    async fn announce(&self, announcement: &proto::node::Announcement) -> Result<(), loga::Error> {
-        self.db_pool.get().await?.interact(move |db| {
-            let identity = announcement.parse().identity;
-            admin_db::set_announce(db, &identity, &announcement)?;
-        }).await??;
-        return Ok(());
-    }
-
-    async fn publish(&self, identity: &Identity, keyvalues: publish::latest::Publish) -> Result<(), loga::Error> {
-        let identity = identity.clone();
-        self.db_pool.get().await?.interact(move |db| {
-            admin_db::set_keyvalues(db, &identity, &publish::Publish::V1(keyvalues))
-        }).await??;
-        return Ok(());
-    }
-
-    async fn unpublish(&self, identity: &Identity) -> Result<(), loga::Error> {
-        let identity = identity.clone();
-        self.db_pool.get().await?.interact(move |db| {
-            admin_db::delete_announce(db, &identity)?;
-            admin_db::delete_keyvalues(db, &identity)
-        }).await??;
-        return Ok(());
-    }
 }
 
 struct PublisherInner {
@@ -224,20 +174,22 @@ impl Publisher {
         node: Node,
         bind_addr: StrSocketAddr,
         advertise_addr: SocketAddr,
-        db_path: &Path,
+        persistent_dir: &Path,
     ) -> Result<Publisher, loga::Error> {
         let log = &log.fork(ea!(sys = "publisher"));
         let db_pool =
-            setup_db(&db_path.join("publisher.sqlite3"), db::migrate)
+            setup_db(&persistent_dir.join("publisher.sqlite3"), db::migrate)
                 .await
                 .stack_context(log, "Error initializing database")?;
 
         // Prepare publisher certs for publisher-resolver communication
         let certs = {
-            let db = db_pool.get().await?;
-            match db.tx(|conn| db::get_certs(conn)).await.stack_context(log, "Error looking up certs")? {
+            match db_pool
+                .tx(|conn| Ok(db::get_certs(conn)?))
+                .await
+                .stack_context(log, "Error looking up certs")? {
                 Some(c) => match c {
-                    crate::interface::proto::resolve::PublisherCerts::V1(v1) => {
+                    stored::publisher::Certs::V1(v1) => {
                         v1
                     },
                 },
@@ -263,13 +215,13 @@ impl Publisher {
                         self_spki.clone(),
                         &priv_key,
                     ).unwrap().build::<DerSignature>().unwrap().to_der().unwrap().blob();
-                    let certs = proto::resolve::latest::PublisherCerts {
+                    let certs = stored::publisher::latest::Certs {
                         pub_der: pub_key_der,
                         priv_der: priv_key.to_pkcs8_der().unwrap().as_bytes().blob(),
                     };
-                    db.tx({
+                    db_pool.tx({
                         let certs = certs.clone();
-                        move |conn| db::ensure_certs(conn, &proto::resolve::PublisherCerts::V1(certs.clone()))
+                        move |conn| Ok(db::ensure_certs(conn, &stored::publisher::Certs::V1(certs.clone()))?)
                     }).await.stack_context(log, "Error persisting generated certs")?;
                     certs
                 },
@@ -283,7 +235,7 @@ impl Publisher {
             db_pool: db_pool,
         }));
         tm.critical_task("Publisher - network server", {
-            let log = log.fork(ea!(subsys = "protocol"));
+            let log = log.fork(ea!(subsys = "wirecol"));
             let mut routes = Routes::new();
             let tm = tm.clone();
             routes.add("", Leaf::new().get(cap_fn!((mut r)(publisher, log) {
@@ -298,34 +250,14 @@ impl Publisher {
                     let ident = Identity::from_str(&ident).context("Couldn't parse identity").err_external()?;
 
                     // Respond
-                    let mut kvs = proto::resolve::latest::ResolveKeyValues(HashMap::new());
-                    if let Some(found_kvs) = publisher.get_published_data(&ident).await.err_internal()? {
-                        let now = Utc::now();
-                        match found_kvs {
-                            publish::Publish::V1(mut found) => {
-                                for k in r.query.split(",") {
-                                    if let Some(v) = found.data.remove(k) {
-                                        kvs.0.insert(k.to_string(), resolve::latest::ResolveValue {
-                                            expires: now + Duration::minutes(v.ttl as i64),
-                                            data: Some(v.data),
-                                        });
-                                    } else {
-                                        kvs.0.insert(k.to_string(), resolve::latest::ResolveValue {
-                                            expires: now + Duration::minutes(found.missing_ttl as i64),
-                                            data: None,
-                                        });
-                                    }
-                                }
-                            },
-                        }
-                    } else {
-                        log.log_with(
-                            DEBUG_PUBLISH,
-                            "No published data for identity, sending empty response",
-                            ea!(path = r.path.dbg_str()),
-                        );
-                    }
-                    return Ok(Response::json(ResolveKeyValues::V1(kvs)));
+                    return Ok(
+                        Response::json(
+                            publisher
+                                .get_values(&ident, r.query.split(",").map(|k| k.to_string()).collect())
+                                .await
+                                .err_internal()?,
+                        ),
+                    );
                 }.await {
                     Ok(r) => r,
                     Err(e) => {
@@ -379,23 +311,22 @@ impl Publisher {
                             break;
                         }
                         for (i, (identity, announcement)) in announce_pairs.into_iter().enumerate() {
-                            let value = match announcement {
-                                proto::node::Announcement::V1(v) => v,
-                            };
-
-                            bb!{
-                                let Some(found) = node.get(identity.clone()).await else {
-                                    break;
-                                };
-                                if found.published > value.parse_unwrap().published {
-                                    // Newer announcement published elsewhere, delete this announcement to save some
-                                    // network effort
-                                    publisher.delete_announcement(identity);
-                                    continue;
-                                }
-                            };
-
-                            node.put(identity.clone(), value).await;
+                            let accepted = node.put(identity.clone(), announcement.clone()).await;
+                            match accepted {
+                                Some(accepted) => match accepted {
+                                    Announcement::V1(accepted) => {
+                                        let have_published = match &announcement {
+                                            Announcement::V1(a) => a.parse_unwrap().published,
+                                        };
+                                        if accepted.parse_unwrap().published > have_published {
+                                            // Newer announcement published elsewhere, delete this announcement to save some
+                                            // network effort
+                                            publisher.clear_identity(&identity).await.log(&log, WARN, "Error deleting announcement published elsewhere");
+                                        }
+                                    },
+                                },
+                                None => todo!(),
+                            }
                             if i + 1 == count {
                                 after = Some(identity);
                             }
@@ -417,81 +348,161 @@ impl Publisher {
         return self.0.cert_pub_hash.clone();
     }
 
-    pub async fn publish(
+    pub async fn announce(
         &self,
         identity: &Identity,
-        announcement: proto::node::Announcement,
-        keyvalues: publish::latest::Publish,
+        announcement: stored::announcement::Announcement,
     ) -> Result<(), loga::Error> {
-        self.0.admin.publish(identity, &announcement, keyvalues).await?;
-        self.0.node.put(identity.clone(), match announcement {
-            proto::node::Announcement::V1(v) => v,
-        }).await;
+        let accepted = self.0.node.put(identity.clone(), announcement.clone()).await;
+        match accepted {
+            Some(accepted) => {
+                let new_published = match &announcement {
+                    Announcement::V1(a) => a.parse_unwrap().published,
+                };
+                let accepted_published = match accepted {
+                    Announcement::V1(a) => a.parse_unwrap().published,
+                };
+                if accepted_published > new_published {
+                    return Ok(());
+                }
+            },
+            None => (),
+        }
+        self.0.db_pool.tx({
+            let identity = identity.clone();
+            let announcement = announcement.clone();
+            move |db| Ok(db::set_announce(db, &identity, &announcement)?)
+        }).await?;
         return Ok(())
     }
 
-    async fn get_published_data(
-        &self,
-        identity: &Identity,
-        keys: Vec<String>,
-    ) -> Result<HashMap<String, proto::resolve::RecordValue>, loga::Error> {
-        let identity = identity.clone();
-        return Ok(self.db_pool.get().await?.interact(move |db| {
-            let mut out = HashMap::new();
-            let missing_ttl = db::ident_get(db, &identity)?.unwrap_or_else(|| 5);
-            for k in keys {
-                match db::values_get(db, &identity, &k)? {
-                    Some(v) => {
-                        out.insert(k, v);
-                    },
-                    None => {
-                        out.insert(k, proto::resolve::RecordValue::latest(proto::resolve::latest::RecordValue {
-                            expires: Utc::now() + Duration::minutes(missing_ttl),
-                            data: None,
-                        }));
-                    },
-                }
+    pub async fn clear_identity(&self, identity: &Identity) -> Result<(), loga::Error> {
+        self.0.db_pool.tx({
+            let identity = identity.clone();
+            move |db| {
+                db::delete_announce(db, &identity)?;
+                db::values_delete_all(db, &identity)?;
+                return Ok(());
             }
-            db::values_get(db, &identity)
-        }).await??);
+        }).await?;
+        return Ok(());
     }
 
-    async fn list_announcements(
+    pub async fn list_announcements(
         &self,
         after: Option<&Identity>,
-    ) -> Result<Vec<(Identity, proto::node::Announcement)>, loga::Error> {
+    ) -> Result<Vec<(Identity, Announcement)>, loga::Error> {
         let after = after.cloned();
         return Ok(match after {
             None => {
-                let outer = self.db_pool.get().await?;
-                let res = outer.interact(|db| {
-                    let out = db::list_announce_start(db);
-                    out
-                }).await??.into_iter().map(|p| (p.identity, p.value)).collect();
+                let res =
+                    self
+                        .0
+                        .db_pool
+                        .tx(move |db| Ok(db::list_announce_start(db)?))
+                        .await?
+                        .into_iter()
+                        .map(|p| (p.identity, p.value))
+                        .collect();
                 res
             },
             Some(a) => {
                 self
+                    .0
                     .db_pool
-                    .get()
+                    .tx(move |db| Ok(db::list_announce_after(db, &a)?))
                     .await?
-                    .interact(move |db| db::list_announce_after(db, &a))
-                    .await??
                     .into_iter()
                     .map(|p| (p.identity, p.value))
                     .collect()
             },
         });
     }
+
+    pub async fn modify_values(
+        &self,
+        identity: &Identity,
+        args: wire::api::publish::latest::PublishRequestContent,
+    ) -> Result<(), loga::Error> {
+        self.0.db_pool.tx({
+            let identity = identity.clone();
+            move |db| {
+                if let Some(missing_ttl) = args.missing_ttl {
+                    db::ident_set(db, &identity, missing_ttl as i64)?;
+                }
+                if args.clear_all {
+                    db::values_delete_all(db, &identity)?;
+                }
+                for k in args.clear {
+                    db::values_delete(db, &identity, &k)?;
+                }
+                for (k, v) in args.set {
+                    db::values_set(db, &identity, &k, &v)?;
+                }
+                return Ok(());
+            }
+        }).await?;
+        return Ok(());
+    }
+
+    async fn get_values(
+        &self,
+        identity: &Identity,
+        keys: Vec<String>,
+    ) -> Result<wire::resolve::ResolveKeyValues, loga::Error> {
+        let identity = identity.clone();
+        return Ok(self.0.db_pool.tx(move |db| {
+            let mut out = HashMap::new();
+            let missing_ttl = db::ident_get(db, &identity)?.unwrap_or_else(|| 5);
+            let now = Utc::now();
+            for k in keys {
+                let expires;
+                let data;
+                match db::values_get(db, &identity, &k)? {
+                    Some(v) => match v {
+                        stored::record::RecordValue::V1(v) => {
+                            expires = now + Duration::minutes(v.ttl as i64);
+                            data = v.data;
+                        },
+                    },
+                    None => {
+                        expires = now + Duration::minutes(missing_ttl as i64);
+                        data = None;
+                    },
+                }
+                out.insert(k, wire::resolve::v1::ResolveValue {
+                    expires: expires,
+                    data: data,
+                });
+            }
+            return Ok(wire::resolve::ResolveKeyValues::V1(out));
+        }).await?);
+    }
+
+    async fn list_value_keys(
+        &self,
+        identity: &Identity,
+        after: Option<String>,
+    ) -> Result<Vec<String>, loga::Error> {
+        let identity = identity.clone();
+        return Ok(self.0.db_pool.tx(move |conn| match after {
+            Some(v) => {
+                return Ok(db::values_keys_list_after(conn, &identity, &v)?);
+            },
+            None => {
+                return Ok(db::values_keys_list_start(conn, &identity)?);
+            },
+        }).await?);
+    }
 }
 
 pub async fn build_api_endpoints(
     publisher: &Publisher,
     admin_token: &str,
-    db_path: &Path,
+    persist_dir: &Path,
 ) -> Result<Routes, loga::Error> {
     let db_pool =
-        setup_db(&db_path.join("publisher_admin.sqlite3"), admin_db::migrate)
+        setup_db(&persist_dir.join("publisher_admin.sqlite3"), admin_db::migrate)
             .await
             .context("Error initializing database")?;
 
@@ -549,161 +560,118 @@ pub async fn build_api_endpoints(
         publisher: publisher.clone(),
     });
     let mut routes = Routes::new();
-    routes.add("announce", Leaf::new().post(cap_fn!((r)(state) {
-        match async {
-            ta_res!(Response);
+    routes.nest("v1", {
+        let mut routes = Routes::new();
+        routes.add("announce", Leaf::new().post(cap_fn!((r)(state) {
+            match async {
+                ta_res!(Response);
 
-            // Params
-            let req = match serde_json::from_slice(&r.body) {
-                Ok(r) => r,
-                Err(e) => {
-                    return Ok(Response::user_err(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
+                // Params
+                let req = match serde_json::from_slice::<wire::api::publish::v1::AnnounceRequest>(&r.body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(Response::user_err(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
+                    },
+                };
+                match &req.announcement {
+                    Announcement::V1(a) => {
+                        let Ok(_) = a.verify(&req.identity) else {
+                            return Ok(Response::user_err("Couldn't verify payload"));
+                        };
+                    },
+                };
+
+                // Auth
+                if !state.is_identity_allowed(&req.identity).await? {
+                    return Ok(Response::AuthErr);
+                }
+
+                // Publish it
+                state.publisher.announce(&req.identity, req.announcement).await?;
+                return Ok(Response::Ok);
+            }.await {
+                Ok(r) => {
+                    return r;
                 },
-            };
-            let req = match req {
-                publish::PublishRequest::V1(r) => r,
-            };
-            let Ok(body) = req.content.verify(&req.identity) else {
-                return Ok(Response::user_err("Couldn't verify payload"));
-            };
-
-            // Auth
-            if !state.publisher.0.admin.is_identity_allowed(&req.identity).await? {
-                return Ok(Response::AuthErr);
-            }
-
-            // Publish it
-            state.publisher.publish(&req.identity, body.announce, body.keyvalues).await?;
-            return Ok(Response::Ok);
-        }.await {
-            Ok(r) => {
-                return r;
-            },
-            Err(e) => {
-                state.publisher.0.log.log_err(WARN, e.context("Error publishing key values"));
-                return Response::InternalErr;
-            },
-        }
-    }))).add("unannounce", Leaf::new().post(cap_fn!((r)(state) {
-        match async {
-            ta_res!(Response);
-
-            // Params
-            let req = match serde_json::from_slice(&r.body) {
-                Ok(r) => r,
                 Err(e) => {
-                    return Ok(Response::user_err(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
+                    state.publisher.0.log.log_err(WARN, e.context("Error publishing key values"));
+                    return Response::InternalErr;
                 },
-            };
-            let req = match req {
-                publish::UnpublishRequest::V1(body) => body,
-            };
-            let Ok(content) = req.content.verify(&req.identity) else {
-                return Ok(Response::user_err("Couldn't verify payload"));
-            };
-            if content.now + Duration::seconds(10) < Utc::now() {
-                return Ok(Response::user_err("Expired request"));
             }
+        }))).add("clear_identity", Leaf::new().post(cap_fn!((r)(state) {
+            match async {
+                ta_res!(Response);
 
-            // Auth
-            if !state.publisher.0.admin.is_identity_allowed(&req.identity).await? {
-                return Ok(Response::AuthErr);
+                // Params
+                let req = match serde_json::from_slice::<wire::api::publish::v1::DeleteAnnouncementRequest>(&r.body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(Response::user_err(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
+                    },
+                };
+                let Ok(_) = req.challenge.verify(&req.identity) else {
+                    return Ok(Response::user_err("Couldn't verify payload"));
+                };
+
+                // Auth
+                if !state.is_identity_allowed(&req.identity).await? {
+                    return Ok(Response::AuthErr);
+                }
+
+                // Respond
+                state.publisher.clear_identity(&req.identity).await?;
+                return Ok(Response::Ok);
+            }.await {
+                Ok(r) => {
+                    return r;
+                },
+                Err(e) => {
+                    state.publisher.0.log.log_err(WARN, e.context("Error unpublishing key values"));
+                    return Response::InternalErr;
+                },
             }
+        }))).add("publish", Leaf::new().post(cap_fn!((r)(state) {
+            match async {
+                ta_res!(Response);
 
+                // Params
+                let req = match serde_json::from_slice::<wire::api::publish::v1::PublishRequest>(&r.body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(Response::user_err(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
+                    },
+                };
+                let Ok(body) = req.content.verify(&req.identity) else {
+                    return Ok(Response::user_err("Couldn't verify payload"));
+                };
+
+                // Auth
+                if !state.is_identity_allowed(&req.identity).await? {
+                    return Ok(Response::AuthErr);
+                }
+
+                // Publish it
+                state.publisher.modify_values(&req.identity, body).await?;
+                return Ok(Response::Ok);
+            }.await {
+                Ok(r) => {
+                    return r;
+                },
+                Err(e) => {
+                    state.publisher.0.log.log_err(WARN, e.context("Error publishing key values"));
+                    return Response::InternalErr;
+                },
+            }
+        })));
+        routes.add("info", Leaf::new().get(cap_fn!((_r)(state) {
             // Respond
-            state.publisher.0.admin.unpublish(&req.identity).await?;
-            return Ok(Response::Ok);
-        }.await {
-            Ok(r) => {
-                return r;
-            },
-            Err(e) => {
-                state.publisher.0.log.log_err(WARN, e.context("Error unpublishing key values"));
-                return Response::InternalErr;
-            },
-        }
-    }))).add("publish", Leaf::new().post(cap_fn!((r)(state) {
-        match async {
-            ta_res!(Response);
-
-            // Params
-            let req = match serde_json::from_slice(&r.body) {
-                Ok(r) => r,
-                Err(e) => {
-                    return Ok(Response::user_err(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
-                },
-            };
-            let req = match req {
-                publish::PublishRequest::V1(r) => r,
-            };
-            let Ok(body) = req.content.verify(&req.identity) else {
-                return Ok(Response::user_err("Couldn't verify payload"));
-            };
-
-            // Auth
-            if !state.publisher.0.admin.is_identity_allowed(&req.identity).await? {
-                return Ok(Response::AuthErr);
-            }
-
-            // Publish it
-            state.publisher.publish(&req.identity, body.announce, body.keyvalues).await?;
-            return Ok(Response::Ok);
-        }.await {
-            Ok(r) => {
-                return r;
-            },
-            Err(e) => {
-                state.publisher.0.log.log_err(WARN, e.context("Error publishing key values"));
-                return Response::InternalErr;
-            },
-        }
-    })));
-    routes.add("unpublish", Leaf::new().post(cap_fn!((r)(state) {
-        match async {
-            ta_res!(Response);
-
-            // Params
-            let req = match serde_json::from_slice(&r.body) {
-                Ok(r) => r,
-                Err(e) => {
-                    return Ok(Response::user_err(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
-                },
-            };
-            let req = match req {
-                publish::UnpublishRequest::V1(body) => body,
-            };
-            let Ok(content) = req.content.verify(&req.identity) else {
-                return Ok(Response::user_err("Couldn't verify payload"));
-            };
-            if content.now + Duration::seconds(10) < Utc::now() {
-                return Ok(Response::user_err("Expired request"));
-            }
-
-            // Auth
-            if !state.publisher.0.admin.is_identity_allowed(&req.identity).await? {
-                return Ok(Response::AuthErr);
-            }
-
-            // Respond
-            state.publisher.0.admin.unpublish(&req.identity).await?;
-            return Ok(Response::Ok);
-        }.await {
-            Ok(r) => {
-                return r;
-            },
-            Err(e) => {
-                state.publisher.0.log.log_err(WARN, e.context("Error unpublishing key values"));
-                return Response::InternalErr;
-            },
-        }
-    })));
-    routes.add("info", Leaf::new().get(cap_fn!((_r)(state) {
-        // Respond
-        return Response::json(InfoResponse {
-            advertise_addr: state.publisher.0.advertise_addr,
-            cert_pub_hash: state.publisher.0.cert_pub_hash.clone(),
-        });
-    })));
+            return Response::json(wire::api::publish::v1::InfoResponse {
+                advertise_addr: state.publisher.0.advertise_addr,
+                cert_pub_hash: state.publisher.0.cert_pub_hash.clone(),
+            });
+        })));
+        routes
+    });
     routes.nest("admin", {
         let admin_token = auth_hash(admin_token);
         let mut routes = Routes::new();
@@ -736,7 +704,7 @@ pub async fn build_api_endpoints(
                 };
 
                 // Respond
-                return Ok(Response::json(state.publisher.0.admin.list_allowed_identities(after.as_ref()).await?));
+                return Ok(Response::json(state.list_allowed_identities(after.as_ref()).await?));
             }.await {
                 Ok(d) => {
                     return d;
@@ -763,7 +731,7 @@ pub async fn build_api_endpoints(
                 let identity = Identity::from_str(&identity)?;
 
                 // Respond
-                return Ok(Response::json(state.publisher.0.admin.allow_identity(&identity).await?));
+                return Ok(Response::json(state.allow_identity(&identity).await?));
             }.await {
                 Ok(d) => {
                     return d;
@@ -790,7 +758,9 @@ pub async fn build_api_endpoints(
                 let identity = Identity::from_str(&identity)?;
 
                 // Respond
-                return Ok(Response::json(state.publisher.0.admin.disallow_identity(&identity).await?));
+                state.disallow_identity(&identity).await?;
+                state.publisher.clear_identity(&identity).await?;
+                return Ok(Response::Ok);
             }.await {
                 Ok(d) => {
                     return d;
@@ -801,72 +771,88 @@ pub async fn build_api_endpoints(
                 },
             }
         })));
-        routes.add("announcements", Leaf::new().get(cap_fn!((mut r)(state, admin_token) {
+        routes.add("keys", Leaf::new().get(cap_fn!((mut r)(state, admin_token) {
             // Auth
             if !auth(&admin_token, &r.auth_bearer) {
                 return Response::AuthErr;
             }
-            if let Some(identity) = r.path.pop() {
-                match async {
-                    ta_res!(Response);
-                    let identity = Identity::from_str(&identity)?;
+            match async {
+                ta_res!(Response);
+                let Some(identity) = r.path.pop() else {
+                    return Ok(Response::user_err("Missing identity in path"));
+                };
+                let identity = Identity::from_str(&identity)?;
 
-                    // Respond
-                    return Ok(Response::json(state.publisher.get_published_data(&identity).await?));
-                }.await {
-                    Ok(d) => {
-                        return d;
-                    },
-                    Err(e) => {
-                        state.publisher.0.log.log_err(WARN, e.context("Error getting published identity data"));
-                        return Response::InternalErr;
-                    },
+                #[derive(Debug, Deserialize)]
+                struct Params {
+                    after: Option<String>,
                 }
-            } else {
-                match async {
-                    ta_res!(Response);
 
-                    #[derive(Debug, Deserialize)]
-                    struct Params {
-                        after: Option<String>,
-                    }
-
-                    let query = match serde_urlencoded::from_str::<Params>(&r.query) {
-                        Ok(q) => q,
-                        Err(e) => {
-                            return Ok(Response::UserErr(format!("Invalid query parameters: {}", e)));
-                        },
-                    };
-                    let after = match query.after {
-                        Some(i) => {
-                            Some(Identity::from_str(&i)?)
-                        },
-                        None => None,
-                    };
-
-                    // Respond
-                    return Ok(
-                        Response::json(
-                            state
-                                .publisher
-                                .0
-                                .admin
-                                .list_announcements(after.as_ref())
-                                .await?
-                                .into_iter()
-                                .map(|e| e.0)
-                                .collect::<Vec<_>>(),
-                        ),
-                    );
-                }.await {
-                    Ok(d) => {
-                        return d;
-                    },
+                let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                    Ok(q) => q,
                     Err(e) => {
-                        state.publisher.0.log.log_err(WARN, e.context("Error getting published identities"));
-                        return Response::InternalErr;
+                        return Ok(Response::UserErr(format!("Invalid query parameters: {}", e)));
                     },
+                };
+
+                // Respond
+                return Ok(Response::json(state.publisher.list_value_keys(&identity, query.after).await?));
+            }.await {
+                Ok(d) => {
+                    return d;
+                },
+                Err(e) => {
+                    state.publisher.0.log.log_err(WARN, e.context("Error getting published keys for identity"));
+                    return Response::InternalErr;
+                },
+            }
+        })));
+        routes.add("announcements", Leaf::new().get(cap_fn!((r)(state, admin_token) {
+            // Auth
+            if !auth(&admin_token, &r.auth_bearer) {
+                return Response::AuthErr;
+            }
+            match async {
+                ta_res!(Response);
+
+                #[derive(Debug, Deserialize)]
+                struct Params {
+                    after: Option<String>,
                 }
+
+                let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        return Ok(Response::UserErr(format!("Invalid query parameters: {}", e)));
+                    },
+                };
+                let after = match query.after {
+                    Some(i) => {
+                        Some(Identity::from_str(&i)?)
+                    },
+                    None => None,
+                };
+
+                // Respond
+                return Ok(
+                    Response::json(
+                        state
+                            .publisher
+                            .list_announcements(after.as_ref())
+                            .await?
+                            .into_iter()
+                            .map(|e| e.0)
+                            .collect::<Vec<_>>(),
+                    ),
+                );
+            }.await {
+                Ok(d) => {
+                    return d;
+                },
+                Err(e) => {
+                    state.publisher.0.log.log_err(WARN, e.context("Error getting published identities"));
+                    return Response::InternalErr;
+                },
             }
         })));
         routes

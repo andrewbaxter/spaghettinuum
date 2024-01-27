@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "ResolveKeyValues",
+  "title": "ResolveValues",
   "type": "object",
   "additionalProperties": {
     "$ref": "#/definitions/ResolveValue"

@@ -1,11 +1,7 @@
-use chrono::{
-    Utc,
-};
 use itertools::Itertools;
 use loga::{
     ea,
     ResultContext,
-    DebugDisplay,
 };
 use openpgp_card_pcsc::PcscBackend;
 use openpgp_card_sequoia::{
@@ -18,9 +14,28 @@ use poem::{
         uri::Authority,
     },
 };
-use serde::de::DeserializeOwned;
+use serde::{
+    de::DeserializeOwned,
+    Serialize,
+};
 use serde_json::json;
 use spaghettinuum::{
+    interface::config::{
+        identity::BackedIdentityLocal,
+        ENV_API_ADDR,
+        ENV_API_ADMIN_TOKEN,
+    },
+    interface::{
+        stored::{
+            self,
+            dns_record::{
+                format_dns_key,
+                RecordType,
+            },
+            identity::Identity,
+        },
+        wire,
+    },
     utils::{
         log::{
             Flags,
@@ -39,26 +54,6 @@ use spaghettinuum::{
         htreq,
         publish_util,
     },
-    interface::{
-        spagh_cli::{
-            ENV_API_ADDR,
-            BackedIdentityLocal,
-            ENV_API_ADMIN_TOKEN,
-        },
-        spagh_api::{
-            publish::self,
-            resolve::{
-                self,
-                KEY_DNS_A,
-                KEY_DNS_AAAA,
-                KEY_DNS_CNAME,
-                KEY_DNS_MX,
-                KEY_DNS_TXT,
-            },
-        },
-        identity::Identity,
-    },
-    publisher::PublishIdentSignatureMethods,
 };
 use std::{
     collections::HashMap,
@@ -133,21 +128,24 @@ async fn api_list<
 
 mod args {
     use std::{
+        collections::{
+            HashMap,
+            HashSet,
+        },
         path::PathBuf,
     };
     use aargvark::{
         Aargvark,
         AargvarkJson,
     };
-    use spaghettinuum::{
-        interface::{
-            spagh_cli::{
+    use spaghettinuum::interface::{
+        config::{
+            identity::BackedIdentityLocal,
+            shared::{
                 BackedIdentityArg,
-                BackedIdentityLocal,
             },
-            spagh_api::publish,
-            spagh_node::GlobalAddrConfig,
         },
+        stored,
     };
 
     #[derive(Aargvark)]
@@ -167,18 +165,26 @@ mod args {
     }
 
     #[derive(Aargvark)]
-    pub struct Publish {
-        /// Identity to publish as
+    pub struct UnsetAll {
+        /// Identity whose records to wipe
         pub identity: BackedIdentityArg,
-        /// Data to publish.  Must be json in the structure
-        /// `{KEY: {"ttl": SECONDS, "value": "DATA"}, ...}`
-        pub data: AargvarkJson<publish::latest::Publish>,
     }
 
     #[derive(Aargvark)]
-    pub struct PublishDns {
+    pub struct Set {
         /// Identity to publish as
         pub identity: BackedIdentityArg,
+        /// Data to publish.  Must be json in the structure
+        /// `{KEY: {"ttl": MINUTES, "value": DATA}, ...}`
+        pub data: AargvarkJson<HashMap<String, stored::record::latest::RecordValue>>,
+    }
+
+    #[derive(Aargvark)]
+    pub struct SetDns {
+        /// Identity to publish as
+        pub identity: BackedIdentityArg,
+        /// Subdomain, prefixed to the identity. Must end with `.`.
+        pub subdomain: Option<String>,
         /// TTL for hits and misses, in minutes
         pub ttl: u32,
         /// A list of other DNS names.
@@ -195,20 +201,15 @@ mod args {
     }
 
     #[derive(Aargvark)]
-    pub struct SelfPublish {
-        /// How to detect the public ip to publish
-        pub addr: GlobalAddrConfig,
-        /// Identity to publish address under
+    pub struct Unset {
+        /// Identity whose keys to stop publishing
         pub identity: BackedIdentityArg,
+        /// Keys to stop publishing
+        pub keys: HashSet<String>,
     }
 
     #[derive(Aargvark)]
-    pub struct Unpublish {
-        pub identity: BackedIdentityArg,
-    }
-
-    #[derive(Aargvark)]
-    pub struct ListPublishingKeyValues {
+    pub struct ListKeys {
         pub identity: String,
     }
 
@@ -221,7 +222,7 @@ mod args {
     }
 
     #[derive(Aargvark)]
-    pub struct Advertise {
+    pub struct Announce {
         /// Identity to advertise this publisher for
         pub identity: BackedIdentityArg,
     }
@@ -246,10 +247,10 @@ mod args {
         AllowIdentity(AllowIdentity),
         /// Unregister an identity with the publisher, disallowing it from publishing
         DisallowIdentity(DisallowIdentity),
-        /// List identities a publisher is currently publishing
-        ListPublishingIdentities,
-        /// List data a publisher is publishing for an identity
-        ListPublishingKeyValues(ListPublishingKeyValues),
+        /// List announced identities
+        ListAnnouncements,
+        /// List keys published here for an identity
+        ListKeys(ListKeys),
     }
 
     #[derive(Aargvark)]
@@ -258,16 +259,18 @@ mod args {
         Ping,
         /// Request values associated with provided identity and keys from a resolver
         Get(Query),
-        /// Advertise the publisher server as the authority for this identity. This must be
+        /// Announce the publisher server as the authority for this identity. This must be
         /// done before any values published on this publisher can be queried, and replaces
         /// the previous publisher.
-        Advertise(Advertise),
+        Announce(Announce),
         /// Create or replace existing publish data for an identity on a publisher server
-        Set(Publish),
+        Set(Set),
         /// A shortcut for publishing DNS data, generating the key values for you
-        SetDns(PublishDns),
-        /// Stop publishing data
-        Unset(Unpublish),
+        SetDns(SetDns),
+        /// Stop publishing specific records
+        Unset(Unset),
+        /// Stop publishing all records for an identity
+        UnsetAll(UnsetAll),
         /// Commands for managing identities
         Identity(Identity),
         /// Commands for node administration
@@ -299,7 +302,7 @@ async fn main() {
             args::Command::Get(config) => {
                 let url =
                     format!(
-                        "{}v1/{}?{}",
+                        "{}resolve/v1/{}?{}",
                         api_url()?,
                         config.identity,
                         config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
@@ -314,96 +317,140 @@ async fn main() {
                     ).unwrap()
                 );
             },
-            args::Command::Advertise(config) => {
+            args::Command::Announce(config) => {
                 let mut signer =
                     get_identity_signer(
                         config.identity,
                     ).stack_context(&log, "Error constructing signer for identity")?;
-                publish_util::publish(log, &api_url()?, signer.as_mut(), config.data.value).await?;
+                publish_util::announce(log, &api_url()?, signer.as_mut()).await?;
             },
             args::Command::Set(config) => {
                 let mut signer =
                     get_identity_signer(
                         config.identity,
                     ).stack_context(&log, "Error constructing signer for identity")?;
-                publish_util::publish(log, &api_url()?, signer.as_mut(), config.data.value).await?;
+                publish_util::publish(
+                    log,
+                    &api_url()?,
+                    signer.as_mut(),
+                    wire::api::publish::latest::PublishRequestContent {
+                        set: config
+                            .data
+                            .value
+                            .into_iter()
+                            .map(|(k, v)| (k, stored::record::RecordValue::V1(v)))
+                            .collect(),
+                        ..Default::default()
+                    },
+                ).await?;
             },
             args::Command::SetDns(config) => {
+                let subdomain = match &config.subdomain {
+                    Some(s) => {
+                        if !s.ends_with('.') {
+                            return Err(log.err("Subdomain must end with ."));
+                        }
+                        s.as_str()
+                    },
+                    None => ".",
+                };
+
+                fn rec_val(ttl: u32, data: impl Serialize) -> stored::record::RecordValue {
+                    return stored::record::RecordValue::latest(stored::record::latest::RecordValue {
+                        ttl: ttl as i32,
+                        data: Some(serde_json::to_value(&data).unwrap()),
+                    });
+                }
+
+                let mut kvs = HashMap::new();
+                if !config.dns_mx.is_empty() {
+                    kvs.insert(
+                        format_dns_key(subdomain, RecordType::CNAME),
+                        rec_val(
+                            config.ttl,
+                            stored::dns_record::DnsCname::V1(stored::dns_record::latest::DnsCname(config.dns_cname)),
+                        ),
+                    );
+                }
+                if !config.dns_a.is_empty() {
+                    kvs.insert(
+                        format_dns_key(subdomain, RecordType::A),
+                        rec_val(
+                            config.ttl,
+                            stored::dns_record::DnsA::V1(stored::dns_record::latest::DnsA(config.dns_a)),
+                        ),
+                    );
+                }
+                if !config.dns_aaaa.is_empty() {
+                    kvs.insert(
+                        format_dns_key(subdomain, RecordType::AAAA),
+                        rec_val(
+                            config.ttl,
+                            &stored::dns_record::DnsAaaa::V1(stored::dns_record::latest::DnsAaaa(config.dns_aaaa)),
+                        ),
+                    );
+                }
+                if !config.dns_txt.is_empty() {
+                    kvs.insert(
+                        format_dns_key(subdomain, RecordType::TXT),
+                        rec_val(
+                            config.ttl,
+                            &stored::dns_record::DnsTxt::V1(stored::dns_record::latest::DnsTxt(config.dns_txt)),
+                        ),
+                    );
+                }
+                if !config.dns_mx.is_empty() {
+                    kvs.insert(
+                        format_dns_key(subdomain, RecordType::MX),
+                        rec_val(
+                            config.ttl,
+                            &stored::dns_record::DnsMx::V1(stored::dns_record::latest::DnsMx(config.dns_mx)),
+                        ),
+                    );
+                }
                 let mut signer =
                     get_identity_signer(
                         config.identity,
                     ).stack_context(&log, "Error constructing signer for identity")?;
-                publish_util::publish(log, &api_url()?, signer.as_mut(), publish::latest::Publish {
-                    missing_ttl: config.ttl,
-                    data: {
-                        let mut kvs = HashMap::new();
-                        if !config.dns_mx.is_empty() {
-                            kvs.insert(KEY_DNS_CNAME.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_value(
-                                    &resolve::DnsCname::V1(resolve::latest::DnsCname(config.dns_cname)),
-                                ).unwrap(),
-                            });
-                        }
-                        if !config.dns_a.is_empty() {
-                            kvs.insert(KEY_DNS_A.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_value(
-                                    &resolve::DnsA::V1(resolve::latest::DnsA(config.dns_a)),
-                                ).unwrap(),
-                            });
-                        }
-                        if !config.dns_aaaa.is_empty() {
-                            kvs.insert(KEY_DNS_AAAA.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_value(
-                                    &resolve::DnsAaaa::V1(resolve::latest::DnsAaaa(config.dns_aaaa)),
-                                ).unwrap(),
-                            });
-                        }
-                        if !config.dns_txt.is_empty() {
-                            kvs.insert(KEY_DNS_TXT.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_value(
-                                    &resolve::DnsTxt::V1(resolve::latest::DnsTxt(config.dns_txt)),
-                                ).unwrap(),
-                            });
-                        }
-                        if !config.dns_mx.is_empty() {
-                            kvs.insert(KEY_DNS_MX.to_string(), publish::latest::PublishValue {
-                                ttl: config.ttl,
-                                data: serde_json::to_value(
-                                    &resolve::DnsMx::V1(resolve::latest::DnsMx(config.dns_mx)),
-                                ).unwrap(),
-                            });
-                        }
-                        kvs
+                publish_util::publish(
+                    log,
+                    &api_url()?,
+                    signer.as_mut(),
+                    wire::api::publish::latest::PublishRequestContent {
+                        set: kvs,
+                        ..Default::default()
                     },
-                }).await?;
+                ).await?;
             },
             args::Command::Unset(config) => {
                 let mut signer =
-                    get_identity_signer(config.identity).stack_context(&log, "Error constructing signer")?;
-                let request_message = publish::latest::UnpublishRequestContent { now: Utc::now() };
-                log.log_with(DEBUG_OTHER, "Unsigned request message", ea!(message = request_message.dbg_str()));
-                let (identity, signature) =
-                    PublishIdentSignatureMethods::sign(
-                        signer.as_mut(),
-                        request_message,
-                    ).stack_context(&log, "Failed to sign unpublish request")?;
-                let request = publish::UnpublishRequest::V1(publish::latest::UnpublishRequest {
-                    identity: identity,
-                    content: signature,
-                });
-                let url = format!("{}publish/unpublish", api_url()?);
-                log.log_with(
-                    DEBUG_OTHER,
-                    "Sending unpublish request",
-                    ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
-                );
-                htreq::post(&url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
-                    .await
-                    .stack_context(log, "Error making unpublish request")?;
+                    get_identity_signer(
+                        config.identity,
+                    ).stack_context(&log, "Error constructing signer for identity")?;
+                publish_util::publish(
+                    log,
+                    &api_url()?,
+                    signer.as_mut(),
+                    wire::api::publish::latest::PublishRequestContent {
+                        clear: config.keys,
+                        ..Default::default()
+                    },
+                ).await?;
+            },
+            args::Command::UnsetAll(config) => {
+                let mut signer =
+                    get_identity_signer(
+                        config.identity,
+                    ).stack_context(&log, "Error constructing signer for identity")?;
+                publish_util::publish(
+                    log,
+                    &api_url()?,
+                    signer.as_mut(),
+                    wire::api::publish::latest::PublishRequestContent {
+                        clear_all: true,
+                        ..Default::default()
+                    },
+                ).await?;
             },
             args::Command::Identity(args) => match args {
                 args::Identity::NewLocal(args) => {
@@ -477,18 +524,18 @@ async fn main() {
                             .stack_context(log, "Error listing allowed identities")?;
                     println!("{}", serde_json::to_string_pretty(&out).unwrap());
                 },
-                args::Admin::ListPublishingIdentities => {
+                args::Admin::ListAnnouncements => {
                     let out =
                         api_list::<Identity>(api_url()?, "publish/admin/announcements", |v| v.to_string())
                             .await
                             .stack_context(log, "Error listing publishing identities")?;
                     println!("{}", serde_json::to_string_pretty(&out).unwrap());
                 },
-                args::Admin::ListPublishingKeyValues(config) => {
+                args::Admin::ListKeys(config) => {
                     println!(
                         "{}",
                         htreq::get_text(
-                            &format!("{}publish/admin/announcements/{}", api_url()?, config.identity),
+                            &format!("{}publish/admin/keys/{}", api_url()?, config.identity),
                             &admin_headers()?,
                             1024 * 1024,
                         ).await?

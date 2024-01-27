@@ -21,7 +21,7 @@ use sequoia_openpgp::{
     },
     types::Curve,
 };
-use crate::interface::identity::{
+use crate::interface::stored::identity::{
     self,
     Identity,
 };

@@ -6,6 +6,7 @@ use std::{
     marker::PhantomData,
     net::SocketAddr,
 };
+use schemars::JsonSchema;
 use serde::{
     de::DeserializeOwned,
     Deserialize,
@@ -13,20 +14,16 @@ use serde::{
 };
 use crate::{
     interface::{
-        identity::Identity,
-        proto,
+        stored::{
+            self,
+            identity::Identity,
+            record::RecordValue,
+        },
     },
     utils::blob::Blob,
 };
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct InfoResponse {
-    pub advertise_addr: SocketAddr,
-    pub cert_pub_hash: Blob,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct JsonSignature<T: Serialize + DeserializeOwned, I> {
     pub message: String,
@@ -35,7 +32,7 @@ pub struct JsonSignature<T: Serialize + DeserializeOwned, I> {
     pub _p: PhantomData<(T, I)>,
 }
 
-impl<T, I> std::fmt::Debug for JsonSignature<T, I> {
+impl<T: Serialize + DeserializeOwned, I> std::fmt::Debug for JsonSignature<T, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f
             .debug_struct("JsonSignature")
@@ -47,6 +44,27 @@ impl<T, I> std::fmt::Debug for JsonSignature<T, I> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct AnnounceRequest {
+    pub identity: Identity,
+    pub announcement: stored::announcement::Announcement,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DeleteAnnouncementRequest {
+    pub identity: Identity,
+    pub challenge: JsonSignature<(), Identity>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct InfoResponse {
+    pub advertise_addr: SocketAddr,
+    pub cert_pub_hash: Blob,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
 pub struct PublishRequestContent {
     /// Update TTL for negative responses
     pub missing_ttl: Option<u32>,
@@ -56,7 +74,7 @@ pub struct PublishRequestContent {
     /// Stop publishing keys
     pub clear: HashSet<String>,
     /// Start publishing values for keys
-    pub set: HashMap<String, proto::resolve::latest::RecordValue>,
+    pub set: HashMap<String, RecordValue>,
 }
 
 #[derive(Serialize, Deserialize)]

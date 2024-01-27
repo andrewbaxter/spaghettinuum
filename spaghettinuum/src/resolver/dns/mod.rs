@@ -1,21 +1,24 @@
 use crate::{
-    interface::{
-        identity::Identity,
-        spagh_api::{
-            resolve::{
-                self,
-                COMMON_KEYS_DNS,
-                KEY_DNS_A,
-                KEY_DNS_AAAA,
-                KEY_DNS_CNAME,
-                KEY_DNS_MX,
-                KEY_DNS_PREFIX,
-                KEY_DNS_TXT,
-            },
-        },
-        spagh_node::resolver_config::DnsBridgeConfig,
-    },
     bb,
+    interface::{
+        config::node::resolver_config::DnsBridgeConfig,
+        stored::dns_record::{
+            COMMON_KEYS_DNS,
+            KEY_DNS_A,
+            KEY_DNS_AAAA,
+            KEY_DNS_CNAME,
+            KEY_DNS_MX,
+            KEY_DNS_PREFIX,
+            KEY_DNS_TXT,
+        },
+        stored::{
+            self,
+            identity::Identity,
+        },
+        wire,
+    },
+    ta_res,
+    ta_vis_res,
     utils::{
         db_util::{
             setup_db,
@@ -36,8 +39,6 @@ use crate::{
         },
         time_util::ToInstant,
     },
-    ta_res,
-    ta_vis_res,
 };
 use crate::utils::{
     ResultVisErr,
@@ -58,12 +59,10 @@ use hickory_proto::{
             MX,
             TXT,
         },
-        LowerName,
         RData,
         RecordType,
         DNSClass,
         Record,
-        domain::Label,
     },
     xfer::{
         DnsHandle,
@@ -242,10 +241,12 @@ pub async fn start_dns_bridge(
                             );
                         },
                     };
-                    let mut res = self1.resolver.get(&ident, batch_keys).await.err_internal()?;
+                    let mut res = match self1.resolver.get(&ident, batch_keys).await.err_internal()? {
+                        wire::resolve::ResolveKeyValues::V1(v) => v,
+                    };
                     let mut answers = vec![];
-                    let filter_some = |v: resolve::latest::ResolveValue| match v.data {
-                        Some(v1) => Some((v.expires, v1)),
+                    let filter_some = |v: wire::resolve::latest::ResolveValue| match v.data {
+                        Some(d) => Some((v.expires, d)),
                         None => None,
                     };
                     if let Some((expires, data)) =
@@ -253,10 +254,10 @@ pub async fn start_dns_bridge(
                             .remove(&format!("{}/{}/{}", KEY_DNS_PREFIX, subdomain, KEY_DNS_CNAME))
                             .map(filter_some)
                             .flatten() {
-                        match serde_json::from_value::<resolve::DnsCname>(data.clone())
+                        match serde_json::from_value::<stored::dns_record::DnsCname>(data.clone())
                             .context_with("Failed to parse received record json", ea!(json = data))
                             .err_external()? {
-                            resolve::DnsCname::V1(n) => {
+                            stored::dns_record::DnsCname::V1(n) => {
                                 for n in n.0 {
                                     let n = match Name::from_utf8(&n) {
                                         Err(e) => {
@@ -300,10 +301,10 @@ pub async fn start_dns_bridge(
                                 .unwrap_or(i32::MAX as u32);
                         match lookup_key {
                             KEY_DNS_A => {
-                                match serde_json::from_value::<resolve::DnsA>(data.clone())
+                                match serde_json::from_value::<stored::dns_record::DnsA>(data.clone())
                                     .context_with("Failed to parse received record json", ea!(json = data))
                                     .err_external()? {
-                                    resolve::DnsA::V1(n) => {
+                                    stored::dns_record::DnsA::V1(n) => {
                                         for n in n.0 {
                                             let n = match Ipv4Addr::from_str(&n) {
                                                 Err(e) => {
@@ -332,10 +333,10 @@ pub async fn start_dns_bridge(
                                 }
                             },
                             KEY_DNS_AAAA => {
-                                match serde_json::from_value::<resolve::DnsAaaa>(data.clone())
+                                match serde_json::from_value::<stored::dns_record::DnsAaaa>(data.clone())
                                     .context_with("Failed to parse received record json", ea!(json = data))
                                     .err_external()? {
-                                    resolve::DnsAaaa::V1(n) => {
+                                    stored::dns_record::DnsAaaa::V1(n) => {
                                         for n in n.0 {
                                             let n = match Ipv6Addr::from_str(&n) {
                                                 Err(e) => {
@@ -364,10 +365,10 @@ pub async fn start_dns_bridge(
                                 }
                             },
                             KEY_DNS_TXT => {
-                                match serde_json::from_value::<resolve::DnsA>(data.clone())
+                                match serde_json::from_value::<stored::dns_record::DnsA>(data.clone())
                                     .context_with("Failed to parse received record json", ea!(json = data))
                                     .err_external()? {
-                                    resolve::DnsA::V1(n) => {
+                                    stored::dns_record::DnsA::V1(n) => {
                                         for n in n.0 {
                                             answers.push(
                                                 Record::from_rdata(
@@ -381,10 +382,10 @@ pub async fn start_dns_bridge(
                                 }
                             },
                             KEY_DNS_MX => {
-                                match serde_json::from_value::<resolve::DnsMx>(data.clone())
+                                match serde_json::from_value::<stored::dns_record::DnsMx>(data.clone())
                                     .context_with("Failed to parse received record json", ea!(json = data))
                                     .err_external()? {
-                                    resolve::DnsMx::V1(n) => {
+                                    stored::dns_record::DnsMx::V1(n) => {
                                         for (i, n) in n.0.into_iter().enumerate() {
                                             let n = match Name::from_utf8(&n) {
                                                 Err(e) => {

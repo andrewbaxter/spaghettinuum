@@ -1,4 +1,3 @@
-pub mod node_identity;
-pub mod identity;
-pub mod proto;
+pub mod stored;
+pub mod wire;
 pub mod config;

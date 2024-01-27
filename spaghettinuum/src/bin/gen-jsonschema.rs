@@ -5,9 +5,9 @@ use std::{
 };
 use schemars::schema_for;
 use spaghettinuum::{
-    interface::spagh_api::{
-        publish,
-        resolve,
+    interface::{
+        stored,
+        wire,
     },
 };
 
@@ -19,41 +19,38 @@ pub fn main() {
             .join("readme")
             .join("schemas")
             .to_path_buf();
+    fs::remove_dir_all(&out).unwrap();
     fs::create_dir_all(&out).unwrap();
     fs::write(
         out.join("config_spagh_node.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(spaghettinuum::interface::spagh_node::Config)).unwrap(),
+        &serde_json::to_string_pretty(&schema_for!(spaghettinuum::interface::config::node::Config)).unwrap(),
     ).unwrap();
     fs::write(
         out.join("config_spagh_auto.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(spaghettinuum::interface::spagh_auto::Config)).unwrap(),
+        &serde_json::to_string_pretty(&schema_for!(spaghettinuum::interface::config::auto::Config)).unwrap(),
     ).unwrap();
     fs::write(
-        out.join("publish.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(publish::v1::Publish)).unwrap(),
+        out.join("record_dns_cname.schema.json"),
+        &serde_json::to_string_pretty(&schema_for!(stored::dns_record::DnsCname)).unwrap(),
     ).unwrap();
     fs::write(
-        out.join("publish_data_dns_cname.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(resolve::DnsCname)).unwrap(),
+        out.join("record_dns_a.schema.json"),
+        &serde_json::to_string_pretty(&schema_for!(stored::dns_record::DnsA)).unwrap(),
     ).unwrap();
     fs::write(
-        out.join("publish_data_dns_a.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(resolve::DnsA)).unwrap(),
+        out.join("record_dns_aaaa.schema.json"),
+        &serde_json::to_string_pretty(&schema_for!(stored::dns_record::DnsAaaa)).unwrap(),
     ).unwrap();
     fs::write(
-        out.join("publish_data_dns_aaaa.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(resolve::DnsAaaa)).unwrap(),
+        out.join("record_dns_txt.schema.json"),
+        &serde_json::to_string_pretty(&schema_for!(stored::dns_record::DnsTxt)).unwrap(),
     ).unwrap();
     fs::write(
-        out.join("publish_data_dns_txt.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(resolve::DnsTxt)).unwrap(),
-    ).unwrap();
-    fs::write(
-        out.join("publish_data_dns_mx.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(resolve::DnsMx)).unwrap(),
+        out.join("record_dns_mx.schema.json"),
+        &serde_json::to_string_pretty(&schema_for!(stored::dns_record::DnsMx)).unwrap(),
     ).unwrap();
     fs::write(
         out.join("resolve.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(resolve::v1::ResolveKeyValues)).unwrap(),
+        &serde_json::to_string_pretty(&schema_for!(wire::api::resolve::latest::ResolveValues)).unwrap(),
     ).unwrap();
 }

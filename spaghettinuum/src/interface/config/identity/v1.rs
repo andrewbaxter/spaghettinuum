@@ -8,7 +8,7 @@ use serde::{
     Deserialize,
 };
 use crate::{
-    interface::identity::{
+    interface::stored::identity::{
         self,
         hash_for_ed25519,
     },

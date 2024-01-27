@@ -4,13 +4,13 @@ Spaghettinuum distinguishes "identity" from "id" (as in "identifier"). The forme
 
 There are two types of identities:
 
-- Node identity
-
-  This is used within the DHT and is not exposed anywhere else. You should never have to deal with this directly and they will not be mentioned anywhere else in the documentation (except maybe the architecture reference).
-
 - Identity
 
   This is what you as a user create and safeguard, use for publishing records, and the ids of which are used for lookups.
+
+- Node identity
+
+  This is used within the DHT and is not exposed anywhere else. You should never have to deal with this directly and they will not be mentioned anywhere else in the documentation (except maybe the architecture reference). You can identify these identities because they start with `n_`.
 
 At this time, identity has two subtypes: local and card.
 

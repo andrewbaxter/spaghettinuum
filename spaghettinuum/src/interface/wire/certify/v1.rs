@@ -7,7 +7,7 @@ use serde::{
     Deserialize,
 };
 use crate::{
-    interface::identity::Identity,
+    interface::stored::identity::Identity,
     utils::blob::Blob,
 };
 

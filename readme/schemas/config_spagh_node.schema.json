@@ -24,7 +24,7 @@
       }
     },
     "global_addrs": {
-      "description": "How to determine the public ip for publisher advertisements and self-publishing. Publisher advertisements always use the first address.",
+      "description": "How to determine the public ip for publisher announcements and self-publishing. Publisher announcements always use the first address.",
       "default": [],
       "type": "array",
       "items": {

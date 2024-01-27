@@ -34,8 +34,8 @@ pub struct Config {
     /// Path to a dir for subsystems to store persistent data (mostly sqlite
     /// databases). Will be created if it doesn't exist.
     pub persistent_dir: PathBuf,
-    /// How to determine the public ip for publisher advertisements and
-    /// self-publishing. Publisher advertisements always use the first address.
+    /// How to determine the public ip for publisher announcements and self-publishing.
+    /// Publisher announcements always use the first address.
     #[serde(default)]
     pub global_addrs: Vec<GlobalAddrConfig>,
     /// Core DHT node config, for publishing and looking up addresses

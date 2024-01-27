@@ -50,25 +50,24 @@ use spaghettinuum::{
     cap_block,
     cap_fn,
     interface::{
-        spagh_cli::{
-            self,
-            StrSocketAddr,
+        config::{
+            auto::{
+                Config,
+                ServeMode,
+            },
+            shared::StrSocketAddr,
+            ENV_CONFIG,
         },
-        spagh_api::{
-            publish,
-            resolve::{
-                self,
-                KEY_DNS_A,
-                KEY_DNS_AAAA,
+        stored::{
+            self,
+            dns_record::{
+                format_dns_key,
+                RecordType,
             },
         },
-        spagh_auto::{
-            Config,
-            ServeMode,
-        },
+        wire,
     },
     self_tls::{
-        certifier_url,
         request_cert_stream,
         CertPair,
         SimpleResolvesServerCert,
@@ -118,12 +117,12 @@ struct Args {
 async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Error> {
     let config = if let Some(p) = args.config {
         p.value
-    } else if let Some(c) = match std::env::var(spagh_cli::ENV_CONFIG) {
+    } else if let Some(c) = match std::env::var(ENV_CONFIG) {
         Ok(c) => Some(c),
         Err(e) => match e {
             std::env::VarError::NotPresent => None,
             std::env::VarError::NotUnicode(_) => {
-                return Err(loga::err_with("Error parsing env var as unicode", ea!(env = spagh_cli::ENV_CONFIG)))
+                return Err(loga::err_with("Error parsing env var as unicode", ea!(env = ENV_CONFIG)))
             },
         },
     } {
@@ -131,10 +130,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         serde_json::from_str::<Config>(&c).stack_context(&log, "Parsing config")?
     } else {
         return Err(
-            log.err_with(
-                "No config passed on command line, and no config set in env var",
-                ea!(env = spagh_cli::ENV_CONFIG),
-            ),
+            log.err_with("No config passed on command line, and no config set in env var", ea!(env = ENV_CONFIG)),
         );
     };
     let mut identity_signer =
@@ -145,42 +141,50 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     };
 
     // Publish global ips
+    let publisher_url = Uri::from_str(&config.publisher).stack_context(log, "Invalid publisher URI")?;
+    publish_util::announce(log, &publisher_url, identity_signer.as_mut()).await?;
     publish_util::publish(
         log,
-        &Uri::from_str(&config.publisher).stack_context(log, "Invalid publisher URI")?,
+        &publisher_url,
         identity_signer.as_mut(),
-        publish::latest::Publish {
-            missing_ttl: 60 * 24,
-            data: {
+        wire::api::publish::v1::PublishRequestContent {
+            clear_all: true,
+            set: {
                 let mut out = HashMap::new();
                 for ip in global_ips {
+                    let key;
+                    let data;
                     match ip {
                         std::net::IpAddr::V4(ip) => {
-                            let key = KEY_DNS_A.to_string();
-                            if !out.contains_key(&key) {
-                                out.insert(key, publish::latest::PublishValue {
-                                    ttl: 60,
-                                    data: serde_json::to_value(
-                                        &resolve::DnsA::V1(resolve::v1::DnsA(vec![ip.to_string()])),
-                                    ).unwrap(),
-                                });
-                            }
+                            key = RecordType::A;
+                            data =
+                                serde_json::to_value(
+                                    &stored::dns_record::DnsA::V1(
+                                        stored::dns_record::latest::DnsA(vec![ip.to_string()]),
+                                    ),
+                                ).unwrap();
                         },
                         std::net::IpAddr::V6(ip) => {
-                            let key = KEY_DNS_AAAA.to_string();
-                            if !out.contains_key(&key) {
-                                out.insert(key, publish::latest::PublishValue {
-                                    ttl: 60,
-                                    data: serde_json::to_value(
-                                        &resolve::DnsAaaa::V1(resolve::v1::DnsAaaa(vec![ip.to_string()])),
-                                    ).unwrap(),
-                                });
-                            }
+                            key = RecordType::AAAA;
+                            data =
+                                serde_json::to_value(
+                                    &stored::dns_record::DnsAaaa::V1(
+                                        stored::dns_record::latest::DnsAaaa(vec![ip.to_string()]),
+                                    ),
+                                ).unwrap();
                         },
+                    }
+                    let key = format_dns_key(".", key);
+                    if !out.contains_key(&key) {
+                        out.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
+                            ttl: 60,
+                            data: Some(data),
+                        }));
                     }
                 }
                 out
             },
+            ..Default::default()
         },
     ).await?;
 
@@ -238,7 +242,6 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             request_cert_stream(
                 &log,
                 &tm,
-                &certifier_url(),
                 identity_signer,
                 pub_pem.zip(priv_pem).map(|(pub_pem, priv_pem)| CertPair {
                     pub_pem: pub_pem,

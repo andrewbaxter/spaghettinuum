@@ -37,28 +37,30 @@ use loga::{
     StandardFlags,
 };
 use spaghettinuum::{
+    interface::{
+        config::{
+            identity::BackedIdentityLocal,
+            node::node_config::PORT_NODE,
+            shared::StrSocketAddr,
+        },
+        stored::{
+            self,
+            announcement::latest::AnnouncementContent,
+            shared::SerialAddr,
+        },
+        wire::{
+            node::latest::{
+                NodeInfo,
+            },
+        },
+    },
     node::{
         Node,
-        IdentSignatureMethods,
-    },
-    interface::{
-        spagh_cli::{
-            PORT_NODE,
-            StrSocketAddr,
-            BackedIdentityLocal,
-        },
-        node_protocol::{
-            latest::{
-                NodeInfo,
-                SerialAddr,
-                PublisherAnnouncementContent,
-            },
-            self,
-        },
     },
     utils::{
-        log::Log,
         blob::Blob,
+        log::Log,
+        signed::IdentSignatureMethods,
     },
 };
 use tokio::{
@@ -105,7 +107,7 @@ async fn main() {
         let (ident, mut ident_secret) = BackedIdentityLocal::new();
         let message_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(169, 168, 167, 165), 1111));
         let (_, message_signature) =
-            node_protocol::latest::PublisherAnnouncement::sign(&mut ident_secret, PublisherAnnouncementContent {
+            stored::announcement::latest::Announcement::sign(&mut ident_secret, AnnouncementContent {
                 addr: SerialAddr(message_addr),
                 cert_hash: Blob::new(0),
                 published: Utc::now(),
@@ -115,7 +117,9 @@ async fn main() {
             _ = tm.until_terminate() => {
                 return Ok(());
             },
-            _ = nodes.get(0).unwrap().put(ident.clone(), message_signature) =>(),
+            _ = nodes.get(
+                0
+            ).unwrap().put(ident.clone(), stored::announcement::Announcement::V1(message_signature)) =>(),
         };
 
         let mut i = 0;
@@ -144,7 +148,12 @@ async fn main() {
                 },
             }
         };
-        assert_eq!(found.addr.0, message_addr);
+        let found_addr = match found {
+            stored::announcement::Announcement::V1(a) => {
+                a.parse_unwrap().addr
+            },
+        };
+        assert_eq!(found_addr.0, message_addr);
         tm.join(&StandardLog::new(), StandardFlags::INFO).await?;
         return Ok(());
     }

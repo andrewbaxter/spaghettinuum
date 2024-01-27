@@ -22,7 +22,7 @@ mod tests {
                 pgp_pubkey_to_ident,
             },
         },
-        interface::identity,
+        interface::stored::identity,
     };
 
     #[test]

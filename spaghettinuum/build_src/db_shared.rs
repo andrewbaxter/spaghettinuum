@@ -4,5 +4,5 @@ use good_ormning::sqlite::schema::field::{
 };
 
 pub fn field_ident() -> FieldType {
-    return field_str().custom("crate::interface::identity::Identity").build();
+    return field_str().custom("crate::interface::stored::identity::Identity").build();
 }

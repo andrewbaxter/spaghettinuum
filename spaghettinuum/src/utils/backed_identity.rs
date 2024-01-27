@@ -9,7 +9,7 @@ use crate::{
             identity::BackedIdentityLocal,
             shared::BackedIdentityArg,
         },
-        identity::{
+        stored::identity::{
             Identity,
         },
     },
@@ -44,10 +44,6 @@ mod card {
         crypto::Signer,
     };
     use crate::{
-        interface::identity::{
-            Identity,
-            self,
-        },
         utils::{
             pgp::{
                 pgp_eddsa_to_identity,
@@ -57,6 +53,10 @@ mod card {
                 Blob,
                 ToBlob,
             },
+        },
+        interface::stored::identity::{
+            Identity,
+            hash_for_ed25519,
         },
     };
     use super::IdentitySigner;
@@ -97,7 +97,7 @@ mod card {
                     identity,
                     extract_pgp_ed25519_sig(
                         &signer
-                            .sign(HashAlgorithm::SHA512, &identity::hash_for_ed25519(data))
+                            .sign(HashAlgorithm::SHA512, &hash_for_ed25519(data))
                             .map_err(|e| loga::err_with("Card signature failed", ea!(err = e)))?,
                     )
                         .to_bytes()

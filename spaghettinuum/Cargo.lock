@@ -1338,7 +1338,7 @@ dependencies = [
  "markdown",
  "proc-macro2",
  "quote",
- "structre 0.0.1",
+ "structre",
  "syn 1.0.109",
  "threadpool",
  "walkdir",
@@ -3606,7 +3606,7 @@ dependencies = [
 
 [[package]]
 name = "spaghettinuum"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "aargvark",
  "array-init",
@@ -3657,7 +3657,7 @@ dependencies = [
  "serde_urlencoded",
  "sha2",
  "signature",
- "structre 0.0.4",
+ "structre",
  "taskmanager",
  "tokio",
  "tokio-rustls 0.25.0",
@@ -3750,17 +3750,7 @@ dependencies = [
  "anyhow",
  "once_cell",
  "regex",
- "structre_proc_macros 0.0.1",
-]
-
-[[package]]
-name = "structre"
-version = "0.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a875c40e04d15b4792695ddc04ad4900fd83e82e0bb8efbd8db5e94af61c76de"
-dependencies = [
- "regex",
- "structre_proc_macros 0.0.3",
+ "structre_proc_macros",
 ]
 
 [[package]]
@@ -3768,19 +3758,6 @@ name = "structre_proc_macros"
 version = "0.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66e7698a9d57b3a475ce1d6cc37b1be9ee8ed188ec596603c863c06c9e06cf7e"
-dependencies = [
- "litrs",
- "proc-macro2",
- "quote",
- "regex-syntax 0.6.29",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "structre_proc_macros"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b0197316db436eed743280347d2e9217ab4186c250ddc33b8d5ed7d8a600633"
 dependencies = [
  "litrs",
  "proc-macro2",
