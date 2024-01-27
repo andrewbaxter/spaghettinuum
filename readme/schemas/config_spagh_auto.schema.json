@@ -266,11 +266,11 @@
             "reverse_proxy": {
               "type": "object",
               "required": [
-                "upstream_addr"
+                "upstream_url"
               ],
               "properties": {
-                "upstream_addr": {
-                  "description": "Url of upstream HTTP server",
+                "upstream_url": {
+                  "description": "Base url of upstream HTTP server. The request path is appended.",
                   "type": "string"
                 }
               }

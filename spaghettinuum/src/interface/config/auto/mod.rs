@@ -4,12 +4,10 @@ use serde::{
     Deserialize,
     Serialize,
 };
-use super::spagh_node::GlobalAddrConfig;
-use crate::{
-    interface::spagh_cli::{
-        StrSocketAddr,
-        BackedIdentityArg,
-    },
+use super::shared::{
+    BackedIdentityArg,
+    GlobalAddrConfig,
+    StrSocketAddr,
 };
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -20,8 +18,8 @@ pub enum ServeMode {
         content_dir: PathBuf,
     },
     ReverseProxy {
-        /// Url of upstream HTTP server
-        upstream_addr: String,
+        /// Base url of upstream HTTP server. The request path is appended.
+        upstream_url: String,
     },
 }
 

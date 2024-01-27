@@ -1,67 +1,20 @@
 use std::{
     path::PathBuf,
-    net::{
-        IpAddr,
-    },
 };
-use aargvark::Aargvark;
 use schemars::JsonSchema;
 use serde::{
     Deserialize,
     Serialize,
 };
-use crate::{
-    interface::spagh_cli::{
-        StrSocketAddr,
-        BackedIdentityArg,
-    },
+use super::shared::{
+    BackedIdentityArg,
+    GlobalAddrConfig,
+    StrSocketAddr,
 };
 
 pub mod publisher_config;
 pub mod resolver_config;
 pub mod node_config;
-
-#[derive(Deserialize, Serialize, JsonSchema, Aargvark, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
-pub enum IpVer {
-    V4,
-    V6,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema, Aargvark)]
-#[serde(rename_all = "snake_case")]
-pub struct GlobalAddrLookupConfig {
-    /// Host to look up address on.
-    pub lookup: String,
-    /// Which ip protocol to use to contact lookup server (hence: which ip ver the
-    /// lookup server will see and return).  If empty, use any ip version.
-    #[serde(default)]
-    pub contact_ip_ver: Option<IpVer>,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema, Aargvark)]
-#[serde(rename_all = "snake_case")]
-pub enum GlobalAddrConfig {
-    /// Use this if you know the IP address beforehand (ex: in terraform, if you
-    /// allocate a floating ip before provisioning this host) and it's not the address
-    /// of any local interface.
-    Fixed(IpAddr),
-    /// If your server is directly on the internet (with an externally reachable IP
-    /// configured on an interface) this will cause that IP to be used. Specify an
-    /// interface name (ex: `eth0`) or leave blank to scan all interfaces for a public
-    /// IP.  All ipv6 addresses are considered public.
-    FromInterface {
-        /// Restrict to an interface with this name (like `eth0`); unrestricted if empty.
-        #[serde(default)]
-        name: Option<String>,
-        /// Restrict to ip addresses of this version; unrestricted if empty.
-        #[serde(default)]
-        ip_version: Option<IpVer>,
-    },
-    /// Look up a socket address via a remote service (ex: whatismyip). The service
-    /// must reply with the ip address as plain text.
-    Lookup(GlobalAddrLookupConfig),
-}
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

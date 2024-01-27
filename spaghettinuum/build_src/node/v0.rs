@@ -48,7 +48,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             v,
             "zF8F58Y52",
             "neighbor",
-            field_str().custom("crate::interface::node_protocol::NodeState").build(),
+            field_str().custom("crate::interface::proto::node::NodeState").build(),
         );
     if let Some(queries) = &mut queries {
         queries.push(

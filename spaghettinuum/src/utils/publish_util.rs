@@ -53,12 +53,7 @@ pub fn generate_publish_announce(
     })));
 }
 
-pub async fn publish(
-    log: &Log,
-    server: &Uri,
-    identity_signer: &mut dyn IdentitySigner,
-    keyvalues: publish::latest::Publish,
-) -> Result<(), loga::Error> {
+pub async fn announce(log: &Log, server: &Uri, identity_signer: &mut dyn IdentitySigner) -> Result<(), loga::Error> {
     let info_body =
         htreq::get(&format!("{}info", server), &HashMap::new(), 100 * 1024)
             .await
@@ -91,15 +86,19 @@ pub async fn publish(
             identity_signer,
             announcement_content,
         ).stack_context(&log, "Failed to sign announcement")?;
-    let request_content = publish::latest::PublishRequestContent {
-        announce: node_protocol::PublisherAnnouncement::V1(signed_announcement_content),
-        keyvalues: keyvalues,
-    };
-    log.log_with(
-        DEBUG_OTHER,
-        "Unsigned request message",
-        ea!(message = serde_json::to_string_pretty(&request_content).unwrap()),
-    );
+    let request = node_protocol::PublisherAnnouncement::V1(signed_announcement_content);
+    htreq::post(&url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
+        .await
+        .stack_context(log, "Error making announce request")?;
+    return Ok(());
+}
+
+pub async fn publish(
+    log: &Log,
+    server: &Uri,
+    identity_signer: &mut dyn IdentitySigner,
+    keyvalues: publish::latest::Publish,
+) -> Result<(), loga::Error> {
     let (_, signed_request_content) =
         JsonSignature::sign(
             identity_signer,

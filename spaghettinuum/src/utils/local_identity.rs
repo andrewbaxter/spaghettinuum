@@ -4,7 +4,7 @@ use loga::{
     ResultContext,
 };
 use tokio::fs;
-use crate::interface::spagh_cli::BackedIdentityLocal;
+use crate::interface::config::identity::BackedIdentityLocal;
 
 pub async fn write_identity(path: &Path, identity: &BackedIdentityLocal) -> Result<(), loga::Error> {
     fs::write(path, &serde_json::to_string_pretty(identity).unwrap())

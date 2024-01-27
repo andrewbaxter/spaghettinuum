@@ -5,12 +5,12 @@ use loga::{
 };
 use crate::{
     interface::{
+        config::{
+            identity::BackedIdentityLocal,
+            shared::BackedIdentityArg,
+        },
         identity::{
             Identity,
-        },
-        spagh_cli::{
-            BackedIdentityLocal,
-            BackedIdentityArg,
         },
     },
 };

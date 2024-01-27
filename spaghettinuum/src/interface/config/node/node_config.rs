@@ -4,9 +4,11 @@ use serde::{
     Serialize,
 };
 use crate::interface::{
-    spagh_cli::StrSocketAddr,
+    config::shared::StrSocketAddr,
     node_identity::NodeIdentity,
 };
+
+pub const PORT_NODE: u16 = 43890;
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

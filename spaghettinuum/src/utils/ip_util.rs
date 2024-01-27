@@ -23,11 +23,11 @@ use network_interface::{
     NetworkInterfaceConfig,
 };
 use tokio::time::sleep;
-use crate::interface::spagh_node::{
-    GlobalAddrConfig,
-    IpVer,
-};
 use crate::{
+    interface::config::shared::{
+        GlobalAddrConfig,
+        IpVer,
+    },
     utils::{
         htreq::{
             self,

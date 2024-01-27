@@ -18,7 +18,7 @@ Install with `cargo install spaghettinuum`.
 
 - `SPAGH` - API URL of node to access. For querying this would be the address of a resolver node, but for publishing this would be the url of a publisher node (depending on your hosting they may be different nodes).
 
-  Examples: `SPAGH=https://256.256.256.256` or `SPAGH=https://IDENT.s`
+  Examples: `SPAGH=https://256.256.256.256` or `SPAGH=https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s`
 
 - `SPAGH_TOKEN` - The token configured on a node to authorize administrative actions. This is the same value as specified in the config.
 

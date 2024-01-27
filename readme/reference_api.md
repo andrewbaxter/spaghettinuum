@@ -32,7 +32,7 @@ This will return a JSON value in the format:
 
 Data is the same JSON `data` in the published record. If a value for a key is not found, the key will be present in the output but the corresponding data will be `null`.
 
-See [this schema](TODO) for more details.
+See [this schema](./schemas/resolve.schema.json) for more details.
 
 ## Rust
 

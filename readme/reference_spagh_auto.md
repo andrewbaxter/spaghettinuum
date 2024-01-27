@@ -32,9 +32,9 @@ Install with `cargo install spaghettinuum`.
 
 1. Write the configuration
 
-   This is a minimal [example config](TODO) that just publishes the server's public IP as DNS-equivalent records, but see the [publishing guide](./guide_publishing.md) for serving static files or a reverse proxy.
+   This is a minimal [example config](./examples/spagh_auto_discovery_only.json) that just publishes the server's public IP as DNS-equivalent records, but see the [publishing guide](./guide_publishing.md) for serving static files or a reverse proxy.
 
-   Refer to [the jsonschema](TODO)
+   The config must match [this jsonschema](./schemas/config_spagh_auto.schema.json).
 
 1. Start the server with
 

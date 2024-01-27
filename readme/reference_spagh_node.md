@@ -34,9 +34,9 @@ Install with `cargo install spaghettinuum`.
 
    - DNS ports, UDP, TCP - these are ports used for DNS resolvers. They may be public or private (if it's a private resolver)
 
-   See [example config](TODO)
+   See the [example config](./examples/spagh_node_full.json). Note that there are mutually exclusive choices for ex: identifying global addresses. The config shows one way (interface detection), but refer to the jsonschema for other configuration methods (external ip checking service, static configuration).
 
-   Refer to [the jsonschema](TODO)
+   The config must match [this jsonschema](./schemas/config_spagh_node.schema.json).
 
 1. Start the server with
 

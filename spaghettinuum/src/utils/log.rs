@@ -12,7 +12,9 @@ loga::republish::bitflags::bitflags!{
         const DEBUG_DNS_OTHER = 1 << 6;
         const DEBUG_API = 1 << 7;
         const DEBUG_SELF_TLS = 1 << 8;
-        const DEBUG_OTHER = 1 << 9;
+        const DEBUG_HTREQ = 1 << 9;
+        const DEBUG_HTSERVE = 1 << 10;
+        const DEBUG_OTHER = 1 << 11;
     }
 }
 
@@ -26,6 +28,8 @@ pub const DEBUG_DNS_S: Flags = Flags::DEBUG_DNS_S;
 pub const DEBUG_DNS_OTHER: Flags = Flags::DEBUG_DNS_OTHER;
 pub const DEBUG_API: Flags = Flags::DEBUG_API;
 pub const DEBUG_SELF_TLS: Flags = Flags::DEBUG_SELF_TLS;
+pub const DEBUG_HTREQ: Flags = Flags::DEBUG_HTREQ;
+pub const DEBUG_HTSERVE: Flags = Flags::DEBUG_HTSERVE;
 
 // Aggregate
 pub const DEBUG_DNS: Flags = Flags::DEBUG_DNS_S.union(Flags::DEBUG_DNS_OTHER);

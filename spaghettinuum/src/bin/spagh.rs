@@ -221,6 +221,12 @@ mod args {
     }
 
     #[derive(Aargvark)]
+    pub struct Advertise {
+        /// Identity to advertise this publisher for
+        pub identity: BackedIdentityArg,
+    }
+
+    #[derive(Aargvark)]
     pub enum Identity {
         /// Create a new local (file) identity
         NewLocal(NewLocalIdentity),
@@ -252,6 +258,10 @@ mod args {
         Ping,
         /// Request values associated with provided identity and keys from a resolver
         Get(Query),
+        /// Advertise the publisher server as the authority for this identity. This must be
+        /// done before any values published on this publisher can be queried, and replaces
+        /// the previous publisher.
+        Advertise(Advertise),
         /// Create or replace existing publish data for an identity on a publisher server
         Set(Publish),
         /// A shortcut for publishing DNS data, generating the key values for you
@@ -303,6 +313,13 @@ async fn main() {
                         ).stack_context(log, "Response could not be parsed as JSON")?,
                     ).unwrap()
                 );
+            },
+            args::Command::Advertise(config) => {
+                let mut signer =
+                    get_identity_signer(
+                        config.identity,
+                    ).stack_context(&log, "Error constructing signer for identity")?;
+                publish_util::publish(log, &api_url()?, signer.as_mut(), config.data.value).await?;
             },
             args::Command::Set(config) => {
                 let mut signer =

@@ -72,13 +72,17 @@ The easy way to publish DNS equivalent records is using the command line like:
 $ spagh set-dns local me.spagh --a 256.256.256.256 --aaaa 2001:db8::8a2e:370:7334
 ```
 
-You can also do it using the normal `set` command. In that case
+You can also do it using the normal `set` command.
 
-- Use key `a6ff2372-e325-443f-a15f-dcefb6aee864` for CNAME records, with data in [this format](TODO)
-- Use key `dff50392-a569-4de4-9e66-e086af040f30` for A records, with data in [this format](TODO)
-- Use key `a793cc93-cc06-4369-ba47-5a9e8d2a23dd` for AAAA records, with data in [this format](TODO)
-- Use key `630e1d90-845a-470f-95f3-14253a6c269c` for TXT records, with data in [this format](TODO)
-- Use key `f665bd5f-6da7-4fa7-8ef9-51dd9a53ff60` for MX records, with data in [this format](TODO)
+In that case, the keys must be in the format `dns/SUBDOMAIN/RECORDTYPE` (subdomain ends with a `.`, record type is lowercase), ex: `dns/./a` or `dns/www./aaaa`.
+
+DNS record types each have different structures that must be mapped to and from JSON. For that reason, only the following are supported:
+
+- CNAME records, with data in [this format](./schemas/publish_data_dns_cname.schema.json)
+- A records, with data in [this format](./schemas/publish_data_dns_a.schema.json)
+- AAAA records, with data in [this format](./schemas/publish_data_dns_aaaa.schema.json)
+- TXT records, with data in [this format](./schemas/publish_data_dns_txt.schema.json)
+- MX records, with data in [this format](./schemas/publish_data_dns_mx.schema.json)
 
 ## Setting up a static file server
 
@@ -86,7 +90,7 @@ The `spagh-auto` is the simplest way to set up a static file server, and will ha
 
 Set up `spagh-auto` per [the reference](./reference_spagh_auto.md).
 
-You can use this [example config](TODO).
+You can use this [example config](./examples/spagh_auto_static_files.json).
 
 Once you've started it, you can visit the site at `https://IDENT.s` (with some assumptions: 1. you've set up DNS and the Certipasta root certificate, see [the guide to browsing](./guide_browse.md) 2. you're using IPv6 so there's no split horizon or else the server isn't in your local LAN, otherwise routing won't work).
 
@@ -98,4 +102,8 @@ The `spagh-auto` command will do both of these for you.
 
 Set up `spagh-auto` per [the reference](./reference_spagh_auto.md).
 
-You can use this [example config](TODO).
+You can use this [example config](./examples/spagh_auto_reverse_proxy.json).
+
+## Using external software
+
+If you omit `content` from the examples above, `spagh-auto` will manage the certs in the directory but serve no content itself. You can then use external software like nginx to serve content.

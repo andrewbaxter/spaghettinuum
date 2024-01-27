@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    env,
     sync::{
         Arc,
         Mutex,
@@ -38,6 +37,9 @@ use x509_cert::{
     },
 };
 use crate::{
+    bb,
+    interface::proto,
+    ta_res,
     utils::{
         backed_identity::IdentitySigner,
         tls_util::{
@@ -53,25 +55,11 @@ use crate::{
         htreq,
         time_util::ToInstant,
     },
-    interface::{
-        certify_protocol::{
-            latest,
-            CertRequest,
-        },
-        spagh_cli::{
-            DEFAULT_CERTIFIER_URL,
-            ENV_CERTIFIER,
-        },
-    },
-    bb,
-    ta_res,
 };
 
 pub mod db;
 
-pub fn certifier_url() -> String {
-    return env::var(ENV_CERTIFIER).unwrap_or(DEFAULT_CERTIFIER_URL.to_string());
-}
+pub const CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";
 
 /// Requests a TLS public cert from the certifier for the `.s` domain associated
 /// with the provided identity and returns the result as PEM.
@@ -80,16 +68,16 @@ pub async fn request_cert(
     certifier_url: &str,
     requester_spki: &SubjectPublicKeyInfoOwned,
     message_signer: &mut Box<dyn IdentitySigner>,
-) -> Result<latest::CertResponse, loga::Error> {
-    let text = serde_json::to_vec(&latest::CertRequestParams {
+) -> Result<proto::certify::latest::CertResponse, loga::Error> {
+    let text = serde_json::to_vec(&proto::certify::latest::CertRequestParams {
         stamp: Utc::now(),
         spki_der: requester_spki.to_der().unwrap().blob(),
     }).unwrap().blob();
     log.log_with(DEBUG_SELF_TLS, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
     let (ident, signature) = message_signer.sign(&text).context("Error signing cert request params")?;
-    let body = serde_json::to_vec(&CertRequest::V1(latest::CertRequest {
+    let body = serde_json::to_vec(&proto::certify::CertRequest::V1(proto::certify::latest::CertRequest {
         identity: ident,
-        params: latest::SignedCertRequestParams {
+        params: proto::certify::latest::SignedCertRequestParams {
             sig: signature,
             text: text,
         },

@@ -33,16 +33,16 @@ impl GoodOrmningCustomString<NodeState> for NodeState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PublisherAnnouncement {
-    V1(v1::PublisherAnnouncement),
+pub enum Announcement {
+    V1(v1::Announcement),
 }
 
-impl GoodOrmningCustomString<PublisherAnnouncement> for PublisherAnnouncement {
-    fn to_sql<'a>(value: &'a PublisherAnnouncement) -> std::borrow::Cow<'a, str> {
+impl GoodOrmningCustomString<Announcement> for Announcement {
+    fn to_sql<'a>(value: &'a Announcement) -> std::borrow::Cow<'a, str> {
         return serde_json::to_string(value).unwrap().into();
     }
 
-    fn from_sql(value: String) -> Result<PublisherAnnouncement, String> {
+    fn from_sql(value: String) -> Result<Announcement, String> {
         return serde_json::from_str(&value).map_err(|e| e.to_string());
     }
 }

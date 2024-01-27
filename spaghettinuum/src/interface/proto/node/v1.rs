@@ -28,6 +28,22 @@ pub struct BincodeSignature<T: Serialize + DeserializeOwned, I> {
     pub _p: PhantomData<(T, I)>,
 }
 
+impl<T: Serialize + DeserializeOwned, I> BincodeSignature {
+    pub fn parse_unwrap(&self) -> T {
+        return bincode::deserialize(&self.message).unwrap();
+    }
+}
+
+impl<T, I> std::fmt::Debug for BincodeSignature<T, I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f
+            .debug_struct("BincodeSignature")
+            .field("message", &self.message)
+            .field("signature", &self.signature)
+            .finish()
+    }
+}
+
 // Ed25519
 pub struct Hash(Blob);
 
@@ -141,19 +157,19 @@ pub struct NodeInfo {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
-pub struct PublisherAnnouncementContent {
+pub struct AnnouncementContent {
     pub addr: SerialAddr,
     pub cert_hash: Blob,
     pub published: chrono::DateTime<chrono::Utc>,
 }
 
-pub type PublisherAnnouncement = BincodeSignature<PublisherAnnouncementContent, Identity>;
+pub type Announcement = BincodeSignature<AnnouncementContent, Identity>;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum FindResponseModeContent {
     Nodes(Vec<NodeInfo>),
-    Value(PublisherAnnouncement),
+    Value(Announcement),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -176,7 +192,14 @@ pub struct FindResponse {
 #[serde(rename_all = "snake_case")]
 pub struct StoreRequest {
     pub key: Identity,
-    pub value: PublisherAnnouncement,
+    pub value: Announcement,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct StoreResponse {
+    pub key: Identity,
+    pub value: Announcement,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

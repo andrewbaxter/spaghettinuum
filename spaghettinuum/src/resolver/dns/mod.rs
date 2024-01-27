@@ -4,12 +4,13 @@ use crate::{
         spagh_api::{
             resolve::{
                 self,
-                KEY_DNS_CNAME,
-                KEY_DNS_TXT,
                 COMMON_KEYS_DNS,
                 KEY_DNS_A,
                 KEY_DNS_AAAA,
+                KEY_DNS_CNAME,
                 KEY_DNS_MX,
+                KEY_DNS_PREFIX,
+                KEY_DNS_TXT,
             },
         },
         spagh_node::resolver_config::DnsBridgeConfig,
@@ -175,7 +176,6 @@ pub async fn start_dns_bridge(
         log: Log,
         resolver: Resolver,
         upstream: NameServerPool<TokioConnectionProvider>,
-        expect_suffix: LowerName,
     }
 
     struct Handler(Arc<HandlerInner>);
@@ -192,19 +192,22 @@ pub async fn start_dns_bridge(
             let self1 = self.0.clone();
             match async {
                 ta_vis_res!(ResponseInfo);
-                if request.query().query_class() == DNSClass::IN &&
-                    request.query().name().base_name() == self1.expect_suffix {
+                let query_name = Name::from(request.query().name());
+                let mut query_name_iter = query_name.iter();
+                let root = query_name_iter.next();
+                if request.query().query_class() == DNSClass::IN && (match root {
+                    Some(b"s") | Some(b"s.") => true,
+                    _ => false,
+                }) {
                     self.0.log.log_with(DEBUG_DNS_S, "Received spagh request", ea!(request = request.dbg_str()));
-                    if request.query().name().num_labels() != 2 {
+                    let Some(ident_part) = query_name_iter.next() else {
                         return Err(
                             loga::err_with(
-                                "Expected two parts in request (ident, .s) but got different number",
+                                "Expected at least two parts in request (ident, .s) but got different number",
                                 ea!(name = request.query().name(), count = request.query().name().num_labels()),
                             ),
                         ).err_external();
-                    }
-                    let query_name = Name::from(request.query().name());
-                    let ident_part = query_name.iter().next().unwrap();
+                    };
                     let ident =
                         Identity::from_bytes(&zbase32::decode_full_bytes(ident_part).map_err(|e| {
                             loga::err_with("Wrong number of parts in request", ea!(ident = e))
@@ -214,14 +217,14 @@ pub async fn start_dns_bridge(
                                 ea!(ident = String::from_utf8_lossy(&ident_part)),
                             )
                             .err_external()?;
+                    let mut subdomain =
+                        query_name_iter.map(|x| format!("{}.", String::from_utf8_lossy(x))).collect::<Vec<_>>();
+                    subdomain.reverse();
+                    let subdomain = subdomain.join("");
                     let (lookup_key, batch_keys) = match request.query().query_type() {
+                        RecordType::CNAME => (KEY_DNS_CNAME, COMMON_KEYS_DNS),
                         RecordType::A => (KEY_DNS_A, COMMON_KEYS_DNS),
-                        RecordType::AAAA => {
-                            (KEY_DNS_AAAA, COMMON_KEYS_DNS)
-                        },
-                        RecordType::CNAME => {
-                            (KEY_DNS_CNAME, COMMON_KEYS_DNS)
-                        },
+                        RecordType::AAAA => (KEY_DNS_AAAA, COMMON_KEYS_DNS),
                         RecordType::TXT => (KEY_DNS_TXT, COMMON_KEYS_DNS),
                         RecordType::MX => (KEY_DNS_MX, COMMON_KEYS_DNS),
                         _ => {
@@ -245,7 +248,11 @@ pub async fn start_dns_bridge(
                         Some(v1) => Some((v.expires, v1)),
                         None => None,
                     };
-                    if let Some((expires, data)) = res.remove(KEY_DNS_CNAME).map(filter_some).flatten() {
+                    if let Some((expires, data)) =
+                        res
+                            .remove(&format!("{}/{}/{}", KEY_DNS_PREFIX, subdomain, KEY_DNS_CNAME))
+                            .map(filter_some)
+                            .flatten() {
                         match serde_json::from_value::<resolve::DnsCname>(data.clone())
                             .context_with("Failed to parse received record json", ea!(json = data))
                             .err_external()? {
@@ -280,7 +287,11 @@ pub async fn start_dns_bridge(
                                 }
                             },
                         }
-                    } else if let Some((expires, data)) = res.remove(lookup_key).map(filter_some).flatten() {
+                    } else if let Some((expires, data)) =
+                        res
+                            .remove(&format!("{}/{}/{}", KEY_DNS_PREFIX, subdomain, lookup_key))
+                            .map(filter_some)
+                            .flatten() {
                         let expires =
                             expires
                                 .signed_duration_since(Utc::now())
@@ -577,7 +588,6 @@ pub async fn start_dns_bridge(
         log: log.clone(),
         resolver: resolver.clone(),
         upstream: upstream,
-        expect_suffix: LowerName::new(&Name::from_labels(&[Label::from_utf8("s").unwrap()]).unwrap()),
     })));
     for bind_addr in &dns_config.udp_bind_addrs {
         let bind_addr = bind_addr.resolve()?;

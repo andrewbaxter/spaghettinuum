@@ -15,6 +15,7 @@ card = [
     "dep:openpgp-card-sequoia",
     "dep:sequoia-openpgp",
 ]
+docsrs = []
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
@@ -116,3 +117,6 @@ libsqlite3-sys = { version = ">=0", features = ["bundled"] }
 
 [build-dependencies]
 good-ormning = { version = "0.1", features = ["sqlite", "chrono"] }
+
+[package.metadata.docs.rs]
+features = ["docsrs"]

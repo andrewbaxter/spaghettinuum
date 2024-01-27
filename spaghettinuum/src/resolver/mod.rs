@@ -18,7 +18,6 @@ use crate::{
     },
     interface::{
         identity::Identity,
-        spagh_api::resolve::self,
     },
     publisher::publisher_cert_hash,
     ta_res,

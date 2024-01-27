@@ -1,11 +1,9 @@
-pub mod v1;
-
 use loga::{
     ea,
     ResultContext,
 };
-pub use v1 as latest;
 use std::{
+    net::IpAddr,
     path::PathBuf,
     sync::{
         Arc,
@@ -29,20 +27,11 @@ use schemars::{
         InstanceType,
     },
 };
-use crate::utils::blob::{
-    ToBlob,
-    Blob,
-};
-use super::identity::Identity;
 
-pub const ENV_API_ADDR: &'static str = "SPAGH";
-pub const ENV_CONFIG: &'static str = "SPAGH_CONFIG";
-pub const ENV_API_ADMIN_TOKEN: &'static str = "SPAGH_TOKEN";
-pub const ENV_CERTIFIER: &'static str = "SPAGH_CERTIFIER";
-pub const DEFAULT_CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";
-pub const PORT_NODE: u16 = 43890;
-pub const PORT_PUBLISHER: u16 = 43891;
-
+/// This boils down to a `SocketAddr`, but it's used for specifying SocketAddrs by
+/// providing a DNS name (ex: localhost). Because this may access the network,
+/// resolution is deferred to the `resolve` method call. It has the added bonus of
+/// keeping the original name when being displayed.
 #[derive(Clone)]
 pub struct StrSocketAddr(pub String, Arc<Mutex<Option<SocketAddr>>>);
 
@@ -140,27 +129,44 @@ pub enum BackedIdentityArg {
     },
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Deserialize, Serialize, JsonSchema, Aargvark, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
-pub enum BackedIdentityLocal {
-    V1(v1::LocalIdentitySecret),
+pub enum IpVer {
+    V4,
+    V6,
 }
 
-impl BackedIdentityLocal {
-    pub fn new() -> (Identity, Self) {
-        let (ident, secret) = v1::LocalIdentitySecret::new();
-        return (Identity::V1(ident), BackedIdentityLocal::V1(secret));
-    }
+#[derive(Deserialize, Serialize, JsonSchema, Aargvark)]
+#[serde(rename_all = "snake_case")]
+pub struct GlobalAddrLookupConfig {
+    /// Host to look up address on.
+    pub lookup: String,
+    /// Which ip protocol to use to contact lookup server (hence: which ip ver the
+    /// lookup server will see and return).  If empty, use any ip version.
+    #[serde(default)]
+    pub contact_ip_ver: Option<IpVer>,
+}
 
-    pub fn identity(&self) -> Identity {
-        match self {
-            BackedIdentityLocal::V1(s) => Identity::V1(s.identity()),
-        }
-    }
-
-    pub fn sign(&self, message: &[u8]) -> Blob {
-        match self {
-            BackedIdentityLocal::V1(v) => v.sign(message).blob(),
-        }
-    }
+#[derive(Deserialize, Serialize, JsonSchema, Aargvark)]
+#[serde(rename_all = "snake_case")]
+pub enum GlobalAddrConfig {
+    /// Use this if you know the IP address beforehand (ex: in terraform, if you
+    /// allocate a floating ip before provisioning this host) and it's not the address
+    /// of any local interface.
+    Fixed(IpAddr),
+    /// If your server is directly on the internet (with an externally reachable IP
+    /// configured on an interface) this will cause that IP to be used. Specify an
+    /// interface name (ex: `eth0`) or leave blank to scan all interfaces for a public
+    /// IP.  All ipv6 addresses are considered public.
+    FromInterface {
+        /// Restrict to an interface with this name (like `eth0`); unrestricted if empty.
+        #[serde(default)]
+        name: Option<String>,
+        /// Restrict to ip addresses of this version; unrestricted if empty.
+        #[serde(default)]
+        ip_version: Option<IpVer>,
+    },
+    /// Look up a socket address via a remote service (ex: whatismyip). The service
+    /// must reply with the ip address as plain text.
+    Lookup(GlobalAddrLookupConfig),
 }
