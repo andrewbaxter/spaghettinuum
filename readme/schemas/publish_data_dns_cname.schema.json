@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DnsCname",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "v1"
+      ],
+      "properties": {
+        "v1": {
+          "$ref": "#/definitions/DnsCname"
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "definitions": {
+    "DnsCname": {
+      "description": "A list of DNS names",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

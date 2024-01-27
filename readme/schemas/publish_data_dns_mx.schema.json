@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DnsMx",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "v1"
+      ],
+      "properties": {
+        "v1": {
+          "$ref": "#/definitions/DnsMx"
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "definitions": {
+    "DnsMx": {
+      "description": "A list of mail server domain names.  The first will have priority 0, the second 1, etc.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

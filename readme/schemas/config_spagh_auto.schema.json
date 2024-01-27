@@ -1,0 +1,288 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Config",
+  "type": "object",
+  "required": [
+    "global_addrs",
+    "identity",
+    "publisher"
+  ],
+  "properties": {
+    "global_addrs": {
+      "description": "How to identify and select globally routable IP addresses for this host",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/GlobalAddrConfig"
+      }
+    },
+    "identity": {
+      "description": "Identity to use for publishing",
+      "allOf": [
+        {
+          "$ref": "#/definitions/BackedIdentityArg"
+        }
+      ]
+    },
+    "publisher": {
+      "description": "Url of publisher where this identity is authorized to publish",
+      "type": "string"
+    },
+    "serve": {
+      "description": "Configure HTTPS serving using certipasta certs",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ServeConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "BackedIdentityArg": {
+      "description": "An identity with its associated secret.",
+      "oneOf": [
+        {
+          "description": "A file containing a generated key",
+          "type": "object",
+          "required": [
+            "local"
+          ],
+          "properties": {
+            "local": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "PC/SC card with ED25519 key",
+          "type": "object",
+          "required": [
+            "card"
+          ],
+          "properties": {
+            "card": {
+              "type": "object",
+              "required": [
+                "pcsc_id",
+                "pin"
+              ],
+              "properties": {
+                "pcsc_id": {
+                  "description": "Card to register, using id per pcscd (not identity id)",
+                  "type": "string"
+                },
+                "pin": {
+                  "description": "Card pin",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ContentConfig": {
+      "type": "object",
+      "required": [
+        "bind_addrs"
+      ],
+      "properties": {
+        "bind_addrs": {
+          "description": "Interface IPs and ports to bind to",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StrSocketAddr"
+          }
+        },
+        "mode": {
+          "description": "What content to serve",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ServeMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "GlobalAddrConfig": {
+      "oneOf": [
+        {
+          "description": "Use this if you know the IP address beforehand (ex: in terraform, if you allocate a floating ip before provisioning this host) and it's not the address of any local interface.",
+          "type": "object",
+          "required": [
+            "fixed"
+          ],
+          "properties": {
+            "fixed": {
+              "type": "string",
+              "format": "ip"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "If your server is directly on the internet (with an externally reachable IP configured on an interface) this will cause that IP to be used. Specify an interface name (ex: `eth0`) or leave blank to scan all interfaces for a public IP.  All ipv6 addresses are considered public.",
+          "type": "object",
+          "required": [
+            "from_interface"
+          ],
+          "properties": {
+            "from_interface": {
+              "type": "object",
+              "properties": {
+                "ip_version": {
+                  "description": "Restrict to ip addresses of this version; unrestricted if empty.",
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/IpVer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "name": {
+                  "description": "Restrict to an interface with this name (like `eth0`); unrestricted if empty.",
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Look up a socket address via a remote service (ex: whatismyip). The service must reply with the ip address as plain text.",
+          "type": "object",
+          "required": [
+            "lookup"
+          ],
+          "properties": {
+            "lookup": {
+              "$ref": "#/definitions/GlobalAddrLookupConfig"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "GlobalAddrLookupConfig": {
+      "type": "object",
+      "required": [
+        "lookup"
+      ],
+      "properties": {
+        "contact_ip_ver": {
+          "description": "Which ip protocol to use to contact lookup server (hence: which ip ver the lookup server will see and return).  If empty, use any ip version.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IpVer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lookup": {
+          "description": "Host to look up address on.",
+          "type": "string"
+        }
+      }
+    },
+    "IpVer": {
+      "type": "string",
+      "enum": [
+        "v4",
+        "v6"
+      ]
+    },
+    "ServeConfig": {
+      "type": "object",
+      "required": [
+        "cert_dir"
+      ],
+      "properties": {
+        "cert_dir": {
+          "description": "Where to store TLS certs.  This directory and its parents will be created if they don't already exist.  The certs will be named `pub.pem` and `priv.pem`.",
+          "type": "string"
+        },
+        "content": {
+          "description": "How to serve content.  If not specified, just keeps certificates in the cert dir up to date.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ContentConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ServeMode": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "static_files"
+          ],
+          "properties": {
+            "static_files": {
+              "type": "object",
+              "required": [
+                "content_dir"
+              ],
+              "properties": {
+                "content_dir": {
+                  "description": "Where files to serve are",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "reverse_proxy"
+          ],
+          "properties": {
+            "reverse_proxy": {
+              "type": "object",
+              "required": [
+                "upstream_addr"
+              ],
+              "properties": {
+                "upstream_addr": {
+                  "description": "Url of upstream HTTP server",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "StrSocketAddr": {
+      "description": "An ip address or domain (ex: \"localhost\") which resolves to an address",
+      "type": "string"
+    }
+  }
+}

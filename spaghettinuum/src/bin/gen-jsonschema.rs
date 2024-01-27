@@ -12,8 +12,14 @@ use spaghettinuum::{
 };
 
 pub fn main() {
-    let out = PathBuf::from(&env::var("CARGO_MANIFEST_DIR").unwrap());
-    let out = out.join("schemas");
+    let out =
+        PathBuf::from(&env::var("CARGO_MANIFEST_DIR").unwrap())
+            .parent()
+            .unwrap()
+            .join("readme")
+            .join("schemas")
+            .to_path_buf();
+    fs::create_dir_all(&out).unwrap();
     fs::write(
         out.join("config_spagh_node.schema.json"),
         &serde_json::to_string_pretty(&schema_for!(spaghettinuum::interface::spagh_node::Config)).unwrap(),

@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ResolveKeyValues",
+  "type": "object",
+  "additionalProperties": {
+    "$ref": "#/definitions/ResolveValue"
+  },
+  "definitions": {
+    "ResolveValue": {
+      "type": "object",
+      "required": [
+        "expires"
+      ],
+      "properties": {
+        "data": true,
+        "expires": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

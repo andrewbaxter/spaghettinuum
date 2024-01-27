@@ -19,23 +19,23 @@ _This repo_ is
 
 _Try it out!_
 
-Set up your system to browse the spaghettinuum with [this guide](./guide_browse.md), then try visting my blog at [here](TODO)
+Set up your system to browse the spaghettinuum with [this guide](./readme/guide_browse.md), then try visting my blog at [here](TODO)
 
 Try using it to host a site, send email, or do service discovery.
 
 # Guides
 
-- [Browse the spaghettinuum](./guide_browse.md)
-- [Publishing](./guide_publishing.md)
-- [Identities](./guide_identities.md)
+- [Browse the spaghettinuum](./readme/guide_browse.md)
+- [Publishing](./readme/guide_publishing.md)
+- [Identities](./readme/guide_identities.md)
 
 # Reference
 
-- [`spagh-node`](./reference_spagh_node.md) - the network node server, resolver, and publisher
-- [`spagh`](./reference_spagh.md) - the CLI
-- [`spagh-auto`](./reference_spagh_auto.md) - a small static file server/reverse proxy
-- [API reference](./reference_api.md)
-- [Architecture](./architecture.md)
+- [`spagh-node`](./readme/reference_spagh_node.md) - the network node server, resolver, and publisher
+- [`spagh`](./readme/reference_spagh.md) - the CLI
+- [`spagh-auto`](./readme/reference_spagh_auto.md) - a small static file server/reverse proxy
+- [API reference](./readme/reference_api.md)
+- [Architecture](./readme/architecture.md)
 
 # Why
 

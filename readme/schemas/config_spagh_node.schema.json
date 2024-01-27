@@ -1,0 +1,453 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Config",
+  "type": "object",
+  "required": [
+    "node",
+    "persistent_dir"
+  ],
+  "properties": {
+    "admin_token": {
+      "description": "When configuring the publisher, admin endpoints must be accessed with this as a bearer http authorization token.  Required for publisher.",
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "api_bind_addrs": {
+      "description": "Addresses for client interaction - resolver lookups, publishing, and admin. Required for publisher and resolver.  This serves both token-protected and public endpoints.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/StrSocketAddr"
+      }
+    },
+    "global_addrs": {
+      "description": "How to determine the public ip for publisher advertisements and self-publishing. Publisher advertisements always use the first address.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/GlobalAddrConfig"
+      }
+    },
+    "identity": {
+      "description": "An backed identity (by file or card) this server can use as its own.  See the structure fields for more information on what this provides.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SelfIdentityConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "node": {
+      "description": "Core DHT node config, for publishing and looking up addresses",
+      "allOf": [
+        {
+          "$ref": "#/definitions/NodeConfig"
+        }
+      ]
+    },
+    "persistent_dir": {
+      "description": "Path to a dir for subsystems to store persistent data (mostly sqlite databases). Will be created if it doesn't exist.",
+      "type": "string"
+    },
+    "publisher": {
+      "description": "Specify to enable publisher functionality.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PublisherConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resolver": {
+      "description": "Specify to enable resolver functionality.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ResolverConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "AcmeConfig": {
+      "description": "Use ACME to provision a TLS cert.  This uses the HTTP verification method.  For verification, a http server is started briefly on port 80, so make sure traffic can reach the server on port 80 and the normal api listener isn't operating on port 80.",
+      "type": "object",
+      "required": [
+        "acme_directory_url",
+        "bind_addrs",
+        "contacts",
+        "name"
+      ],
+      "properties": {
+        "acme_directory_url": {
+          "description": "Ex: `https://acme.zerossl.com/v2/DV90`",
+          "type": "string"
+        },
+        "bind_addrs": {
+          "description": "DNS over TLS, with automatic cert provisioning via ZeroSSL. Certificates are issued for each global address identified in the main config.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StrSocketAddr"
+          }
+        },
+        "contacts": {
+          "description": "Contacts by which the issuer can reach you if there's an issue.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "eab": {
+          "description": "External account binding credentials provided by SSL cert issuer in advance. Not all cert providers need this (Let's Encrypt doesn't need it).",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EabConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "description": "DNS name (A, AAAA) for the certificate, must also be a valid DNS record. Explanation: Unless you own an IP block it's basically impossible to get a TLS cert for a bare ip address. DoT clients will either ignore the name on the certificate or allow the user to specify an alternative, so we can get an SSL cert that way.",
+          "type": "string"
+        }
+      }
+    },
+    "BackedIdentityArg": {
+      "description": "An identity with its associated secret.",
+      "oneOf": [
+        {
+          "description": "A file containing a generated key",
+          "type": "object",
+          "required": [
+            "local"
+          ],
+          "properties": {
+            "local": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "PC/SC card with ED25519 key",
+          "type": "object",
+          "required": [
+            "card"
+          ],
+          "properties": {
+            "card": {
+              "type": "object",
+              "required": [
+                "pcsc_id",
+                "pin"
+              ],
+              "properties": {
+                "pcsc_id": {
+                  "description": "Card to register, using id per pcscd (not identity id)",
+                  "type": "string"
+                },
+                "pin": {
+                  "description": "Card pin",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "BootstrapConfig": {
+      "type": "object",
+      "required": [
+        "addr",
+        "ident"
+      ],
+      "properties": {
+        "addr": {
+          "description": "Peer address.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/StrSocketAddr"
+            }
+          ]
+        },
+        "ident": {
+          "description": "Node ID at that address.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/NodeIdentity"
+            }
+          ]
+        }
+      }
+    },
+    "DnsBridgeConfig": {
+      "type": "object",
+      "required": [
+        "tcp_bind_addrs",
+        "udp_bind_addrs"
+      ],
+      "properties": {
+        "tcp_bind_addrs": {
+          "description": "TCP for DNS over TLS, but you need to proxy the TLS connection. Can be whatever (proxy's external port is normally 853).",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StrSocketAddr"
+          }
+        },
+        "tls": {
+          "description": "Self managed DNS over TLS via ACME.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AcmeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "udp_bind_addrs": {
+          "description": "Normal DNS - typically port 53.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StrSocketAddr"
+          }
+        }
+      }
+    },
+    "EabConfig": {
+      "type": "object",
+      "required": [
+        "hmac_b64",
+        "kid"
+      ],
+      "properties": {
+        "hmac_b64": {
+          "description": "Provided by ACME provider.",
+          "type": "string"
+        },
+        "kid": {
+          "description": "Provided by ACME provider.",
+          "type": "string"
+        }
+      }
+    },
+    "GlobalAddrConfig": {
+      "oneOf": [
+        {
+          "description": "Use this if you know the IP address beforehand (ex: in terraform, if you allocate a floating ip before provisioning this host) and it's not the address of any local interface.",
+          "type": "object",
+          "required": [
+            "fixed"
+          ],
+          "properties": {
+            "fixed": {
+              "type": "string",
+              "format": "ip"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "If your server is directly on the internet (with an externally reachable IP configured on an interface) this will cause that IP to be used. Specify an interface name (ex: `eth0`) or leave blank to scan all interfaces for a public IP.  All ipv6 addresses are considered public.",
+          "type": "object",
+          "required": [
+            "from_interface"
+          ],
+          "properties": {
+            "from_interface": {
+              "type": "object",
+              "properties": {
+                "ip_version": {
+                  "description": "Restrict to ip addresses of this version; unrestricted if empty.",
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/IpVer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "name": {
+                  "description": "Restrict to an interface with this name (like `eth0`); unrestricted if empty.",
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Look up a socket address via a remote service (ex: whatismyip). The service must reply with the ip address as plain text.",
+          "type": "object",
+          "required": [
+            "lookup"
+          ],
+          "properties": {
+            "lookup": {
+              "$ref": "#/definitions/GlobalAddrLookupConfig"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "GlobalAddrLookupConfig": {
+      "type": "object",
+      "required": [
+        "lookup"
+      ],
+      "properties": {
+        "contact_ip_ver": {
+          "description": "Which ip protocol to use to contact lookup server (hence: which ip ver the lookup server will see and return).  If empty, use any ip version.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IpVer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lookup": {
+          "description": "Host to look up address on.",
+          "type": "string"
+        }
+      }
+    },
+    "IpVer": {
+      "type": "string",
+      "enum": [
+        "v4",
+        "v6"
+      ]
+    },
+    "NodeConfig": {
+      "type": "object",
+      "required": [
+        "bind_addr"
+      ],
+      "properties": {
+        "bind_addr": {
+          "description": "The address the node will listen on (UDP).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/StrSocketAddr"
+            }
+          ]
+        },
+        "bootstrap": {
+          "description": "A list of peers to use to bootstrap the connection.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BootstrapConfig"
+          }
+        }
+      }
+    },
+    "NodeIdentity": {
+      "description": "A node identity (zbase32 string)",
+      "type": "string"
+    },
+    "PublisherConfig": {
+      "type": "object",
+      "required": [
+        "bind_addr"
+      ],
+      "properties": {
+        "advertise_port": {
+          "description": "Port the publisher is externally reachable on, for advertisements (if different from bind port).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "bind_addr": {
+          "description": "Port to bind for serving published data to other nodes",
+          "allOf": [
+            {
+              "$ref": "#/definitions/StrSocketAddr"
+            }
+          ]
+        }
+      }
+    },
+    "ResolverConfig": {
+      "type": "object",
+      "properties": {
+        "dns_bridge": {
+          "description": "Specify to enable the DNS bridge.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DnsBridgeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_cache": {
+          "description": "Maximum number of entries (identity, key pairs) in resolver cache.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "SelfIdentityConfig": {
+      "type": "object",
+      "required": [
+        "identity",
+        "self_publish",
+        "self_tls"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/definitions/BackedIdentityArg"
+        },
+        "self_publish": {
+          "description": "Wait for a local interface configured with a public ip and publish it using this server's identity.",
+          "type": "boolean"
+        },
+        "self_tls": {
+          "description": "Retrieve a TLS cert for the identity's domain (`.s`) and configure TLS on the public endpoint (https instead of http) via `certipasta.isandrew.com`.",
+          "type": "boolean"
+        }
+      }
+    },
+    "StrSocketAddr": {
+      "description": "An ip address or domain (ex: \"localhost\") which resolves to an address",
+      "type": "string"
+    }
+  }
+}

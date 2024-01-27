@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DnsA",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "v1"
+      ],
+      "properties": {
+        "v1": {
+          "$ref": "#/definitions/DnsA"
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "definitions": {
+    "DnsA": {
+      "description": "A list of Ipv4 addresses",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
