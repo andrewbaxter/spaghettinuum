@@ -312,8 +312,8 @@ impl Publisher {
                         }
                         for (i, (identity, announcement)) in announce_pairs.into_iter().enumerate() {
                             let accepted = node.put(identity.clone(), announcement.clone()).await;
-                            match accepted {
-                                Some(accepted) => match accepted {
+                            if let Some(accepted) = accepted {
+                                match accepted {
                                     Announcement::V1(accepted) => {
                                         let have_published = match &announcement {
                                             Announcement::V1(a) => a.parse_unwrap().published,
@@ -321,11 +321,10 @@ impl Publisher {
                                         if accepted.parse_unwrap().published > have_published {
                                             // Newer announcement published elsewhere, delete this announcement to save some
                                             // network effort
-                                            publisher.clear_identity(&identity).await.log(&log, WARN, "Error deleting announcement published elsewhere");
+                                            publisher.clear_identity(&identity).await.log(&log, WARN, "Error deleting obsolete announcement");
                                         }
                                     },
-                                },
-                                None => todo!(),
+                                }
                             }
                             if i + 1 == count {
                                 after = Some(identity);
