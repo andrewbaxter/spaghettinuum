@@ -3,11 +3,6 @@ use loga::{
     ea,
     ResultContext,
 };
-use openpgp_card_pcsc::PcscBackend;
-use openpgp_card_sequoia::{
-    state::Open,
-    Card,
-};
 use poem::{
     http::{
         Uri,
@@ -47,9 +42,6 @@ use spaghettinuum::{
         backed_identity::{
             get_identity_signer,
         },
-        pgp::{
-            self,
-        },
         local_identity::write_identity,
         htreq,
         publish_util,
@@ -59,6 +51,21 @@ use std::{
     collections::HashMap,
     env::self,
     str::FromStr,
+};
+#[cfg(feature = "card")]
+use spaghettinuum::{
+    utils::{
+        pgp::{
+            self,
+        },
+    },
+};
+#[cfg(feature = "card")]
+use openpgp_card_pcsc::PcscBackend;
+#[cfg(feature = "card")]
+use openpgp_card_sequoia::{
+    state::Open,
+    Card,
 };
 
 fn admin_headers() -> Result<HashMap<String, String>, loga::Error> {
@@ -236,6 +243,7 @@ mod args {
         /// Show the id for a local identity
         ShowLocal(AargvarkJson<BackedIdentityLocal>),
         /// List ids for usable pcsc cards (configured with curve25519/ed25519 signing keys)
+        #[cfg(feature = "card")]
         ListCards,
     }
 
@@ -471,6 +479,7 @@ async fn main() {
                         "id": identity.to_string()
                     })).unwrap());
                 },
+                #[cfg(feature = "card")]
                 args::Identity::ListCards => {
                     let mut out = vec![];
                     for card in PcscBackend::cards(None).stack_context(log, "Failed to list smart cards")? {

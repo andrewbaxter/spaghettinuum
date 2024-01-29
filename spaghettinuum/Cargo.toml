@@ -8,7 +8,7 @@ repository = "https://github.com/andrewbaxter/spaghettinuum"
 license = "ISC"
 
 [features]
-default = ["card"]
+default = []
 # Enable working with pc/sc cards as identities. Depends on pc/sc daemon and c libraries.
 card = [
     "dep:openpgp-card-pcsc",

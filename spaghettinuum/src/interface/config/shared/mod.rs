@@ -37,8 +37,8 @@ pub struct StrSocketAddr(pub String, Arc<Mutex<Option<SocketAddr>>>);
 
 impl StrSocketAddr {
     /// Only for serialization, dummy socketaddr with no lookup
-    pub fn new_fake(s: String) -> StrSocketAddr {
-        return StrSocketAddr(s, Arc::new(Mutex::new(None)));
+    pub fn new(s: impl ToString) -> StrSocketAddr {
+        return StrSocketAddr(s.to_string(), Arc::new(Mutex::new(None)));
     }
 
     pub fn resolve(&self) -> Result<SocketAddr, loga::Error> {
