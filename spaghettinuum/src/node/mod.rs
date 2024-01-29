@@ -743,7 +743,10 @@ impl Node {
                     }],
                     outstanding: vec![],
                     requested: HashSet::new(),
-                    value: None,
+                    value: match &goal {
+                        FindGoal::Coord(_) => None,
+                        FindGoal::Identity(i) => self.0.store.lock().unwrap().get(i).map(|x| x.value.clone()),
+                    },
                     futures: vec![],
                 }),
             };

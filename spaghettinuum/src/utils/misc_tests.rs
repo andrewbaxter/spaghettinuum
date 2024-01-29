@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(test, feature = "card"))]
 mod tests {
     use std::panic;
     use itertools::Itertools;

@@ -241,7 +241,15 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         Some(resolver_config) => {
             has_api_endpoints = true;
             let resolver =
-                Resolver::new(log, &tm, node.clone(), resolver_config.max_cache, &config.persistent_dir)
+                Resolver::new(
+                    log,
+                    &tm,
+                    node.clone(),
+                    resolver_config.max_cache,
+                    &config.persistent_dir,
+                    publisher.clone(),
+                    global_ips.clone(),
+                )
                     .await
                     .stack_context(log, "Error setting up resolver")?;
             if let Some(dns_config) = resolver_config.dns_bridge {

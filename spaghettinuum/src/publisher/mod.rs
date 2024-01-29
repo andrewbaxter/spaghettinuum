@@ -235,7 +235,7 @@ impl Publisher {
             db_pool: db_pool,
         }));
         tm.critical_task("Publisher - network server", {
-            let log = log.fork(ea!(subsys = "wirecol"));
+            let log = log.fork(ea!(subsys = "protocol"));
             let mut routes = Routes::new();
             let tm = tm.clone();
             routes.add("", Leaf::new().get(cap_fn!((mut r)(publisher, log) {
@@ -444,7 +444,7 @@ impl Publisher {
         return Ok(());
     }
 
-    async fn get_values(
+    pub async fn get_values(
         &self,
         identity: &Identity,
         keys: Vec<String>,
@@ -478,7 +478,7 @@ impl Publisher {
         }).await?);
     }
 
-    async fn list_value_keys(
+    pub async fn list_value_keys(
         &self,
         identity: &Identity,
         after: Option<String>,

@@ -192,7 +192,9 @@ pub async fn start_dns_bridge(
             match async {
                 ta_vis_res!(ResponseInfo);
                 let query_name = Name::from(request.query().name());
-                let mut query_name_iter = query_name.iter();
+                let mut query_name_parts = query_name.iter().collect::<Vec<_>>();
+                query_name_parts.reverse();
+                let mut query_name_iter = query_name_parts.iter().map(|x| *x);
                 let root = query_name_iter.next();
                 if request.query().query_class() == DNSClass::IN && (match root {
                     Some(b"s") | Some(b"s.") => true,
@@ -218,6 +220,9 @@ pub async fn start_dns_bridge(
                             .err_external()?;
                     let mut subdomain =
                         query_name_iter.map(|x| format!("{}.", String::from_utf8_lossy(x))).collect::<Vec<_>>();
+                    if subdomain.is_empty() {
+                        subdomain.push(".".to_string());
+                    }
                     subdomain.reverse();
                     let subdomain = subdomain.join("");
                     let (lookup_key, batch_keys) = match request.query().query_type() {
