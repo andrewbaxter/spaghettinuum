@@ -318,14 +318,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             if let Some(publisher) = &publisher {
                 api_endpoints.nest(
                     "publish",
-                    publisher::build_api_endpoints(
-                        publisher,
-                        config
-                            .admin_token
-                            .as_ref()
-                            .stack_context(&log, "The publisher is enabled but admin token is missing in the config")?,
-                        &config.persistent_dir,
-                    )
+                    publisher::build_api_endpoints(publisher, config.admin_token.as_ref(), &config.persistent_dir)
                         .await
                         .stack_context(&log, "Error building publisher endpoints")?,
                 );

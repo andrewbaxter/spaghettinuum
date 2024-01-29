@@ -498,7 +498,7 @@ impl Publisher {
 
 pub async fn build_api_endpoints(
     publisher: &Publisher,
-    admin_token: &str,
+    admin_token: Option<&String>,
     persist_dir: &Path,
 ) -> Result<Routes, loga::Error> {
     let db_pool =
@@ -672,190 +672,196 @@ pub async fn build_api_endpoints(
         })));
         routes
     });
-    routes.nest("admin", {
-        let admin_token = auth_hash(admin_token);
-        let mut routes = Routes::new();
-        routes.add("allowed_identities", Leaf::new().get(cap_fn!((r)(state, admin_token) {
-            match async {
-                ta_res!(Response);
+    if let Some(admin_token) = admin_token {
+        routes.nest("admin", {
+            let admin_token = auth_hash(admin_token);
+            let mut routes = Routes::new();
+            routes.add("allowed_identities", Leaf::new().get(cap_fn!((r)(state, admin_token) {
+                match async {
+                    ta_res!(Response);
 
-                // Auth
-                if !auth(&admin_token, &r.auth_bearer) {
-                    return Ok(Response::AuthErr);
-                }
+                    // Auth
+                    if !auth(&admin_token, &r.auth_bearer) {
+                        return Ok(Response::AuthErr);
+                    }
 
-                // Check params
-                #[derive(Debug, Deserialize)]
-                struct Params {
-                    after: Option<String>,
-                }
+                    // Check params
+                    #[derive(Debug, Deserialize)]
+                    struct Params {
+                        after: Option<String>,
+                    }
 
-                let query = match serde_urlencoded::from_str::<Params>(&r.query) {
-                    Ok(q) => q,
+                    let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                        Ok(q) => q,
+                        Err(e) => {
+                            return Ok(Response::user_err(format!("Invalid query parameters: {}", e)));
+                        },
+                    };
+                    let after = match &query.after {
+                        Some(i) => {
+                            Some(Identity::from_str(i)?)
+                        },
+                        None => None,
+                    };
+
+                    // Respond
+                    return Ok(Response::json(state.list_allowed_identities(after.as_ref()).await?));
+                }.await {
+                    Ok(d) => {
+                        return d;
+                    },
                     Err(e) => {
-                        return Ok(Response::user_err(format!("Invalid query parameters: {}", e)));
+                        state.publisher.0.log.log_err(WARN, e.context("Error getting published identities"));
+                        return Response::InternalErr;
                     },
-                };
-                let after = match &query.after {
-                    Some(i) => {
-                        Some(Identity::from_str(i)?)
+                }
+            })).post(cap_fn!((mut r)(state, admin_token) {
+                match async {
+                    ta_res!(Response);
+
+                    // Auth
+                    if !auth(&admin_token, &r.auth_bearer) {
+                        return Ok(Response::AuthErr);
+                    }
+
+                    // Check params
+                    ta_res!(Response);
+                    let Some(identity) = r.path.pop() else {
+                        return Ok(Response::user_err("Missing identity in path"));
+                    };
+                    let identity = Identity::from_str(&identity)?;
+
+                    // Respond
+                    return Ok(Response::json(state.allow_identity(&identity).await?));
+                }.await {
+                    Ok(d) => {
+                        return d;
                     },
-                    None => None,
-                };
-
-                // Respond
-                return Ok(Response::json(state.list_allowed_identities(after.as_ref()).await?));
-            }.await {
-                Ok(d) => {
-                    return d;
-                },
-                Err(e) => {
-                    state.publisher.0.log.log_err(WARN, e.context("Error getting published identities"));
-                    return Response::InternalErr;
-                },
-            }
-        })).post(cap_fn!((mut r)(state, admin_token) {
-            match async {
-                ta_res!(Response);
-
-                // Auth
-                if !auth(&admin_token, &r.auth_bearer) {
-                    return Ok(Response::AuthErr);
-                }
-
-                // Check params
-                ta_res!(Response);
-                let Some(identity) = r.path.pop() else {
-                    return Ok(Response::user_err("Missing identity in path"));
-                };
-                let identity = Identity::from_str(&identity)?;
-
-                // Respond
-                return Ok(Response::json(state.allow_identity(&identity).await?));
-            }.await {
-                Ok(d) => {
-                    return d;
-                },
-                Err(e) => {
-                    state.publisher.0.log.log_err(WARN, e.context("Error registering identity for publishing"));
-                    return Response::InternalErr;
-                },
-            }
-        })).delete(cap_fn!((mut r)(state, admin_token) {
-            match async {
-                ta_res!(Response);
-
-                // Auth
-                if !auth(&admin_token, &r.auth_bearer) {
-                    return Ok(Response::AuthErr);
-                }
-
-                // Check params
-                ta_res!(Response);
-                let Some(identity) = r.path.pop() else {
-                    return Ok(Response::user_err("Missing identity in path"));
-                };
-                let identity = Identity::from_str(&identity)?;
-
-                // Respond
-                state.disallow_identity(&identity).await?;
-                state.publisher.clear_identity(&identity).await?;
-                return Ok(Response::Ok);
-            }.await {
-                Ok(d) => {
-                    return d;
-                },
-                Err(e) => {
-                    state.publisher.0.log.log_err(WARN, e.context("Error unregistering identity for publishing"));
-                    return Response::InternalErr;
-                },
-            }
-        })));
-        routes.add("keys", Leaf::new().get(cap_fn!((mut r)(state, admin_token) {
-            // Auth
-            if !auth(&admin_token, &r.auth_bearer) {
-                return Response::AuthErr;
-            }
-            match async {
-                ta_res!(Response);
-                let Some(identity) = r.path.pop() else {
-                    return Ok(Response::user_err("Missing identity in path"));
-                };
-                let identity = Identity::from_str(&identity)?;
-
-                #[derive(Debug, Deserialize)]
-                struct Params {
-                    after: Option<String>,
-                }
-
-                let query = match serde_urlencoded::from_str::<Params>(&r.query) {
-                    Ok(q) => q,
                     Err(e) => {
-                        return Ok(Response::UserErr(format!("Invalid query parameters: {}", e)));
+                        state.publisher.0.log.log_err(WARN, e.context("Error registering identity for publishing"));
+                        return Response::InternalErr;
                     },
-                };
-
-                // Respond
-                return Ok(Response::json(state.publisher.list_value_keys(&identity, query.after).await?));
-            }.await {
-                Ok(d) => {
-                    return d;
-                },
-                Err(e) => {
-                    state.publisher.0.log.log_err(WARN, e.context("Error getting published keys for identity"));
-                    return Response::InternalErr;
-                },
-            }
-        })));
-        routes.add("announcements", Leaf::new().get(cap_fn!((r)(state, admin_token) {
-            // Auth
-            if !auth(&admin_token, &r.auth_bearer) {
-                return Response::AuthErr;
-            }
-            match async {
-                ta_res!(Response);
-
-                #[derive(Debug, Deserialize)]
-                struct Params {
-                    after: Option<String>,
                 }
+            })).delete(cap_fn!((mut r)(state, admin_token) {
+                match async {
+                    ta_res!(Response);
 
-                let query = match serde_urlencoded::from_str::<Params>(&r.query) {
-                    Ok(q) => q,
+                    // Auth
+                    if !auth(&admin_token, &r.auth_bearer) {
+                        return Ok(Response::AuthErr);
+                    }
+
+                    // Check params
+                    ta_res!(Response);
+                    let Some(identity) = r.path.pop() else {
+                        return Ok(Response::user_err("Missing identity in path"));
+                    };
+                    let identity = Identity::from_str(&identity)?;
+
+                    // Respond
+                    state.disallow_identity(&identity).await?;
+                    state.publisher.clear_identity(&identity).await?;
+                    return Ok(Response::Ok);
+                }.await {
+                    Ok(d) => {
+                        return d;
+                    },
                     Err(e) => {
-                        return Ok(Response::UserErr(format!("Invalid query parameters: {}", e)));
-                    },
-                };
-                let after = match query.after {
-                    Some(i) => {
-                        Some(Identity::from_str(&i)?)
-                    },
-                    None => None,
-                };
-
-                // Respond
-                return Ok(
-                    Response::json(
                         state
                             .publisher
-                            .list_announcements(after.as_ref())
-                            .await?
-                            .into_iter()
-                            .map(|e| e.0)
-                            .collect::<Vec<_>>(),
-                    ),
-                );
-            }.await {
-                Ok(d) => {
-                    return d;
-                },
-                Err(e) => {
-                    state.publisher.0.log.log_err(WARN, e.context("Error getting published identities"));
-                    return Response::InternalErr;
-                },
-            }
-        })));
-        routes
-    });
+                            .0
+                            .log
+                            .log_err(WARN, e.context("Error unregistering identity for publishing"));
+                        return Response::InternalErr;
+                    },
+                }
+            })));
+            routes.add("keys", Leaf::new().get(cap_fn!((mut r)(state, admin_token) {
+                // Auth
+                if !auth(&admin_token, &r.auth_bearer) {
+                    return Response::AuthErr;
+                }
+                match async {
+                    ta_res!(Response);
+                    let Some(identity) = r.path.pop() else {
+                        return Ok(Response::user_err("Missing identity in path"));
+                    };
+                    let identity = Identity::from_str(&identity)?;
+
+                    #[derive(Debug, Deserialize)]
+                    struct Params {
+                        after: Option<String>,
+                    }
+
+                    let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                        Ok(q) => q,
+                        Err(e) => {
+                            return Ok(Response::UserErr(format!("Invalid query parameters: {}", e)));
+                        },
+                    };
+
+                    // Respond
+                    return Ok(Response::json(state.publisher.list_value_keys(&identity, query.after).await?));
+                }.await {
+                    Ok(d) => {
+                        return d;
+                    },
+                    Err(e) => {
+                        state.publisher.0.log.log_err(WARN, e.context("Error getting published keys for identity"));
+                        return Response::InternalErr;
+                    },
+                }
+            })));
+            routes.add("announcements", Leaf::new().get(cap_fn!((r)(state, admin_token) {
+                // Auth
+                if !auth(&admin_token, &r.auth_bearer) {
+                    return Response::AuthErr;
+                }
+                match async {
+                    ta_res!(Response);
+
+                    #[derive(Debug, Deserialize)]
+                    struct Params {
+                        after: Option<String>,
+                    }
+
+                    let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                        Ok(q) => q,
+                        Err(e) => {
+                            return Ok(Response::UserErr(format!("Invalid query parameters: {}", e)));
+                        },
+                    };
+                    let after = match query.after {
+                        Some(i) => {
+                            Some(Identity::from_str(&i)?)
+                        },
+                        None => None,
+                    };
+
+                    // Respond
+                    return Ok(
+                        Response::json(
+                            state
+                                .publisher
+                                .list_announcements(after.as_ref())
+                                .await?
+                                .into_iter()
+                                .map(|e| e.0)
+                                .collect::<Vec<_>>(),
+                        ),
+                    );
+                }.await {
+                    Ok(d) => {
+                        return d;
+                    },
+                    Err(e) => {
+                        state.publisher.0.log.log_err(WARN, e.context("Error getting published identities"));
+                        return Response::InternalErr;
+                    },
+                }
+            })));
+            routes
+        });
+    }
     return Ok(routes);
 }

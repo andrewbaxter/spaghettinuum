@@ -51,8 +51,8 @@ pub struct Config {
     /// public endpoints.
     #[serde(default)]
     pub api_bind_addrs: Vec<StrSocketAddr>,
-    /// When configuring the publisher, admin endpoints must be accessed with this as a
-    /// bearer http authorization token.  Required for publisher.
+    /// HTTP authorization bearer token for accessing publisher admin endpoints. If
+    /// None, remote admin operations will be disabled (only self-publish will work).
     #[serde(default)]
     pub admin_token: Option<String>,
     /// An backed identity (by file or card) this server can use as its own.  See the
