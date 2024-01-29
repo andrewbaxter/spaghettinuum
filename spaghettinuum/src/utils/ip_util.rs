@@ -108,10 +108,14 @@ pub async fn local_resolve_global_ip(
     return Ok(None);
 }
 
-pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer>) -> Result<IpAddr, loga::Error> {
+pub async fn remote_resolve_global_ip(
+    log: &Log,
+    lookup: &str,
+    contact_ip_ver: Option<IpVer>,
+) -> Result<IpAddr, loga::Error> {
     use tower_service::Service;
 
-    let log = &Log::new().fork(ea!(lookup = lookup));
+    let log = &log.fork(ea!(lookup = lookup));
     let lookup = hyper::Uri::from_str(&lookup).stack_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
     let (lookup_scheme, lookup_host, lookup_port) = uri_parts(&lookup).stack_context(log, "Incomplete URL")?;
     let (lookup_ip, lookup_host) = match lookup_host {
@@ -141,6 +145,7 @@ pub async fn remote_resolve_global_ip(lookup: &str, contact_ip_ver: Option<IpVer
     };
     let resp =
         htreq::send(
+            log,
             HttpsConnectorBuilder::new()
                 .with_tls_config(rustls_client_config())
                 .https_or_http()
@@ -187,7 +192,7 @@ pub async fn resolve_global_ip(log: &Log, config: GlobalAddrConfig) -> Result<Ip
         },
         GlobalAddrConfig::Lookup(lookup) => {
             let res = loop {
-                match remote_resolve_global_ip(&lookup.lookup, lookup.contact_ip_ver).await {
+                match remote_resolve_global_ip(log, &lookup.lookup, lookup.contact_ip_ver).await {
                     Ok(r) => break r,
                     Err(e) => {
                         log.log_err(

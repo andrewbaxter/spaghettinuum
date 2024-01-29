@@ -2,15 +2,46 @@
 
 The spaghettinuum is an alternative to DNS based around a distributed hash table (DHT). Replacing the web with a plate of pasta. A little less centralized and a little more noodly.
 
+```console
+# spagh identity new-local ./my.ident
+{
+  "id": "yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r"
+}
+# spagh announce local ./my.ident
+# spagh set local ./my.ident - << BODY
+{
+  "dns/./a": {
+    "v1": ["203.0.113.111"]
+  },
+  "serial_number": {
+    "ttl": 60,
+    "data": {
+      "long": "1234123412341234-1234",
+      "short": "1234"
+    }
+  }
+}
+BODY
+# dig yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s
+...
+203.0.113.111
+...
+# spagh get yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r serial_number
+{
+  "long": "1234123412341234-1234",
+  "short": "1234"
+}
+```
+
 Why it's cool:
 
 - Own your identity - even if you quit, nobody else can use your identity
-- No hoops to jump through to get an ID, no WHOIS information
-- Simple, both design and use
+- No hoops to jump through to get an ID, no WHOIS requirements
+- Simple
 - DNS bridge for compatibility with existing software
 - Smartcard/PCSC/GPG-card backed identities, optionally, as an excuse to buy a Yubikey 5 Nano
 
-**Current status**: Feature complete but very new -- expect bugs.
+**Current status**: Feature complete but very new -- expect bugs and major changes.
 
 _This repo_ is
 
@@ -45,7 +76,7 @@ Try using it to host a site, send email, or do service discovery.
 
 ## Why not DNS
 
-DNS often functions as an identity - who you are online is often tied to a domain name, like your email address. Every day more things rely on DNS: encryption (TLS cert issuing validations), Matrix, that new Twitter replacement.
+DNS often functions as an identity: who you are online is often tied to a domain name, like your email address. Every day more things rely on DNS... encryption (TLS cert issuing validations), Matrix, that new Twitter replacement.
 
 Having an such an identity is important, but despite regulations the DNS system locks you in to all sorts of abuse:
 

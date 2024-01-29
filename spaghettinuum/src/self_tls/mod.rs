@@ -86,7 +86,7 @@ pub async fn request_cert(
         "Sending cert request body",
         ea!(url = CERTIFIER_URL, body = String::from_utf8_lossy(&body)),
     );
-    let body = htreq::post(CERTIFIER_URL, &HashMap::new(), body, 100 * 1024).await?;
+    let body = htreq::post(log, CERTIFIER_URL, &HashMap::new(), body, 100 * 1024).await?;
     return Ok(serde_json::from_slice(&body).context("Error parsing cert request response body as json")?);
 }
 

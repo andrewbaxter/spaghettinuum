@@ -24,15 +24,15 @@ Using [`spagh`](./reference_spagh.md) you can:
 
 - Create a local identity
 
-  Run `spagh identity new-local me.spagh`
+  Run `spagh identity new-local my.ident`
 
-  This will create a new identity at `me.spagh` and print out the id of the identity.
+  This will create a new identity at `my.ident` and print out the id of the identity.
 
   The id of the identity (like `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r`) is used for lookups and can be used as a DNS name when suffixed with `.s` (ex: `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s`).
 
 - Get the id of a local identity
 
-  Run `spagh identity show-local me.spagh`
+  Run `spagh identity show-local my.ident`
 
   This will print the id of the identity again
 
@@ -68,12 +68,12 @@ When running publishing commands or running servers that self-publish you need t
 
 - On the command line, you'll specify an identity like
 
-  - `local ./me.spagh`
+  - `local ./my.ident`
 
   - or `card 0006:12341234 5678` where `5678` is the PIN. Alternatively you can use `-` for the PIN and it will ask for you to type it in in the terminal.
 
 - In configs you'll specify an identity like
 
-  - `{"local": "./me.spagh"}`
+  - `{"local": "./my.ident"}`
 
   - or `{"card": {"pcsc_id": "0006:12341234", "pin": "5678"}}`

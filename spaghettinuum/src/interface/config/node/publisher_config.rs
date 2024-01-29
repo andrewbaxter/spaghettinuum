@@ -5,8 +5,6 @@ use serde::{
 };
 use crate::interface::config::shared::StrSocketAddr;
 
-pub const PORT_PUBLISHER: u16 = 43891;
-
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct PublisherConfig {

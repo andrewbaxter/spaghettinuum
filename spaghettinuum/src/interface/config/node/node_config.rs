@@ -8,8 +8,6 @@ use crate::interface::{
     stored::node_identity::NodeIdentity,
 };
 
-pub const PORT_NODE: u16 = 43890;
-
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct BootstrapConfig {

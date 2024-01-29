@@ -26,6 +26,8 @@ use spaghettinuum::{
     interface::{
         config::{
             node::Config,
+            DebugFlag,
+            Flag,
             ENV_CONFIG,
         },
         stored::{
@@ -64,15 +66,13 @@ use spaghettinuum::{
         log::{
             Log,
             INFO,
-            DEBUG_OTHER,
             DEBUG_DNS_S,
-            DEBUG_DNS_OTHER,
+            DEBUG_DNS,
             DEBUG_NODE,
             DEBUG_PUBLISH,
             DEBUG_RESOLVE,
-            DEBUG_API,
             DEBUG_SELF_TLS,
-            NON_DEBUG,
+            NON_DEBUG_FLAGS,
         },
         db_util,
         publish_util::generate_publish_announce,
@@ -94,22 +94,11 @@ use tokio_stream::{
 
 #[derive(Aargvark)]
 struct Args {
-    /// Server config - see `spagh-cli`'s generate commands for a basic template, or
-    /// refer to the json schema in the `spagh` repo.
+    /// Refer to the readme for the json schema
     pub config: Option<AargvarkJson<Config>>,
-    /// Enable default debug logging, additive with other debug options.
-    pub debug: Option<()>,
-    /// Enable node debug logging, additive with other debug options.
-    pub debug_node: Option<()>,
-    /// Enable resolver debug logging, additive with other debug options.
-    pub debug_resolver: Option<()>,
-    /// Enable dns `.s` domain debug logging, additive with other debug options.
-    pub debug_dns_s: Option<()>,
-    /// Enable forwarded dns debug logging, additive with other debug options.
-    pub debug_dns_other: Option<()>,
-    /// Enable publisher debug logging, additive with other debug options.
-    pub debug_publisher: Option<()>,
-    pub debug_other: Option<()>,
+    /// Enable default debug logging, or specific log levels
+    #[vark(break)]
+    pub debug: Option<Vec<DebugFlag>>,
 }
 
 async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Error> {
@@ -383,34 +372,19 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
 #[tokio::main]
 async fn main() {
     let args = aargvark::vark::<Args>();
-    let mut flags = NON_DEBUG;
-    if args.debug.is_some() {
-        flags |= DEBUG_NODE;
-        flags |= DEBUG_PUBLISH;
-        flags |= DEBUG_RESOLVE;
-        flags |= DEBUG_DNS_S;
+    let mut flags = NON_DEBUG_FLAGS.to_vec();
+    if let Some(f) = &args.debug {
+        if f.is_empty() {
+            flags.push(DEBUG_NODE);
+            flags.push(DEBUG_PUBLISH);
+            flags.push(DEBUG_RESOLVE);
+            flags.push(DEBUG_DNS);
+            flags.push(DEBUG_DNS_S);
+        } else {
+            flags.extend(f.into_iter().map(|x| Flag::Debug(*x)));
+        }
     }
-    if args.debug_node.is_some() {
-        flags |= DEBUG_NODE;
-    }
-    if args.debug_resolver.is_some() {
-        flags |= DEBUG_RESOLVE;
-    }
-    if args.debug_dns_s.is_some() {
-        flags |= DEBUG_DNS_S;
-    }
-    if args.debug_dns_other.is_some() {
-        flags |= DEBUG_DNS_OTHER;
-    }
-    if args.debug_publisher.is_some() {
-        flags |= DEBUG_PUBLISH;
-    }
-    if args.debug_other.is_some() {
-        flags |= DEBUG_API;
-        flags |= DEBUG_SELF_TLS;
-        flags |= DEBUG_OTHER;
-    }
-    let log = &Log::new().with_flags(flags);
+    let log = &Log::new().with_flags(&flags);
     let tm = taskmanager::TaskManager::new();
     match inner(log, &tm, args).await.map_err(|e| {
         tm.terminate();

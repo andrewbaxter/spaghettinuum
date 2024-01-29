@@ -19,10 +19,11 @@ use http_body_util::{
     Empty,
 };
 use hyper::{
+    body::Bytes,
+    HeaderMap,
     Request,
     StatusCode,
     Uri,
-    body::Bytes,
 };
 use hyper_rustls::{
     HttpsConnectorBuilder,
@@ -30,6 +31,7 @@ use hyper_rustls::{
 };
 use loga::{
     ea,
+    DebugDisplay,
     ResultContext,
 };
 use rand::{
@@ -49,6 +51,7 @@ use crate::{
     ta_res,
     utils::log::Log,
 };
+use super::log::DEBUG_HTREQ;
 
 pub fn rustls_client_config() -> rustls::ClientConfig {
     static S: OnceLock<rustls::ClientConfig> = OnceLock::new();
@@ -68,8 +71,8 @@ pub enum HostPart {
     Name(String),
 }
 
-pub fn uri_parts(uri: &Uri) -> Result<(String, HostPart, u16), loga::Error> {
-    let host = uri.host().context("Url is missing host")?;
+pub fn uri_parts(url: &Uri) -> Result<(String, HostPart, u16), loga::Error> {
+    let host = url.host().context("Url is missing host")?;
     if host.is_empty() {
         return Err(loga::err("Host portion of url is empty"));
     }
@@ -94,8 +97,8 @@ pub fn uri_parts(uri: &Uri) -> Result<(String, HostPart, u16), loga::Error> {
     } else {
         HostPart::Name(host.to_string())
     };
-    let scheme = uri.scheme().context("Url is missing scheme")?.to_string();
-    let port = match uri.port_u16() {
+    let scheme = url.scheme().context("Url is missing scheme")?.to_string();
+    let port = match url.port_u16() {
         Some(p) => p,
         None => match scheme.as_str() {
             "http" => 80,
@@ -110,9 +113,11 @@ pub async fn send<
     ID: Send,
     IE: std::error::Error + Send + Sync + 'static,
     I: http_body::Body<Data = ID, Error = IE> + 'static,
->(conn: Conn, max_size: usize, max_time: Duration, req: Request<I>) -> Result<Vec<u8>, loga::Error> {
+>(log: &Log, conn: Conn, max_size: usize, max_time: Duration, req: Request<I>) -> Result<Vec<u8>, loga::Error> {
+    let method = req.method().to_string();
+    let url = req.uri().to_string();
     let read = async move {
-        ta_res!((Vec < u8 >, StatusCode));
+        ta_res!((StatusCode, HeaderMap < _ >, Vec < u8 >));
         let (mut sender, mut conn) =
             hyper::client::conn::http1::handshake(conn).await.context("Error completing http handshake")?;
         let work = sender.send_request(req);
@@ -123,37 +128,49 @@ pub async fn send<
             r = work => r,
         }.context("Error sending request")?;
         let status = resp.status();
+        let headers = resp.headers().clone();
         let work = Limited::new(resp.into_body(), max_size).collect();
-        let resp = select!{
+        let body = select!{
             _ =& mut conn => {
                 return Err(loga::err("Connection failed while reading body"));
             }
             r = work => r,
         }.map_err(|e| loga::err_with("Error reading response", ea!(err = e)))?.to_bytes().to_vec();
-        return Ok((resp, status));
+        return Ok((status, headers, body));
     };
-    let (resp, status) = select!{
+    let (status, headers, body) = select!{
         _ = sleep(max_time.to_std().unwrap()) => {
             return Err(loga::err("Timeout waiting for response from server"));
         }
         x = read => x ?,
     };
+    log.log_with(
+        DEBUG_HTREQ,
+        "Receive",
+        ea!(
+            method = method,
+            url = url,
+            status = status,
+            headers = headers.dbg_str(),
+            body = String::from_utf8_lossy(&body)
+        ),
+    );
     if !status.is_success() {
         return Err(
             loga::err_with(
                 "Server returned error response",
-                ea!(status = status, body = String::from_utf8_lossy(&resp)),
+                ea!(status = status, body = String::from_utf8_lossy(&body)),
             ),
         );
     }
-    return Ok(resp);
+    return Ok(body);
 }
 
 /// Creates a new HTTPS/HTTP connection with default settings.  `base_uri` is just
 /// used for schema, host, and port.
-pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
-    let log = &Log::new().fork(ea!(uri = base_uri));
-    let (scheme, host, port) = uri_parts(base_uri).stack_context(log, "Incomplete url")?;
+pub async fn new_conn(base_url: &Uri) -> Result<Conn, loga::Error> {
+    let log = &Log::new().fork(ea!(url = base_url));
+    let (scheme, host, port) = uri_parts(base_url).stack_context(log, "Incomplete url")?;
     let (try_ips, host) = match host {
         HostPart::Ip(i) => (vec![i], i.to_string()),
         HostPart::Name(host) => {
@@ -242,51 +259,61 @@ pub async fn new_conn(base_uri: &Uri) -> Result<Conn, loga::Error> {
 }
 
 pub async fn post(
-    uri: impl AsRef<str>,
+    log: &Log,
+    url: impl AsRef<str>,
     headers: &HashMap<String, String>,
     body: Vec<u8>,
     max_size: usize,
 ) -> Result<Vec<u8>, loga::Error> {
-    let uri = uri.as_ref();
-    let uri = Uri::from_str(uri).context_with("URI couldn't be parsed", ea!(uri = uri))?;
+    let url = url.as_ref();
+    let url = Uri::from_str(url).context_with("URI couldn't be parsed", ea!(url = url))?;
     let req = Request::builder();
-    let mut req = req.method("POST").uri(uri.clone());
+    let mut req = req.method("POST").uri(url.clone());
     for (k, v) in headers.iter() {
         req = req.header(k, v);
     }
-    let conn = new_conn(&uri).await?;
+    log.log_with(
+        DEBUG_HTREQ,
+        "Send",
+        ea!(method = "POST", url = url, headers = req.headers_ref().dbg_str(), body = String::from_utf8_lossy(&body)),
+    );
+    let conn = new_conn(&url).await?;
     return Ok(
-        send(conn, max_size, Duration::seconds(10), req.body(Full::new(Bytes::from(body))).unwrap())
+        send(log, conn, max_size, Duration::seconds(10), req.body(Full::new(Bytes::from(body))).unwrap())
             .await
-            .context_with("Error sending POST", ea!(uri = uri))?,
+            .context_with("Error sending POST", ea!(url = url))?,
     );
 }
 
 pub async fn get(
-    uri: impl AsRef<str>,
+    log: &Log,
+    url: impl AsRef<str>,
     headers: &HashMap<String, String>,
     max_size: usize,
 ) -> Result<Vec<u8>, loga::Error> {
-    let uri = uri.as_ref();
-    let uri = Uri::from_str(uri).context_with("URI couldn't be parsed", ea!(uri = uri))?;
+    let url = url.as_ref();
+    let url = Uri::from_str(url).context_with("URI couldn't be parsed", ea!(url = url))?;
     let req = Request::builder();
-    let mut req = req.method("GET").uri(uri.clone());
+    const METHOD: &'static str = "GET";
+    let mut req = req.method(METHOD).uri(url.clone());
     for (k, v) in headers.iter() {
         req = req.header(k, v);
     }
+    log.log_with(DEBUG_HTREQ, "Send", ea!(method = METHOD, url = url, headers = req.headers_ref().dbg_str()));
     return Ok(
-        send(new_conn(&uri).await?, max_size, Duration::seconds(10), req.body(Empty::<Bytes>::new()).unwrap())
+        send(log, new_conn(&url).await?, max_size, Duration::seconds(10), req.body(Empty::<Bytes>::new()).unwrap())
             .await
-            .context_with("Error sending GET", ea!(uri = uri))?,
+            .context_with("Error sending GET", ea!(url = url))?,
     );
 }
 
 pub async fn get_text(
-    uri: impl AsRef<str>,
+    log: &Log,
+    url: impl AsRef<str>,
     headers: &HashMap<String, String>,
     max_size: usize,
 ) -> Result<String, loga::Error> {
-    let body = get(uri, headers, max_size).await?;
+    let body = get(log, url, headers, max_size).await?;
     return Ok(
         String::from_utf8(
             body,
@@ -300,20 +327,23 @@ pub async fn get_text(
 }
 
 pub async fn delete(
-    uri: impl AsRef<str>,
+    log: &Log,
+    url: impl AsRef<str>,
     headers: &HashMap<String, String>,
     max_size: usize,
 ) -> Result<Vec<u8>, loga::Error> {
-    let uri = uri.as_ref();
-    let uri = Uri::from_str(uri).context_with("URI couldn't be parsed", ea!(uri = uri))?;
+    let url = url.as_ref();
+    let url = Uri::from_str(url).context_with("URL couldn't be parsed", ea!(url = url))?;
     let req = Request::builder();
-    let mut req = req.method("DELETE").uri(uri.clone());
+    const METHOD: &'static str = "DELETE";
+    let mut req = req.method(METHOD).uri(url.clone());
     for (k, v) in headers.iter() {
         req = req.header(k, v);
     }
+    log.log_with(DEBUG_HTREQ, "Send", ea!(method = METHOD, url = url, headers = req.headers_ref().dbg_str()));
     return Ok(
-        send(new_conn(&uri).await?, max_size, Duration::seconds(10), req.body(Empty::<Bytes>::new()).unwrap())
+        send(log, new_conn(&url).await?, max_size, Duration::seconds(10), req.body(Empty::<Bytes>::new()).unwrap())
             .await
-            .context_with("Error sending DELETE", ea!(uri = uri))?,
+            .context_with("Error sending DELETE", ea!(url = url))?,
     );
 }

@@ -32,7 +32,7 @@ use crate::{
         log::{
             Log,
             DEBUG_DNS_S,
-            DEBUG_DNS_OTHER,
+            DEBUG_DNS_NONS,
             DEBUG_DNS,
             WARN,
             INFO,
@@ -444,7 +444,7 @@ pub async fn start_dns_bridge(
                     self
                         .0
                         .log
-                        .log_with(DEBUG_DNS_OTHER, "Received non-spagh request", ea!(request = request.dbg_str()));
+                        .log_with(DEBUG_DNS_NONS, "Received non-spagh request", ea!(request = request.dbg_str()));
                     let resp = self1.upstream.send(DnsRequest::new(Message::from(MessageParts {
                         header: *request.header(),
                         queries: vec![{
@@ -598,15 +598,6 @@ pub async fn start_dns_bridge(
                 .stack_context_with(&log, "Opening UDP listener failed", ea!(socket = bind_addr))?,
         );
     }
-    for bind_addr in &dns_config.tcp_bind_addrs {
-        let bind_addr = bind_addr.resolve()?;
-        server.register_listener(
-            TcpListener::bind(&bind_addr)
-                .await
-                .stack_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
-            Duration::seconds(10).to_std().unwrap(),
-        );
-    }
     if let Some(tls) = dns_config.tls {
         let log = log.fork(ea!(subsys = "dot-tls-acme", names = global_addrs.dbg_str()));
         let log = &log;
@@ -624,7 +615,7 @@ pub async fn start_dns_bridge(
         if let Some((pub_pem, priv_pem)) = initial_certs.pub_pem.zip(initial_certs.priv_pem) {
             let expires_at = extract_expiry(pub_pem.as_bytes()).context("Error reading expiry from initial certs")?;
             log.log_with(
-                DEBUG_DNS_S | DEBUG_DNS_OTHER,
+                DEBUG_DNS,
                 "Loaded existing cert",
                 ea!(expiry = <DateTime<Utc>>::from(expires_at).to_rfc3339()),
             );
@@ -812,7 +803,7 @@ pub async fn start_dns_bridge(
                 return Ok(()) as Result<_, loga::Error>;
             }
         });
-        for bind_addr in &tls.bind_addrs {
+        for bind_addr in &dns_config.tcp_bind_addrs {
             let bind_addr = bind_addr.resolve()?;
             server
                 .register_tls_listener_with_tls_config(
@@ -828,6 +819,16 @@ pub async fn start_dns_bridge(
                     ),
                 )
                 .stack_context_with(log, "Error registering TLS listener", ea!(bind_addr = bind_addr))?;
+        }
+    } else {
+        for bind_addr in &dns_config.tcp_bind_addrs {
+            let bind_addr = bind_addr.resolve()?;
+            server.register_listener(
+                TcpListener::bind(&bind_addr)
+                    .await
+                    .stack_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
+                Duration::seconds(10).to_std().unwrap(),
+            );
         }
     }
     tm.critical_task::<_, loga::Error>("DNS bridge - server", {

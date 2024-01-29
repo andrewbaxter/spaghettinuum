@@ -8,13 +8,26 @@ version = "0.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11851e37d46b9ce2cfeaf65625f68f1d13c9146898d939238447c2ddb117ad17"
 dependencies = [
- "aargvark_proc_macros",
+ "aargvark_proc_macros 0.0.3",
+ "comfy-table",
+ "console",
+ "convert_case 0.6.0",
+]
+
+[[package]]
+name = "aargvark"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f13a912c04edc60d2dea87ba5d9e4ae1fc35a67eb5dbb253771702f38fd87681"
+dependencies = [
+ "aargvark_proc_macros 0.0.6",
  "comfy-table",
  "console",
  "convert_case 0.6.0",
  "http 1.0.0",
  "serde",
  "serde_json",
+ "textwrap",
  "url",
 ]
 
@@ -25,6 +38,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "938de5f9f9018a81d07b8c54920ce635cfa73c95a2e57d2f6ab66f07210a3832"
 dependencies = [
  "convert_case 0.6.0",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "aargvark_proc_macros"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a98ad73839e99920904493f46835a86d8bdcf0dd4fbcc7643919c4dd4c72bc4"
+dependencies = [
+ "convert_case 0.6.0",
+ "genemichaels 0.2.3",
  "proc-macro2",
  "quote",
  "syn 1.0.109",
@@ -52,7 +78,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77c3a9648d43b9cd48db467b3f87fdd6e146bcc88ab0180006cef2179fe11d01"
 dependencies = [
  "cfg-if 1.0.0",
+ "getrandom",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -1148,6 +1176,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
+name = "fancy-regex"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b95f7c0680e4142284cf8b22c14a476e87d61b004a3a0861872b32ef7ead40a2"
+dependencies = [
+ "bit-set",
+ "regex",
+]
+
+[[package]]
 name = "fastrand"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1219,6 +1257,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fraction"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3027ae1df8d41b4bed2241c8fdad4acc1e7af60c8e17743534b545e77182d678"
+dependencies = [
+ "lazy_static",
+ "num",
 ]
 
 [[package]]
@@ -1345,6 +1393,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "genemichaels"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a88a0838564a7e0eda043829db218b17b9acbe5a497822ec8a13623f88052a53"
+dependencies = [
+ "aargvark 0.0.8",
+ "cargo-manifest",
+ "console",
+ "derive_more",
+ "loga 0.1.7",
+ "markdown",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "structre",
+ "syn 1.0.109",
+ "threadpool",
+ "walkdir",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1388,7 +1458,7 @@ checksum = "ce3b00f8cf3e0b5c7318c1adbcbca8734ef90edb6a41e0204e0fe9d49f7133f6"
 dependencies = [
  "chrono",
  "enum_dispatch",
- "genemichaels",
+ "genemichaels 0.1.21",
  "hex",
  "proc-macro2",
  "quote",
@@ -1926,6 +1996,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iso8601"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "924e5d73ea28f59011fec52a0d12185d496a9b075d360657aed2a5707f701153"
+dependencies = [
+ "nom",
+]
+
+[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1947,6 +2026,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a1d36f1235bc969acba30b7f5990b864423a6068a10f7c90ae8f0112e3a59d1"
 dependencies = [
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jsonschema"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a071f4f7efc9a9118dfb627a0a94ef247986e1ab8606a4c806ae2b3aa3b6978"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "base64",
+ "bytecount",
+ "clap",
+ "fancy-regex",
+ "fraction",
+ "getrandom",
+ "iso8601",
+ "itoa",
+ "memchr",
+ "num-cmp",
+ "once_cell",
+ "parking_lot",
+ "percent-encoding",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "time",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2100,11 +2209,21 @@ checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 
 [[package]]
 name = "loga"
-version = "0.3.10"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d57f16a85b295624c2c8ef7e8754736baa0f4fcbf0f2bd0c0909cec6e535ec8a"
+checksum = "fc4e8caa542fa702b69ef85dc70c23e50a1ef76ffcd1fa35e802a14bf19074bd"
 dependencies = [
- "bitflags 2.4.2",
+ "chrono",
+ "console",
+ "textwrap",
+]
+
+[[package]]
+name = "loga"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f4c823aa555242737bd893f76bfee5669a71f142e42da91fb6dad229c916b74"
+dependencies = [
  "chrono",
  "console",
  "textwrap",
@@ -2298,6 +2417,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "num"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b05180d69e3da0e530ba2a1dae5110317e49e3b7f3d41be227dc5f92e49ee7af"
+dependencies = [
+ "num-bigint",
+ "num-complex",
+ "num-integer",
+ "num-iter",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2326,6 +2459,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-cmp"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63335b2e2c34fae2fb0aa2cecfd9f0832a1e24b3b32ecec612c3426d46dc8aaa"
+
+[[package]]
+name = "num-complex"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ba157ca0885411de85d6ca030ba7e2a83a28636056c7c699b07c8b6f7383214"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "num-integer"
 version = "0.1.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2342,6 +2490,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d03e6c028c5dc5cac6e2dec0efda81fc887605bb3d884578bb6d6bf7514e252"
 dependencies = [
  "autocfg",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0638a1c9d0a3c0914158145bc76cff373a75a627e6ecbfb71cbe6f453a5a19b0"
+dependencies = [
+ "autocfg",
+ "num-bigint",
  "num-integer",
  "num-traits",
 ]
@@ -3276,7 +3436,7 @@ version = "0.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "279adf8d9445b8b21d7f2c8d6389dd2c971f646d2b6056fcd37049b366223eb4"
 dependencies = [
- "genemichaels",
+ "genemichaels 0.1.21",
  "proc-macro2",
  "quote",
  "syn 1.0.109",
@@ -3606,9 +3766,9 @@ dependencies = [
 
 [[package]]
 name = "spaghettinuum"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
- "aargvark",
+ "aargvark 0.1.2",
  "array-init",
  "bincode",
  "chrono",
@@ -3632,8 +3792,9 @@ dependencies = [
  "hyper-util",
  "ipnet",
  "itertools",
+ "jsonschema",
  "libsqlite3-sys",
- "loga",
+ "loga 0.4.0",
  "manual_future",
  "mime_guess",
  "moka",
@@ -3863,12 +4024,12 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "taskmanager"
-version = "0.4.2"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50c891fe1540c8bfe446f878804ab27581b85221b1847a492dee695f665762ab"
+checksum = "01c1faad598c9bb9ac0ea78cbd0b5da2bc1a51aba85b94458c4c81f5cbd333d8"
 dependencies = [
  "futures",
- "loga",
+ "loga 0.4.0",
  "tokio",
  "tokio-util",
  "waitgroup",

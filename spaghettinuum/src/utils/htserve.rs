@@ -25,7 +25,7 @@ use super::{
     },
     log::{
         Log,
-        DEBUG_API,
+        DEBUG_HTSERVE,
     },
 };
 
@@ -116,6 +116,15 @@ impl Endpoint for Handler {
     type Output = poem::Response;
 
     async fn call(&self, req: poem::Request) -> poem::Result<Self::Output> {
+        let method = req.method().clone();
+        let url = req.uri().to_string();
+        let headers = req.headers().clone();
+        let bearer =
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(|v| v.to_string());
         let path;
         let query;
         match req.uri().path_and_query() {
@@ -136,15 +145,19 @@ impl Endpoint for Handler {
                 query = "".to_string();
             },
         }
-        let bearer =
-            req
-                .headers()
-                .get(AUTHORIZATION)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "))
-                .map(|v| v.to_string());
-        let method = req.method().clone();
         let body = req.into_body().into_bytes().await?.blob();
+        self
+            .log
+            .log_with(
+                DEBUG_HTSERVE,
+                "Receive",
+                ea!(
+                    method = method,
+                    url = url,
+                    headers = headers.pretty_dbg_str(),
+                    body = String::from_utf8_lossy(&body)
+                ),
+            );
         let mut i = 0;
         let mut at = &self.root;
         let leaf = 'recurse : loop {
@@ -154,7 +167,7 @@ impl Endpoint for Handler {
                         self
                             .log
                             .log_with(
-                                DEBUG_API,
+                                DEBUG_HTSERVE,
                                 "Path matching ended at branch",
                                 ea!(path = path.dbg_str(), seg = i),
                             );
@@ -169,7 +182,7 @@ impl Endpoint for Handler {
                             self
                                 .log
                                 .log_with(
-                                    DEBUG_API,
+                                    DEBUG_HTSERVE,
                                     "No route for path segment in parent branch",
                                     ea!(path = path.dbg_str(), seg = i),
                                 );
@@ -181,14 +194,18 @@ impl Endpoint for Handler {
                     match method.as_str() {
                         "GET" => {
                             let Some(m) =& l.get else {
-                                self.log.log_with(DEBUG_API, "No GET handler", ea!(path = path.dbg_str(), seg = i));
+                                self
+                                    .log
+                                    .log_with(DEBUG_HTSERVE, "No GET handler", ea!(path = path.dbg_str(), seg = i));
                                 return Ok(StatusCode::NOT_FOUND.into_response());
                             };
                             break 'recurse m;
                         },
                         "POST" => {
                             let Some(m) =& l.post else {
-                                self.log.log_with(DEBUG_API, "No POST handler", ea!(path = path.dbg_str(), seg = i));
+                                self
+                                    .log
+                                    .log_with(DEBUG_HTSERVE, "No POST handler", ea!(path = path.dbg_str(), seg = i));
                                 return Ok(StatusCode::NOT_FOUND.into_response());
                             };
                             break 'recurse m;
@@ -197,7 +214,11 @@ impl Endpoint for Handler {
                             let Some(m) =& l.delete else {
                                 self
                                     .log
-                                    .log_with(DEBUG_API, "No DELETE handler", ea!(path = path.dbg_str(), seg = i));
+                                    .log_with(
+                                        DEBUG_HTSERVE,
+                                        "No DELETE handler",
+                                        ea!(path = path.dbg_str(), seg = i),
+                                    );
                                 return Ok(StatusCode::NOT_FOUND.into_response());
                             };
                             break 'recurse m;

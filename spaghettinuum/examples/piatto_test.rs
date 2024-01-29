@@ -34,13 +34,12 @@ use ipnet::IpAdd;
 use itertools::Itertools;
 use loga::{
     StandardLog,
-    StandardFlags,
+    StandardFlag,
 };
 use spaghettinuum::{
     interface::{
         config::{
             identity::BackedIdentityLocal,
-            node::node_config::PORT_NODE,
             shared::StrSocketAddr,
         },
         stored::{
@@ -77,8 +76,7 @@ async fn main() {
         let mut nodes = vec![];
         let mut prev_node = None;
         for i in 0 .. 1000 {
-            let addr =
-                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 1, 1).saturating_add(i), PORT_NODE));
+            let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 1, 1).saturating_add(i), 43890));
             let path = root.join(format!("node_{}", i));
             create_dir_all(&path).await.unwrap();
             let node =
@@ -154,7 +152,7 @@ async fn main() {
             },
         };
         assert_eq!(found_addr.0, message_addr);
-        tm.join(&StandardLog::new(), StandardFlags::INFO).await?;
+        tm.join(&StandardLog::new(), StandardFlag::Info).await?;
         return Ok(());
     }
 

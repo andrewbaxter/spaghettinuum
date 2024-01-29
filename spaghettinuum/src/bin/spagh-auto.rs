@@ -56,6 +56,8 @@ use spaghettinuum::{
                 ServeMode,
             },
             shared::StrSocketAddr,
+            DebugFlag,
+            Flag,
             ENV_CONFIG,
         },
         stored::{
@@ -76,13 +78,13 @@ use spaghettinuum::{
     utils::{
         publish_util,
         log::{
+            Log,
+            DEBUG_HTSERVE,
             DEBUG_OTHER,
             DEBUG_SELF_TLS,
-            DEBUG_API,
-            NON_DEBUG,
-            WARN,
             INFO,
-            Log,
+            NON_DEBUG_FLAGS,
+            WARN,
         },
         tls_util::load_certified_key,
         htreq,
@@ -111,7 +113,8 @@ struct Args {
     /// Config - json.  See the reference documentation and jsonschema for details.
     pub config: Option<AargvarkJson<Config>>,
     /// Enable debug logging
-    pub debug: Option<()>,
+    #[vark(break)]
+    pub debug: Option<Vec<DebugFlag>>,
 }
 
 async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Error> {
@@ -498,7 +501,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                                                 Ok(f) => f,
                                                 Err(e) => {
                                                     log.log(
-                                                        DEBUG_API,
+                                                        DEBUG_HTSERVE,
                                                         e.context_with(
                                                             "Couldn't parse received header as utf-8",
                                                             ea!(header = HEADER_FORWARDED_FOR),
@@ -578,13 +581,17 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
 #[tokio::main]
 async fn main() {
     let args = aargvark::vark::<Args>();
-    let mut flags = NON_DEBUG;
-    if args.debug.is_some() {
-        flags |= DEBUG_API;
-        flags |= DEBUG_SELF_TLS;
-        flags |= DEBUG_OTHER;
+    let mut flags = NON_DEBUG_FLAGS.to_vec();
+    if let Some(f) = &args.debug {
+        if f.is_empty() {
+            flags.push(DEBUG_HTSERVE);
+            flags.push(DEBUG_SELF_TLS);
+            flags.push(DEBUG_OTHER);
+        } else {
+            flags.extend(f.into_iter().map(|x| Flag::Debug(*x)));
+        }
     }
-    let log = &Log::new().with_flags(flags);
+    let log = &Log::new().with_flags(&flags);
     let tm = taskmanager::TaskManager::new();
     match inner(log, &tm, args).await.map_err(|e| {
         tm.terminate();

@@ -29,13 +29,13 @@ Suppose you have a JSON file `data.json`
 
 - `ttl` (minutes) is how long a successfully resolved value can be cached by a resolver.
 
-and you want to publish it under your identity `me.spagh` with ID `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r`.
+and you want to publish it under your identity `my.ident` with ID `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r`.
 
 Set the environment variable `SPAGH` to the URL of your publisher and run
 
 ```
-$ spagh announce
-$ spagh set local me.spagh ./data.json
+$ spagh announce local my.ident
+$ spagh set local my.ident ./data.json
 ```
 
 (in any order). The first advertises the publisher you're connecting to as authoritative for the identity, the second puts the data in the database.
@@ -59,7 +59,7 @@ Spaghettinuum key/value pairs that match the format expected by the DNS bridge w
 The easy way to publish DNS equivalent records is using the command line like:
 
 ```
-$ spagh set-dns local me.spagh --a 256.256.256.256 --aaaa 2001:db8::8a2e:370:7334
+$ spagh set-dns local my.ident --a 203.0.113.111 --aaaa 2001:db8::8a2e:370:7334
 ```
 
 You can also do it using the normal `set` command.

@@ -38,8 +38,8 @@ use spaghettinuum::{
     },
     utils::{
         log::{
-            Flags,
-            NON_DEBUG,
+            ALL_FLAGS,
+            NON_DEBUG_FLAGS,
             DEBUG_OTHER,
             WARN,
             Log,
@@ -106,10 +106,10 @@ fn api_url() -> Result<Uri, loga::Error> {
 
 async fn api_list<
     T: DeserializeOwned,
->(base_url: Uri, path: &str, get_key: fn(&T) -> String) -> Result<Vec<T>, loga::Error> {
+>(log: &Log, base_url: Uri, path: &str, get_key: fn(&T) -> String) -> Result<Vec<T>, loga::Error> {
     let mut out = vec![];
     let admin_headers = admin_headers()?;
-    let mut res = htreq::get(format!("{}{}", base_url, path), &admin_headers, 1024 * 1024).await?;
+    let mut res = htreq::get(log, format!("{}{}", base_url, path), &admin_headers, 1024 * 1024).await?;
     loop {
         let page: Vec<T> =
             serde_json::from_slice(&res).context("Failed to parse response page from publisher admin")?;
@@ -121,7 +121,7 @@ async fn api_list<
         let Some(after) = after else {
             break;
         };
-        res = htreq::get(format!("{}{}?after={}", base_url, path, after), &admin_headers, 1024 * 1024).await?;
+        res = htreq::get(log, format!("{}{}?after={}", base_url, path, after), &admin_headers, 1024 * 1024).await?;
     }
     return Ok(out);
 }
@@ -138,14 +138,16 @@ mod args {
         Aargvark,
         AargvarkJson,
     };
-    use spaghettinuum::interface::{
-        config::{
-            identity::BackedIdentityLocal,
-            shared::{
-                BackedIdentityArg,
+    use spaghettinuum::{
+        interface::{
+            config::{
+                identity::BackedIdentityLocal,
+                shared::{
+                    BackedIdentityArg,
+                },
             },
+            stored,
         },
-        stored,
     };
 
     #[derive(Aargvark)]
@@ -238,6 +240,7 @@ mod args {
     }
 
     #[derive(Aargvark)]
+    #[vark(break)]
     pub enum Admin {
         /// Get detailed node health information
         HealthDetail,
@@ -254,6 +257,7 @@ mod args {
     }
 
     #[derive(Aargvark)]
+    #[vark(break)]
     pub enum Command {
         /// Simple liveness check
         Ping,
@@ -289,15 +293,15 @@ async fn main() {
     async fn inner() -> Result<(), loga::Error> {
         let args = aargvark::vark::<args::Args>();
         let log = Log::new().with_flags(match args.debug {
-            Some(_) => Flags::all(),
-            None => NON_DEBUG,
+            Some(_) => ALL_FLAGS,
+            None => NON_DEBUG_FLAGS,
         });
         let log = &log;
         match args.command {
             args::Command::Ping => {
                 let url = format!("{}health", api_url()?);
                 log.log_with(DEBUG_OTHER, "Sending ping request (GET)", ea!(url = url));
-                htreq::get(&url, &admin_headers()?, 100).await?;
+                htreq::get(log, &url, &admin_headers()?, 100).await?;
             },
             args::Command::Get(config) => {
                 let url =
@@ -312,7 +316,7 @@ async fn main() {
                     "{}",
                     serde_json::to_string_pretty(
                         &serde_json::from_slice::<serde_json::Value>(
-                            &htreq::get(&url, &HashMap::new(), 1024 * 1024).await?,
+                            &htreq::get(log, &url, &HashMap::new(), 1024 * 1024).await?,
                         ).stack_context(log, "Response could not be parsed as JSON")?,
                     ).unwrap()
                 );
@@ -457,14 +461,14 @@ async fn main() {
                     let (ident, secret) = BackedIdentityLocal::new();
                     write_identity(&args.path, &secret).await.stack_context(&log, "Error creating local identity")?;
                     println!("{}", serde_json::to_string_pretty(&json!({
-                        "identity": ident.to_string()
+                        "id": ident.to_string()
                     })).unwrap());
                 },
                 args::Identity::ShowLocal(p) => {
                     let secret = p.value;
                     let identity = secret.identity();
                     println!("{}", serde_json::to_string_pretty(&json!({
-                        "identity": identity.to_string()
+                        "id": identity.to_string()
                     })).unwrap());
                 },
                 args::Identity::ListCards => {
@@ -495,7 +499,7 @@ async fn main() {
                         };
                         out.push(json!({
                             "pcsc_id": card_id,
-                            "identity": identity.to_string(),
+                            "id": identity.to_string(),
                         }));
                     }
                     println!("{}", serde_json::to_string_pretty(&out).unwrap());
@@ -505,28 +509,28 @@ async fn main() {
                 args::Admin::HealthDetail => {
                     let url = format!("{}admin/health", api_url()?);
                     log.log_with(DEBUG_OTHER, "Sending health detail request (GET)", ea!(url = url));
-                    htreq::get(&url, &admin_headers()?, 100).await?;
+                    htreq::get(log, &url, &admin_headers()?, 100).await?;
                 },
                 args::Admin::AllowIdentity(config) => {
                     let url = format!("{}publish/admin/allowed_identities/{}", api_url()?, config.identity_id);
                     log.log_with(DEBUG_OTHER, "Sending register request (POST)", ea!(url = url));
-                    htreq::post(&url, &admin_headers()?, vec![], 100).await?;
+                    htreq::post(log, &url, &admin_headers()?, vec![], 100).await?;
                 },
                 args::Admin::DisallowIdentity(config) => {
                     let url = format!("{}publish/admin/allowed_identities/{}", api_url()?, config.identity_id);
                     log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
-                    htreq::delete(&url, &admin_headers()?, 100).await?;
+                    htreq::delete(log, &url, &admin_headers()?, 100).await?;
                 },
                 args::Admin::ListAllowedIdentities => {
                     let out =
-                        api_list::<Identity>(api_url()?, "publish/admin/allowed_identities", |v| v.to_string())
+                        api_list::<Identity>(log, api_url()?, "publish/admin/allowed_identities", |v| v.to_string())
                             .await
                             .stack_context(log, "Error listing allowed identities")?;
                     println!("{}", serde_json::to_string_pretty(&out).unwrap());
                 },
                 args::Admin::ListAnnouncements => {
                     let out =
-                        api_list::<Identity>(api_url()?, "publish/admin/announcements", |v| v.to_string())
+                        api_list::<Identity>(log, api_url()?, "publish/admin/announcements", |v| v.to_string())
                             .await
                             .stack_context(log, "Error listing publishing identities")?;
                     println!("{}", serde_json::to_string_pretty(&out).unwrap());
@@ -535,6 +539,7 @@ async fn main() {
                     println!(
                         "{}",
                         htreq::get_text(
+                            log,
                             &format!("{}publish/admin/keys/{}", api_url()?, config.identity),
                             &admin_headers()?,
                             1024 * 1024,

@@ -301,6 +301,7 @@ impl Resolver {
         let uri = Uri::from_str(&format!("https://{}/{}?{}", p_addr, ident, request_keys.join(","))).unwrap();
         let pub_resp_bytes =
             htreq::send(
+                log,
                 HttpsConnectorBuilder::new()
                     .with_tls_config(
                         rustls::ClientConfig::builder()
@@ -324,7 +325,7 @@ impl Resolver {
                     .unwrap(),
             )
                 .await
-                .stack_context(log, "Error getting response from publisher")?;
+                .context("Error getting response from publisher")?;
         let resp_kvs =
             serde_json::from_slice::<wire::resolve::ResolveKeyValues>(
                 &pub_resp_bytes,

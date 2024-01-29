@@ -86,7 +86,6 @@
       "type": "object",
       "required": [
         "acme_directory_url",
-        "bind_addrs",
         "contacts",
         "name"
       ],
@@ -94,13 +93,6 @@
         "acme_directory_url": {
           "description": "Ex: `https://acme.zerossl.com/v2/DV90`",
           "type": "string"
-        },
-        "bind_addrs": {
-          "description": "DNS over TLS, with automatic cert provisioning via ZeroSSL. Certificates are issued for each global address identified in the main config.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/StrSocketAddr"
-          }
         },
         "contacts": {
           "description": "Contacts by which the issuer can reach you if there's an issue.",
@@ -204,7 +196,7 @@
       ],
       "properties": {
         "tcp_bind_addrs": {
-          "description": "TCP for DNS over TLS, but you need to proxy the TLS connection. Can be whatever (proxy's external port is normally 853).",
+          "description": "TCP for DNS over TLS.  If you set up `tls` below this will be TLS, otherwise raw TCP which you can proxy with your own TLS cert.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/StrSocketAddr"

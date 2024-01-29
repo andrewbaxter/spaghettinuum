@@ -51,9 +51,9 @@ pub fn generate_publish_announce(
 
 pub async fn announce(log: &Log, server: &Uri, identity_signer: &mut dyn IdentitySigner) -> Result<(), loga::Error> {
     let info_body =
-        htreq::get(&format!("{}info", server), &HashMap::new(), 100 * 1024)
+        htreq::get(log, &format!("{}info", server), &HashMap::new(), 100 * 1024)
             .await
-            .stack_context(log, "Error getting publisher info")?;
+            .context("Error getting publisher info")?;
     let info: wire::api::publish::latest::InfoResponse =
         serde_json::from_slice(
             &info_body,
@@ -87,9 +87,9 @@ pub async fn announce(log: &Log, server: &Uri, identity_signer: &mut dyn Identit
         announcement: stored::announcement::Announcement::V1(signed_announcement_content),
     };
     let url = format!("{}publish/v1/announce", server);
-    htreq::post(&url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
+    htreq::post(log, &url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
         .await
-        .stack_context(log, "Error making announce request")?;
+        .context("Error making announce request")?;
     return Ok(());
 }
 
@@ -114,8 +114,8 @@ pub async fn publish(
         "Sending publish request",
         ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
     );
-    htreq::post(&url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
+    htreq::post(log, &url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
         .await
-        .stack_context(log, "Error making publish request")?;
+        .context("Error making publish request")?;
     return Ok(());
 }
