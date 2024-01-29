@@ -12,6 +12,7 @@ use chrono::{
     Duration,
 };
 use futures::future::join_all;
+use hickory_resolver::config::LookupIpStrategy;
 use http_body_util::{
     Limited,
     BodyExt,
@@ -171,13 +172,23 @@ pub async fn send<
 pub async fn new_conn(base_url: &Uri) -> Result<Conn, loga::Error> {
     let log = &Log::new().fork(ea!(url = base_url));
     let (scheme, host, port) = uri_parts(base_url).stack_context(log, "Incomplete url")?;
-    let (try_ips, host) = match host {
-        HostPart::Ip(i) => (vec![i], i.to_string()),
+    let mut ipv4s = vec![];
+    let mut ipv6s = vec![];
+    let host = match host {
+        HostPart::Ip(i) => {
+            match i {
+                IpAddr::V4(_) => ipv4s.push(i),
+                IpAddr::V6(_) => ipv6s.push(i),
+            }
+            i.to_string()
+        },
         HostPart::Name(host) => {
-            let mut ipv4s = vec![];
-            let mut ipv6s = vec![];
-            for ip in hickory_resolver::TokioAsyncResolver::tokio_from_system_conf()
-                .stack_context(log, "Error reading resolv.conf")?
+            let (hickory_config, mut hickory_options) =
+                hickory_resolver
+                ::system_conf
+                ::read_system_conf().stack_context(log, "Error reading system dns resolver config for http request")?;
+            hickory_options.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
+            for ip in hickory_resolver::TokioAsyncResolver::tokio(hickory_config, hickory_options)
                 .lookup_ip(&format!("{}.", host))
                 .await
                 .stack_context(log, "Failed to look up lookup host ip addresses")? {
@@ -190,51 +201,71 @@ pub async fn new_conn(base_url: &Uri) -> Result<Conn, loga::Error> {
                     },
                 }
             }
-            let mut try_ips = vec![];
-            {
-                let mut r = thread_rng();
-                try_ips.extend(ipv4s.choose(&mut r));
-                try_ips.extend(ipv6s.choose(&mut r));
-            }
-            (try_ips, host)
+            host
         },
     };
+    {
+        let mut r = thread_rng();
+        ipv4s.shuffle(&mut r);
+        ipv6s.shuffle(&mut r);
+    }
     let mut bg = vec![];
     let (found_tx, mut found_rx) = mpsc::channel(1);
-    for ip in try_ips {
+    for ips in [ipv6s, ipv4s] {
         bg.push({
             let found_tx = found_tx.clone();
             let scheme = &scheme;
             let host = &host;
             async move {
                 ta_res!(());
-                let conn =
-                    HttpsConnectorBuilder::new()
-                        .with_tls_config(rustls_client_config())
-                        .https_or_http()
-                        .with_server_name(host.to_string())
-                        .enable_http1()
-                        .build()
-                        .call(Uri::from_str(&format!("{}://{}:{}", scheme, match ip {
-                            IpAddr::V4(i) => i.to_string(),
-                            IpAddr::V6(i) => format!("[{}]", i),
-                        }, port)).unwrap())
-                        .await
-                        .map_err(
-                            |e| loga::err_with(
-                                "Connection failed",
-                                ea!(err = e.to_string(), dest_addr = ip, host = host, port = port),
-                            ),
-                        )?;
-                _ = found_tx.try_send(conn);
-                return Ok(());
+                let mut errs = vec![];
+                for ip in &ips {
+                    let connect = async {
+                        return Ok(
+                            HttpsConnectorBuilder::new()
+                                .with_tls_config(rustls_client_config())
+                                .https_or_http()
+                                .with_server_name(host.to_string())
+                                .enable_http1()
+                                .build()
+                                .call(Uri::from_str(&format!("{}://{}:{}", scheme, match ip {
+                                    IpAddr::V4(i) => i.to_string(),
+                                    IpAddr::V6(i) => format!("[{}]", i),
+                                }, port)).unwrap())
+                                .await
+                                .map_err(
+                                    |e| loga::err_with(
+                                        "Connection failed",
+                                        ea!(err = e.to_string(), dest_addr = ip, host = host, port = port),
+                                    ),
+                                )?,
+                        );
+                    };
+                    let res = select!{
+                        _ = sleep(Duration::seconds(10).to_std().unwrap()) => Err(loga::err("Timeout connecting")),
+                        res = connect => res,
+                    };
+                    match res {
+                        Ok(conn) => {
+                            _ = found_tx.try_send(conn);
+                            return Ok(());
+                        },
+                        Err(e) => {
+                            errs.push(e);
+                        },
+                    }
+                }
+                return Err(
+                    loga::agg_err_with(
+                        "Couldn't establish a connection to any ip in version set",
+                        errs,
+                        ea!(ips = ips.dbg_str()),
+                    ),
+                );
             }
         });
     }
     let results = select!{
-        _ = sleep(Duration::seconds(10).to_std().unwrap()) => {
-            return Err(log.err("Timeout connecting"))
-        }
         results = join_all(bg) => results,
         found = found_rx.recv() => {
             return Ok(found.unwrap());
