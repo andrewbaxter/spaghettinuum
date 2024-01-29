@@ -13,23 +13,26 @@ pub const KEY_DNS_A: &'static str = "a";
 pub const KEY_DNS_AAAA: &'static str = "aaaa";
 pub const KEY_DNS_TXT: &'static str = "txt";
 pub const KEY_DNS_MX: &'static str = "mx";
-pub const COMMON_KEYS_DNS: &[&'static str] = &[KEY_DNS_A, KEY_DNS_AAAA, KEY_DNS_CNAME, KEY_DNS_TXT];
 
+#[derive(Clone, Copy)]
 pub enum RecordType {
-    CNAME,
+    Cname,
     A,
-    AAAA,
-    TXT,
-    MX,
+    Aaaa,
+    Txt,
+    Mx,
 }
+
+pub const COMMON_HTTP_RECORD_TYPES: &[RecordType] =
+    &[RecordType::Cname, RecordType::A, RecordType::Aaaa, RecordType::Txt];
 
 pub fn format_dns_key(subdomain: &str, record_type: RecordType) -> String {
     return format!("{}/{}/{}", KEY_DNS_PREFIX, subdomain, match record_type {
-        RecordType::CNAME => KEY_DNS_CNAME,
+        RecordType::Cname => KEY_DNS_CNAME,
         RecordType::A => KEY_DNS_A,
-        RecordType::AAAA => KEY_DNS_AAAA,
-        RecordType::TXT => KEY_DNS_TXT,
-        RecordType::MX => KEY_DNS_MX,
+        RecordType::Aaaa => KEY_DNS_AAAA,
+        RecordType::Txt => KEY_DNS_TXT,
+        RecordType::Mx => KEY_DNS_MX,
     });
 }
 

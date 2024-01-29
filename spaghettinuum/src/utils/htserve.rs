@@ -18,6 +18,10 @@ use poem::{
     IntoResponse,
 };
 use serde::Serialize;
+use sha2::{
+    Digest,
+    Sha256,
+};
 use super::{
     blob::{
         Blob,
@@ -28,6 +32,17 @@ use super::{
         DEBUG_HTSERVE,
     },
 };
+
+pub fn auth_hash(s: &str) -> Blob {
+    return <Sha256 as Digest>::digest(s.as_bytes()).blob();
+}
+
+pub fn auth(want: &[u8], got: &Option<String>) -> bool {
+    let Some(got) = got.as_ref() else {
+        return false;
+    };
+    return auth_hash(got).as_ref() == want;
+}
 
 pub struct Request {
     pub path: Vec<String>,

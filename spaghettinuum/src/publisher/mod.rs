@@ -92,9 +92,11 @@ use crate::{
             DbTx,
         },
         htserve::{
-            Routes,
+            auth,
+            auth_hash,
             Leaf,
             Response,
+            Routes,
         },
         log::{
             Log,
@@ -131,17 +133,6 @@ pub fn publisher_cert_hash(cert_der: &[u8]) -> Result<Blob, ()> {
                 .map_err(|_| ())?,
         ).blob(),
     );
-}
-
-pub fn auth_hash(s: &str) -> Blob {
-    return <Sha256 as Digest>::digest(s.as_bytes()).blob();
-}
-
-pub fn auth(want: &[u8], got: &Option<String>) -> bool {
-    let Some(got) = got.as_ref() else {
-        return false;
-    };
-    return auth_hash(got).as_ref() == want;
 }
 
 struct PublisherInner {

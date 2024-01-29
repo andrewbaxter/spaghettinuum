@@ -2,17 +2,12 @@ use crate::{
     bb,
     interface::{
         config::node::resolver_config::DnsBridgeConfig,
-        stored::dns_record::{
-            COMMON_KEYS_DNS,
-            KEY_DNS_A,
-            KEY_DNS_AAAA,
-            KEY_DNS_CNAME,
-            KEY_DNS_MX,
-            KEY_DNS_PREFIX,
-            KEY_DNS_TXT,
-        },
         stored::{
             self,
+            dns_record::{
+                format_dns_key,
+                COMMON_HTTP_RECORD_TYPES,
+            },
             identity::Identity,
         },
         wire,
@@ -139,7 +134,10 @@ use tokio::{
 };
 use hickory_server::{
     authority::MessageResponseBuilder,
-    server::ResponseInfo,
+    server::{
+        Request,
+        ResponseInfo,
+    },
 };
 use super::{
     Resolver,
@@ -225,12 +223,193 @@ pub async fn start_dns_bridge(
                     }
                     subdomain.reverse();
                     let subdomain = subdomain.join("");
-                    let (lookup_key, batch_keys) = match request.query().query_type() {
-                        RecordType::CNAME => (KEY_DNS_CNAME, COMMON_KEYS_DNS),
-                        RecordType::A => (KEY_DNS_A, COMMON_KEYS_DNS),
-                        RecordType::AAAA => (KEY_DNS_AAAA, COMMON_KEYS_DNS),
-                        RecordType::TXT => (KEY_DNS_TXT, COMMON_KEYS_DNS),
-                        RecordType::MX => (KEY_DNS_MX, COMMON_KEYS_DNS),
+                    let record_type_key;
+                    let batch_record_type_keys;
+                    let record_type_handler:
+                        fn(
+                            log: &Log,
+                            request: &Request,
+                            answers: &mut Vec<Record>,
+                            expires: u32,
+                            data: serde_json::Value,
+                        ) -> Result<(), VisErr>;
+                    match request.query().query_type() {
+                        RecordType::CNAME => {
+                            record_type_key = stored::dns_record::RecordType::Cname;
+                            batch_record_type_keys = COMMON_HTTP_RECORD_TYPES;
+
+                            fn handler(
+                                _log: &Log,
+                                _request: &Request,
+                                _answers: &mut Vec<Record>,
+                                _expires: u32,
+                                _data: serde_json::Value,
+                            ) -> Result<(), VisErr> {
+                                unreachable!();
+                            }
+
+                            record_type_handler = handler;
+                        },
+                        RecordType::A => {
+                            record_type_key = stored::dns_record::RecordType::A;
+                            batch_record_type_keys = COMMON_HTTP_RECORD_TYPES;
+
+                            fn handler(
+                                log: &Log,
+                                request: &Request,
+                                answers: &mut Vec<Record>,
+                                expires: u32,
+                                data: serde_json::Value,
+                            ) -> Result<(), VisErr> {
+                                match serde_json::from_value::<stored::dns_record::DnsA>(data.clone())
+                                    .context_with("Failed to parse received record json", ea!(json = data))
+                                    .err_external()? {
+                                    stored::dns_record::DnsA::V1(n) => {
+                                        for n in n.0 {
+                                            let n = match Ipv4Addr::from_str(&n) {
+                                                Err(e) => {
+                                                    log.log_err(
+                                                        DEBUG_DNS_S,
+                                                        e.context_with("Ipv4 addr in record invalid", ea!(name = n)),
+                                                    );
+                                                    continue;
+                                                },
+                                                Ok(n) => n,
+                                            };
+                                            answers.push(
+                                                Record::from_rdata(
+                                                    request.query().name().into(),
+                                                    expires,
+                                                    RData::A(A(n)),
+                                                ),
+                                            );
+                                        }
+                                    },
+                                }
+                                return Ok(());
+                            }
+
+                            record_type_handler = handler;
+                        },
+                        RecordType::AAAA => {
+                            record_type_key = stored::dns_record::RecordType::Aaaa;
+                            batch_record_type_keys = COMMON_HTTP_RECORD_TYPES;
+
+                            fn handler(
+                                log: &Log,
+                                request: &Request,
+                                answers: &mut Vec<Record>,
+                                expires: u32,
+                                data: serde_json::Value,
+                            ) -> Result<(), VisErr> {
+                                match serde_json::from_value::<stored::dns_record::DnsAaaa>(data.clone())
+                                    .context_with("Failed to parse received record json", ea!(json = data))
+                                    .err_external()? {
+                                    stored::dns_record::DnsAaaa::V1(n) => {
+                                        for n in n.0 {
+                                            let n = match Ipv6Addr::from_str(&n) {
+                                                Err(e) => {
+                                                    log.log_err(
+                                                        DEBUG_DNS_S,
+                                                        e.context_with(
+                                                            "Ipv6 addr in AAAA record invalid",
+                                                            ea!(name = n),
+                                                        ),
+                                                    );
+                                                    continue;
+                                                },
+                                                Ok(n) => n,
+                                            };
+                                            answers.push(
+                                                Record::from_rdata(
+                                                    request.query().name().into(),
+                                                    expires,
+                                                    RData::AAAA(AAAA(n)),
+                                                ),
+                                            );
+                                        }
+                                    },
+                                }
+                                return Ok(());
+                            }
+
+                            record_type_handler = handler;
+                        },
+                        RecordType::TXT => {
+                            record_type_key = stored::dns_record::RecordType::Txt;
+                            batch_record_type_keys = COMMON_HTTP_RECORD_TYPES;
+
+                            fn handler(
+                                _log: &Log,
+                                request: &Request,
+                                answers: &mut Vec<Record>,
+                                expires: u32,
+                                data: serde_json::Value,
+                            ) -> Result<(), VisErr> {
+                                match serde_json::from_value::<stored::dns_record::DnsA>(data.clone())
+                                    .context_with("Failed to parse received record json", ea!(json = data))
+                                    .err_external()? {
+                                    stored::dns_record::DnsA::V1(n) => {
+                                        for n in n.0 {
+                                            answers.push(
+                                                Record::from_rdata(
+                                                    request.query().name().into(),
+                                                    expires,
+                                                    RData::TXT(TXT::new(vec![n])),
+                                                ),
+                                            );
+                                        }
+                                    },
+                                }
+                                return Ok(());
+                            }
+
+                            record_type_handler = handler;
+                        },
+                        RecordType::MX => {
+                            record_type_key = stored::dns_record::RecordType::Mx;
+                            batch_record_type_keys = COMMON_HTTP_RECORD_TYPES;
+
+                            fn handler(
+                                log: &Log,
+                                request: &Request,
+                                answers: &mut Vec<Record>,
+                                expires: u32,
+                                data: serde_json::Value,
+                            ) -> Result<(), VisErr> {
+                                match serde_json::from_value::<stored::dns_record::DnsMx>(data.clone())
+                                    .context_with("Failed to parse received record json", ea!(json = data))
+                                    .err_external()? {
+                                    stored::dns_record::DnsMx::V1(n) => {
+                                        for (i, n) in n.0.into_iter().enumerate() {
+                                            let n = match Name::from_utf8(&n) {
+                                                Err(e) => {
+                                                    log.log_err(
+                                                        DEBUG_DNS_S,
+                                                        e.context_with(
+                                                            "Mx name in record invalid for DNS",
+                                                            ea!(name = n),
+                                                        ),
+                                                    );
+                                                    continue;
+                                                },
+                                                Ok(n) => n,
+                                            };
+                                            answers.push(
+                                                Record::from_rdata(
+                                                    request.query().name().into(),
+                                                    expires,
+                                                    RData::MX(MX::new(i as u16, n)),
+                                                ),
+                                            );
+                                        }
+                                    },
+                                }
+                                return Ok(());
+                            }
+
+                            record_type_handler = handler;
+                        },
                         _ => {
                             // Unsupported key pairs
                             return Ok(
@@ -246,9 +425,20 @@ pub async fn start_dns_bridge(
                             );
                         },
                     };
-                    let mut res = match self1.resolver.get(&ident, batch_keys).await.err_internal()? {
-                        wire::resolve::ResolveKeyValues::V1(v) => v,
-                    };
+                    let mut res =
+                        match self1
+                            .resolver
+                            .get(
+                                &ident,
+                                &batch_record_type_keys
+                                    .iter()
+                                    .map(|k| format_dns_key(&subdomain, *k))
+                                    .collect::<Vec<_>>(),
+                            )
+                            .await
+                            .err_internal()? {
+                            wire::resolve::ResolveKeyValues::V1(v) => v,
+                        };
                     let mut answers = vec![];
                     let filter_some = |v: wire::resolve::latest::ResolveValue| match v.data {
                         Some(d) => Some((v.expires, d)),
@@ -256,9 +446,8 @@ pub async fn start_dns_bridge(
                     };
                     if let Some((expires, data)) =
                         res
-                            .remove(&format!("{}/{}/{}", KEY_DNS_PREFIX, subdomain, KEY_DNS_CNAME))
-                            .map(filter_some)
-                            .flatten() {
+                            .remove(&format_dns_key(&subdomain, stored::dns_record::RecordType::Cname))
+                            .and_then(filter_some) {
                         match serde_json::from_value::<stored::dns_record::DnsCname>(data.clone())
                             .context_with("Failed to parse received record json", ea!(json = data))
                             .err_external()? {
@@ -294,139 +483,18 @@ pub async fn start_dns_bridge(
                             },
                         }
                     } else if let Some((expires, data)) =
-                        res
-                            .remove(&format!("{}/{}/{}", KEY_DNS_PREFIX, subdomain, lookup_key))
-                            .map(filter_some)
-                            .flatten() {
-                        let expires =
+                        res.remove(&format_dns_key(&subdomain, record_type_key)).and_then(filter_some) {
+                        record_type_handler(
+                            &self1.log,
+                            &request,
+                            &mut answers,
                             expires
                                 .signed_duration_since(Utc::now())
                                 .num_seconds()
                                 .try_into()
-                                .unwrap_or(i32::MAX as u32);
-                        match lookup_key {
-                            KEY_DNS_A => {
-                                match serde_json::from_value::<stored::dns_record::DnsA>(data.clone())
-                                    .context_with("Failed to parse received record json", ea!(json = data))
-                                    .err_external()? {
-                                    stored::dns_record::DnsA::V1(n) => {
-                                        for n in n.0 {
-                                            let n = match Ipv4Addr::from_str(&n) {
-                                                Err(e) => {
-                                                    self1
-                                                        .log
-                                                        .log_err(
-                                                            DEBUG_DNS_S,
-                                                            e.context_with(
-                                                                "Ipv4 addr in record invalid",
-                                                                ea!(name = n),
-                                                            ),
-                                                        );
-                                                    continue;
-                                                },
-                                                Ok(n) => n,
-                                            };
-                                            answers.push(
-                                                Record::from_rdata(
-                                                    request.query().name().into(),
-                                                    expires,
-                                                    RData::A(A(n)),
-                                                ),
-                                            );
-                                        }
-                                    },
-                                }
-                            },
-                            KEY_DNS_AAAA => {
-                                match serde_json::from_value::<stored::dns_record::DnsAaaa>(data.clone())
-                                    .context_with("Failed to parse received record json", ea!(json = data))
-                                    .err_external()? {
-                                    stored::dns_record::DnsAaaa::V1(n) => {
-                                        for n in n.0 {
-                                            let n = match Ipv6Addr::from_str(&n) {
-                                                Err(e) => {
-                                                    self1
-                                                        .log
-                                                        .log_err(
-                                                            DEBUG_DNS_S,
-                                                            e.context_with(
-                                                                "Ipv6 addr in AAAA record invalid",
-                                                                ea!(name = n),
-                                                            ),
-                                                        );
-                                                    continue;
-                                                },
-                                                Ok(n) => n,
-                                            };
-                                            answers.push(
-                                                Record::from_rdata(
-                                                    request.query().name().into(),
-                                                    expires,
-                                                    RData::AAAA(AAAA(n)),
-                                                ),
-                                            );
-                                        }
-                                    },
-                                }
-                            },
-                            KEY_DNS_TXT => {
-                                match serde_json::from_value::<stored::dns_record::DnsA>(data.clone())
-                                    .context_with("Failed to parse received record json", ea!(json = data))
-                                    .err_external()? {
-                                    stored::dns_record::DnsA::V1(n) => {
-                                        for n in n.0 {
-                                            answers.push(
-                                                Record::from_rdata(
-                                                    request.query().name().into(),
-                                                    expires,
-                                                    RData::TXT(TXT::new(vec![n])),
-                                                ),
-                                            );
-                                        }
-                                    },
-                                }
-                            },
-                            KEY_DNS_MX => {
-                                match serde_json::from_value::<stored::dns_record::DnsMx>(data.clone())
-                                    .context_with("Failed to parse received record json", ea!(json = data))
-                                    .err_external()? {
-                                    stored::dns_record::DnsMx::V1(n) => {
-                                        for (i, n) in n.0.into_iter().enumerate() {
-                                            let n = match Name::from_utf8(&n) {
-                                                Err(e) => {
-                                                    self1
-                                                        .log
-                                                        .log_err(
-                                                            DEBUG_DNS_S,
-                                                            e.context_with(
-                                                                "Mx name in record invalid for DNS",
-                                                                ea!(name = n),
-                                                            ),
-                                                        );
-                                                    continue;
-                                                },
-                                                Ok(n) => n,
-                                            };
-                                            answers.push(
-                                                Record::from_rdata(
-                                                    request.query().name().into(),
-                                                    expires,
-                                                    RData::MX(MX::new(i as u16, n)),
-                                                ),
-                                            );
-                                        }
-                                    },
-                                }
-                            },
-                            _ => {
-                                return Err(
-                                    loga::err_with(
-                                        "ASSERTION! Equivalent record handled above but not here.",
-                                        ea!(equivalent = lookup_key),
-                                    ),
-                                ).err_internal();
-                            },
-                        }
+                                .unwrap_or(i32::MAX as u32),
+                            data,
+                        )?;
                     }
                     return Ok(
                         response_handle

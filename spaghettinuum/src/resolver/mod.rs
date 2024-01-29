@@ -55,7 +55,6 @@ use loga::{
 use moka::future::Cache;
 use tower_service::Service;
 use std::{
-    borrow::Cow,
     collections::HashMap,
     net::IpAddr,
     path::Path,
@@ -180,7 +179,7 @@ impl Resolver {
     pub async fn get(
         &self,
         ident: &Identity,
-        request_keys: &[&str],
+        request_keys: &[String],
     ) -> Result<wire::resolve::ResolveKeyValues, loga::Error> {
         // First check cache
         let now = Utc::now();
@@ -398,8 +397,8 @@ pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
             ta_vis_res!(wire::api::resolve::v1::ResolveValues);
             let ident_src = req.path.pop().context("Missing identity final path element").err_external()?;
             let keys = req.query.split(",").map(|x| match urlencoding::decode(&x) {
-                Ok(x) => x,
-                Err(_) => Cow::from(x),
+                Ok(x) => x.to_string(),
+                Err(_) => x.to_string(),
             }).collect_vec();
             let kvs =
                 state
@@ -408,7 +407,7 @@ pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
                         &Identity::from_str(&ident_src)
                             .context_with("Failed to parse identity", ea!(identity = ident_src))
                             .err_external()?,
-                        &keys.iter().map(|x| x.as_ref()).collect::<Vec<_>>(),
+                        &keys,
                     )
                     .await
                     .err_internal()?;

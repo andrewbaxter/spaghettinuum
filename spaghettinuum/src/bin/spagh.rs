@@ -377,7 +377,7 @@ async fn main() {
                 let mut kvs = HashMap::new();
                 if !config.dns_mx.is_empty() {
                     kvs.insert(
-                        format_dns_key(subdomain, RecordType::CNAME),
+                        format_dns_key(subdomain, RecordType::Cname),
                         rec_val(
                             config.ttl,
                             stored::dns_record::DnsCname::V1(stored::dns_record::latest::DnsCname(config.dns_cname)),
@@ -395,7 +395,7 @@ async fn main() {
                 }
                 if !config.dns_aaaa.is_empty() {
                     kvs.insert(
-                        format_dns_key(subdomain, RecordType::AAAA),
+                        format_dns_key(subdomain, RecordType::Aaaa),
                         rec_val(
                             config.ttl,
                             &stored::dns_record::DnsAaaa::V1(stored::dns_record::latest::DnsAaaa(config.dns_aaaa)),
@@ -404,7 +404,7 @@ async fn main() {
                 }
                 if !config.dns_txt.is_empty() {
                     kvs.insert(
-                        format_dns_key(subdomain, RecordType::TXT),
+                        format_dns_key(subdomain, RecordType::Txt),
                         rec_val(
                             config.ttl,
                             &stored::dns_record::DnsTxt::V1(stored::dns_record::latest::DnsTxt(config.dns_txt)),
@@ -413,7 +413,7 @@ async fn main() {
                 }
                 if !config.dns_mx.is_empty() {
                     kvs.insert(
-                        format_dns_key(subdomain, RecordType::MX),
+                        format_dns_key(subdomain, RecordType::Mx),
                         rec_val(
                             config.ttl,
                             &stored::dns_record::DnsMx::V1(stored::dns_record::latest::DnsMx(config.dns_mx)),

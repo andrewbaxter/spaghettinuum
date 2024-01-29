@@ -168,7 +168,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                                 ).unwrap();
                         },
                         std::net::IpAddr::V6(ip) => {
-                            key = RecordType::AAAA;
+                            key = RecordType::Aaaa;
                             data =
                                 serde_json::to_value(
                                     &stored::dns_record::DnsAaaa::V1(

@@ -61,6 +61,8 @@ use spaghettinuum::{
     utils::{
         htserve::{
             self,
+            auth,
+            auth_hash,
             Routes,
         },
         log::{
@@ -207,7 +209,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                                             ).unwrap();
                                     },
                                     std::net::IpAddr::V6(ip) => {
-                                        key = RecordType::AAAA;
+                                        key = RecordType::Aaaa;
                                         data =
                                             serde_json::to_value(
                                                 &stored::dns_record::DnsAaaa::V1(
@@ -317,9 +319,18 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             api_endpoints.add("health", htserve::Leaf::new().get(cap_fn!((_r)() {
                 return htserve::Response::Ok;
             })));
-            api_endpoints.add("admin/health", htserve::Leaf::new().get(cap_fn!((_r)(node) {
-                return htserve::Response::json(node.health_detail());
-            })));
+            if let Some(admin_token) = &config.admin_token {
+                let admin_token = auth_hash(admin_token);
+                api_endpoints.add("admin/health", htserve::Leaf::new().get(cap_fn!((r)(node, admin_token) {
+                    // Auth
+                    if !auth(&admin_token, &r.auth_bearer) {
+                        return htserve::Response::AuthErr;
+                    }
+
+                    // Process + respond
+                    return htserve::Response::json(node.health_detail());
+                })));
+            }
             if let Some(resolver) = &resolver {
                 api_endpoints.nest("resolve", resolver::build_api_endpoints(&log, resolver));
             }
