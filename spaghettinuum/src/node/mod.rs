@@ -647,7 +647,10 @@ impl Node {
             for nearest in res.nearest {
                 match nearest.node {
                     NearestNodeEntryNode::Self_ => {
-                        self.0.log.log_with(DEBUG_NODE, "Storing", ea!(value = key.dbg_str()));
+                        self
+                            .0
+                            .log
+                            .log_with(DEBUG_NODE, "Own store request, storing locally", ea!(value = key.dbg_str()));
                         self.0.store.lock().unwrap().insert(key.clone(), ValueState {
                             value: value.clone(),
                             updated: Utc::now(),
@@ -1177,18 +1180,18 @@ impl Node {
                     self.handle_find_resp(m).await;
                 },
                 wire::node::latest::Message::Store(m) => {
-                    self.0.log.log_with(DEBUG_NODE, "Storing", ea!(value = m.key.dbg_str()));
+                    log.log_with(DEBUG_NODE, "Storing", ea!(value = m.key.dbg_str()));
                     let new_published;
                     match &m.value {
                         stored::announcement::Announcement::V1(value) => {
                             let Ok(new_content) = value.verify(&m.key) else {
-                                return Err(self.0.log.err("Store request failed signature validation"));
+                                return Err(log.err("Store request failed signature validation"));
                             };
                             new_published = new_content.published;
                         },
                     }
                     if new_published > Utc::now() + Duration::minutes(1) {
-                        return Err(self.0.log.err("Store request published date too far in the future"));
+                        return Err(log.err("Store request published date too far in the future"));
                     }
                     match self.0.store.lock().unwrap().entry(m.key) {
                         Entry::Occupied(mut e) => {
