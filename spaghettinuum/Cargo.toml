@@ -1,6 +1,6 @@
 [package]
 name = "spaghettinuum"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "The future of the internet is al dente"
 readme = "../readme.md"
@@ -107,10 +107,10 @@ hyper-util = { version = "0.1", features = [
 tower-service = "0.3"
 http-body-util = "0.1"
 http-body = "1"
-tokio-rustls = "0.25.0"
-path-absolutize = "3.1.1"
-mime_guess = "2.0.4"
-jsonschema = "0.17.1"
+tokio-rustls = "0.25"
+path-absolutize = "3"
+mime_guess = "2"
+jsonschema = "0.17"
 
 [target.'cfg(target_env = "musl")'.dependencies]
 # Add feature to transitive dep of rusqlite, working around crates.io obstructive nannying
