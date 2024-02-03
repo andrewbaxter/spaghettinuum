@@ -1,0 +1,31 @@
+name: Build Docker image
+on:
+  push:
+    tags:
+      - "*"
+jobs:
+  main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          nix build \
+            --print-build-logs \
+            -f docker_image.nix \
+            -o image.tar.gz \
+            config.system.build.docker_image \
+            ;
+          export TAG="${GITHUB_REF#refs/*/}"
+          docker image import image.tar.gz spaghettinuum:latest
+          docker image tag spaghettinuum:latest spaghettinuum:$TAG
+          docker image push --all-tags spaghettinuum
