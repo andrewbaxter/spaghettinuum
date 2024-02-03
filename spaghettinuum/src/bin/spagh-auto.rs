@@ -144,11 +144,14 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     };
 
     // Publish global ips
-    let publisher_url = Uri::from_str(&config.publisher).stack_context(log, "Invalid publisher URI")?;
-    publish_util::announce(log, &publisher_url, identity_signer.as_mut()).await?;
+    let mut publisher_urls = vec![];
+    for p in &config.publishers {
+        publisher_urls.push(Uri::from_str(&p).stack_context(log, "Invalid publisher URI")?);
+    }
+    publish_util::announce(log, identity_signer.as_mut(), &publisher_urls).await?;
     publish_util::publish(
         log,
-        &publisher_url,
+        &publisher_urls,
         identity_signer.as_mut(),
         wire::api::publish::v1::PublishRequestContent {
             clear_all: true,

@@ -81,7 +81,7 @@ const NEIGHBORHOOD: usize = 8usize;
 const PARALLEL: usize = 3;
 
 fn req_timeout() -> Duration {
-    return Duration::seconds(5);
+    return Duration::seconds(2);
 }
 
 // Republish stored values once an hour
@@ -451,7 +451,7 @@ impl Node {
             dir.0.store.lock().unwrap().retain(|k, v| {
                 match &v.value {
                     stored::announcement::Announcement::V1(value) => {
-                        if value.parse_unwrap().published + expiry() < now {
+                        if value.parse_unwrap().announced + expiry() < now {
                             return false;
                         }
                     },
@@ -632,12 +632,12 @@ impl Node {
             match &res.value {
                 Some(accepted) => match accepted {
                     stored::announcement::Announcement::V1(accepted) => {
-                        let new_published = match &value {
+                        let new_announced = match &value {
                             stored::announcement::Announcement::V1(a) => {
-                                a.parse_unwrap().published
+                                a.parse_unwrap().announced
                             },
                         };
-                        if accepted.parse_unwrap().published >= new_published {
+                        if accepted.parse_unwrap().announced >= new_announced {
                             break 'skip_store;
                         }
                     },
@@ -1011,7 +1011,7 @@ impl Node {
                                 log.log(DEBUG_NODE, "Got value with bad signature");
                                 break;
                             };
-                            found_published = content.published;
+                            found_published = content.announced;
                         },
                     }
                     if found_published + expiry() < Utc::now() {
@@ -1023,7 +1023,7 @@ impl Node {
                             let have_published;
                             match state_value {
                                 stored::announcement::Announcement::V1(have_value) => {
-                                    have_published = have_value.parse_unwrap().published;
+                                    have_published = have_value.parse_unwrap().announced;
                                 },
                             }
                             if have_published > found_published {
@@ -1181,16 +1181,16 @@ impl Node {
                 },
                 wire::node::latest::Message::Store(m) => {
                     log.log_with(DEBUG_NODE, "Storing", ea!(value = m.key.dbg_str()));
-                    let new_published;
+                    let new_announced;
                     match &m.value {
                         stored::announcement::Announcement::V1(value) => {
                             let Ok(new_content) = value.verify(&m.key) else {
                                 return Err(log.err("Store request failed signature validation"));
                             };
-                            new_published = new_content.published;
+                            new_announced = new_content.announced;
                         },
                     }
-                    if new_published > Utc::now() + Duration::minutes(1) {
+                    if new_announced > Utc::now() + Duration::minutes(1) {
                         return Err(log.err("Store request published date too far in the future"));
                     }
                     match self.0.store.lock().unwrap().entry(m.key) {
@@ -1198,10 +1198,10 @@ impl Node {
                             let have_published;
                             match &e.get().value {
                                 stored::announcement::Announcement::V1(have_value) => {
-                                    have_published = have_value.parse_unwrap().published;
+                                    have_published = have_value.parse_unwrap().announced;
                                 },
                             }
-                            if new_published > have_published {
+                            if new_announced > have_published {
                                 e.insert(ValueState {
                                     value: m.value,
                                     updated: Utc::now(),

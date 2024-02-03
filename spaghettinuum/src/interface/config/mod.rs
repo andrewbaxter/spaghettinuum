@@ -2,7 +2,8 @@ use aargvark::Aargvark;
 use loga::FlagStyle;
 use loga::republish::console::Style as TextStyle;
 
-/// URL of resolver/publisher, for `spagh` CLI.
+/// URLs of resolver/publishers, for `spagh` CLI. Comma separated if providing
+/// multiple.
 pub const ENV_API_ADDR: &'static str = "SPAGH";
 
 /// The token for making admin requests, for `spagh` CLI.

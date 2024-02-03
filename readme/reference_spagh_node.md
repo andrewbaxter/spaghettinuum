@@ -22,15 +22,17 @@ Install with `cargo install spaghettinuum`.
 
 ## Usage
 
-1. Write the configuration.
+1. Write the configuration. Notes:
+
+   To you need to provide a bootstrap node. The configuration for the official Antipasta bootstrap node configuration is [here](https://github.com/andrewbaxter/antipasta#bootstrap-a-spaghettinuum-node), but there may be more community nodes later. More bootstrap nodes will increase reliability.
 
    There are several ports that may be open:
 
-   - DHT port, TCP - this is public, for node-node traffic
+   - DHT port, UDP - this is public, for node-node traffic
 
-   - Publisher port, TCP - this is public, for node-node traffic
+   - Resolve port, HTTPS - this is public, for node-node traffic
 
-   - API port, TCP - this is the HTTP/S endpoint for CLI commands and the API. This may be public or private, it does not affect the availability of published records or ability to resolve keys on other servers.
+   - API port, HTTP/HTTPS - this is the endpoint for the API (publishing, resolving, administration) including CLI commands. This may be public or private, it does not affect participation in the network. If you set up auto-cert it will be HTTPS, otherwise HTTP.
 
    - DNS ports, UDP, TCP - these are ports used for DNS resolvers. They may be public or private (if it's a private resolver)
 

@@ -31,6 +31,7 @@ use spaghettinuum::{
         },
         wire,
     },
+    ta_res,
     utils::{
         log::{
             ALL_FLAGS,
@@ -86,34 +87,39 @@ fn admin_headers() -> Result<HashMap<String, String>, loga::Error> {
     return Ok(out);
 }
 
-fn api_url() -> Result<Uri, loga::Error> {
+fn api_urls() -> Result<Vec<Uri>, loga::Error> {
     let default_port = 443;
-    let url =
+    let urls =
         env::var(
             ENV_API_ADDR,
         ).context_with("Missing environment variable to notify node", ea!(env_var = ENV_API_ADDR))?;
-    let url = Uri::from_str(&url).context_with("Couldn't parse environment variable", ea!(env_var = ENV_API_ADDR))?;
-    if url.scheme_str() == Some("http") && url.port().is_none() {
-        let mut u = url.into_parts();
-        u.authority =
-            Some(
-                Authority::try_from(
-                    format!(
-                        "{}:{}",
-                        u.authority.map(|a| a.to_string()).unwrap_or(String::new()),
-                        default_port
-                    ).as_bytes(),
-                ).unwrap(),
-            );
-        return Ok(Uri::from_parts(u).unwrap());
-    } else {
-        return Ok(url);
+    let mut out = vec![];
+    for url in urls.split('/') {
+        let url =
+            Uri::from_str(&url).context_with("Couldn't parse environment variable", ea!(env_var = ENV_API_ADDR))?;
+        if url.scheme_str() == Some("http") && url.port().is_none() {
+            let mut u = url.into_parts();
+            u.authority =
+                Some(
+                    Authority::try_from(
+                        format!(
+                            "{}:{}",
+                            u.authority.map(|a| a.to_string()).unwrap_or(String::new()),
+                            default_port
+                        ).as_bytes(),
+                    ).unwrap(),
+                );
+            out.push(Uri::from_parts(u).unwrap());
+        } else {
+            out.push(url);
+        }
     }
+    return Ok(out);
 }
 
 async fn api_list<
     T: DeserializeOwned,
->(log: &Log, base_url: Uri, path: &str, get_key: fn(&T) -> String) -> Result<Vec<T>, loga::Error> {
+>(log: &Log, base_url: &Uri, path: &str, get_key: fn(&T) -> String) -> Result<Vec<T>, loga::Error> {
     let mut out = vec![];
     let admin_headers = admin_headers()?;
     let mut res = htreq::get(log, format!("{}{}", base_url, path), &admin_headers, 1024 * 1024).await?;
@@ -307,34 +313,51 @@ async fn main() {
         let log = &log;
         match args.command {
             args::Command::Ping => {
-                let url = format!("{}health", api_url()?);
-                log.log_with(DEBUG_OTHER, "Sending ping request (GET)", ea!(url = url));
-                htreq::get(log, &url, &admin_headers()?, 100).await?;
+                for url in api_urls()? {
+                    let url = format!("{}health", url);
+                    log.log_with(DEBUG_OTHER, "Sending ping request (GET)", ea!(url = url));
+                    htreq::get(log, &url, &admin_headers()?, 100).await?;
+                }
             },
             args::Command::Get(config) => {
-                let url =
-                    format!(
-                        "{}resolve/v1/{}?{}",
-                        api_url()?,
-                        config.identity,
-                        config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
-                    );
-                log.log_with(DEBUG_OTHER, "Sending query request", ea!(url = url));
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &serde_json::from_slice::<serde_json::Value>(
-                            &htreq::get(log, &url, &HashMap::new(), 1024 * 1024).await?,
-                        ).stack_context(log, "Response could not be parsed as JSON")?,
-                    ).unwrap()
-                );
+                let mut errs = vec![];
+                for url in api_urls()? {
+                    match async {
+                        ta_res!(());
+                        let url =
+                            format!(
+                                "{}resolve/v1/{}?{}",
+                                url,
+                                config.identity,
+                                config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
+                            );
+                        log.log_with(DEBUG_OTHER, "Sending query request", ea!(url = url));
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(
+                                &serde_json::from_slice::<serde_json::Value>(
+                                    &htreq::get(log, &url, &HashMap::new(), 1024 * 1024).await?,
+                                ).stack_context(log, "Response could not be parsed as JSON")?,
+                            ).unwrap()
+                        );
+                        return Ok(());
+                    }.await {
+                        Ok(_) => {
+                            return Ok(());
+                        },
+                        Err(e) => {
+                            errs.push(e.context_with("Error reaching resolver", ea!(resolver = url)));
+                        },
+                    }
+                }
+                return Err(loga::agg_err("Error making requests to any resolver", errs));
             },
             args::Command::Announce(config) => {
                 let mut signer =
                     get_identity_signer(
                         config.identity,
                     ).stack_context(&log, "Error constructing signer for identity")?;
-                publish_util::announce(log, &api_url()?, signer.as_mut()).await?;
+                publish_util::announce(log, signer.as_mut(), &api_urls()?).await?;
             },
             args::Command::Set(config) => {
                 let mut signer =
@@ -343,7 +366,7 @@ async fn main() {
                     ).stack_context(&log, "Error constructing signer for identity")?;
                 publish_util::publish(
                     log,
-                    &api_url()?,
+                    &api_urls()?,
                     signer.as_mut(),
                     wire::api::publish::latest::PublishRequestContent {
                         set: config
@@ -426,7 +449,7 @@ async fn main() {
                     ).stack_context(&log, "Error constructing signer for identity")?;
                 publish_util::publish(
                     log,
-                    &api_url()?,
+                    &api_urls()?,
                     signer.as_mut(),
                     wire::api::publish::latest::PublishRequestContent {
                         set: kvs,
@@ -441,7 +464,7 @@ async fn main() {
                     ).stack_context(&log, "Error constructing signer for identity")?;
                 publish_util::publish(
                     log,
-                    &api_url()?,
+                    &api_urls()?,
                     signer.as_mut(),
                     wire::api::publish::latest::PublishRequestContent {
                         clear: config.keys,
@@ -456,7 +479,7 @@ async fn main() {
                     ).stack_context(&log, "Error constructing signer for identity")?;
                 publish_util::publish(
                     log,
-                    &api_url()?,
+                    &api_urls()?,
                     signer.as_mut(),
                     wire::api::publish::latest::PublishRequestContent {
                         clear_all: true,
@@ -516,44 +539,100 @@ async fn main() {
             },
             args::Command::Admin(args) => match args {
                 args::Admin::HealthDetail => {
-                    let url = format!("{}admin/health", api_url()?);
-                    log.log_with(DEBUG_OTHER, "Sending health detail request (GET)", ea!(url = url));
-                    htreq::get(log, &url, &admin_headers()?, 100).await?;
+                    for url in api_urls()? {
+                        let url = format!("{}admin/health", url);
+                        log.log_with(DEBUG_OTHER, "Sending health detail request (GET)", ea!(url = url));
+                        htreq::get(log, &url, &admin_headers()?, 100).await?;
+                    }
                 },
                 args::Admin::AllowIdentity(config) => {
-                    let url = format!("{}publish/admin/allowed_identities/{}", api_url()?, config.identity_id);
-                    log.log_with(DEBUG_OTHER, "Sending register request (POST)", ea!(url = url));
-                    htreq::post(log, &url, &admin_headers()?, vec![], 100).await?;
+                    for url in api_urls()? {
+                        let url = format!("{}publish/admin/allowed_identities/{}", url, config.identity_id);
+                        log.log_with(DEBUG_OTHER, "Sending register request (POST)", ea!(url = url));
+                        htreq::post(log, &url, &admin_headers()?, vec![], 100).await?;
+                    }
                 },
                 args::Admin::DisallowIdentity(config) => {
-                    let url = format!("{}publish/admin/allowed_identities/{}", api_url()?, config.identity_id);
-                    log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
-                    htreq::delete(log, &url, &admin_headers()?, 100).await?;
+                    for url in api_urls()? {
+                        let url = format!("{}publish/admin/allowed_identities/{}", url, config.identity_id);
+                        log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
+                        htreq::delete(log, &url, &admin_headers()?, 100).await?;
+                    }
                 },
                 args::Admin::ListAllowedIdentities => {
-                    let out =
-                        api_list::<Identity>(log, api_url()?, "publish/admin/allowed_identities", |v| v.to_string())
-                            .await
-                            .stack_context(log, "Error listing allowed identities")?;
-                    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    let mut errs = vec![];
+                    for url in api_urls()? {
+                        match async {
+                            ta_res!(());
+                            let out =
+                                api_list::<Identity>(
+                                    log,
+                                    &url,
+                                    "publish/admin/allowed_identities",
+                                    |v| v.to_string(),
+                                )
+                                    .await
+                                    .stack_context(log, "Error listing allowed identities")?;
+                            println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                            return Ok(());
+                        }.await {
+                            Ok(_) => {
+                                return Ok(());
+                            },
+                            Err(e) => {
+                                errs.push(e.context_with("Error reaching publisher", ea!(url = url)));
+                            },
+                        }
+                    }
+                    return Err(loga::agg_err("Error making request", errs));
                 },
                 args::Admin::ListAnnouncements => {
-                    let out =
-                        api_list::<Identity>(log, api_url()?, "publish/admin/announcements", |v| v.to_string())
-                            .await
-                            .stack_context(log, "Error listing publishing identities")?;
-                    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    let mut errs = vec![];
+                    for url in api_urls()? {
+                        match async {
+                            ta_res!(());
+                            let out =
+                                api_list::<Identity>(log, &url, "publish/admin/announcements", |v| v.to_string())
+                                    .await
+                                    .stack_context(log, "Error listing publishing identities")?;
+                            println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                            return Ok(());
+                        }.await {
+                            Ok(_) => {
+                                return Ok(());
+                            },
+                            Err(e) => {
+                                errs.push(e.context_with("Error reaching publisher", ea!(url = url)));
+                            },
+                        }
+                    }
+                    return Err(loga::agg_err("Error making request", errs));
                 },
                 args::Admin::ListKeys(config) => {
-                    println!(
-                        "{}",
-                        htreq::get_text(
-                            log,
-                            &format!("{}publish/admin/keys/{}", api_url()?, config.identity),
-                            &admin_headers()?,
-                            1024 * 1024,
-                        ).await?
-                    );
+                    let mut errs = vec![];
+                    for url in api_urls()? {
+                        match async {
+                            ta_res!(());
+                            println!(
+                                "{}",
+                                htreq::get_text(
+                                    log,
+                                    &format!("{}publish/admin/keys/{}", url, config.identity),
+                                    &admin_headers()?,
+                                    1024 * 1024,
+                                ).await?
+                            );
+                            return Ok(());
+                        }.await {
+                            Ok(_) => {
+                                return Ok(());
+                            },
+                            Err(e) => {
+                                errs.push(e.context_with("Error reaching publisher", ea!(url = url)));
+                            },
+                        }
+                    }
+                    return Err(loga::agg_err("Error making request", errs));
                 },
             },
         }

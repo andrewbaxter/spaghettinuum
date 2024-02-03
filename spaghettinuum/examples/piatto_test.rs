@@ -44,7 +44,10 @@ use spaghettinuum::{
         },
         stored::{
             self,
-            announcement::latest::AnnouncementContent,
+            announcement::latest::{
+                AnnouncementContent,
+                AnnouncementPublisher,
+            },
             shared::SerialAddr,
         },
         wire::{
@@ -106,9 +109,11 @@ async fn main() {
         let message_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(169, 168, 167, 165), 1111));
         let (_, message_signature) =
             stored::announcement::latest::Announcement::sign(&mut ident_secret, AnnouncementContent {
-                addr: SerialAddr(message_addr),
-                cert_hash: Blob::new(0),
-                published: Utc::now(),
+                publishers: vec![AnnouncementPublisher {
+                    addr: SerialAddr(message_addr),
+                    cert_hash: Blob::new(0),
+                }],
+                announced: Utc::now(),
             }).unwrap();
 
         select!{
@@ -148,10 +153,10 @@ async fn main() {
         };
         let found_addr = match found {
             stored::announcement::Announcement::V1(a) => {
-                a.parse_unwrap().addr
+                a.parse_unwrap().publishers.get(0).unwrap().addr.0
             },
         };
-        assert_eq!(found_addr.0, message_addr);
+        assert_eq!(found_addr, message_addr);
         tm.join(&StandardLog::new(), StandardFlag::Info).await?;
         return Ok(());
     }

@@ -50,7 +50,7 @@ _This repo_ is
 
 _Try it out!_
 
-Set up your system to browse the spaghettinuum with [this guide](./readme/guide_browse.md), then try visting my blog at [here](TODO)
+Set up your system to browse the spaghettinuum with [this guide](./readme/guide_browse.md), then try visting my uhh... business card thing at [here](https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s)
 
 Try using it to host a site, send email, or do service discovery.
 
@@ -150,3 +150,11 @@ Once the lookup is complete, clients communicate directly with hosts, the same w
 2. All records on the publisher are also signed by the publishing identity.
 
 The resolver validates the signatures against the identity id (the identity's public key) when it receives them before returning the data.
+
+# Availability
+
+The publisher announcements are decentralized with redundancy and are therefore highly available and censorship resistant.
+
+One or more publishers can be announced, any of which can be used for resolution in case others fail. This allows publisher redundancy provides for simple load balancing.
+
+Additional redundancy can be done by replicating keys and republishing data if publishers become unavailable.

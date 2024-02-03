@@ -6,7 +6,10 @@ use crate::{
             self,
             identity::Identity,
         },
-        wire,
+        wire::{
+            self,
+            resolve::ResolveKeyValues,
+        },
     },
     publisher::{
         publisher_cert_hash,
@@ -53,6 +56,10 @@ use loga::{
     ResultContext,
 };
 use moka::future::Cache;
+use rand::{
+    seq::SliceRandom,
+    thread_rng,
+};
 use tower_service::Service;
 use std::{
     collections::HashMap,
@@ -228,135 +235,168 @@ impl Resolver {
             Some(v) => v,
             None => return Ok(wire::resolve::ResolveKeyValues::V1(HashMap::new())),
         };
-        let p_addr;
-        let p_cert_hash;
+        let mut publishers;
         match resp {
             stored::announcement::Announcement::V1(a) => {
                 let a = a.parse_unwrap();
-                p_addr = a.addr;
-                p_cert_hash = a.cert_hash;
+                publishers = a.publishers;
             },
         };
-        let log = self.0.log.fork(ea!(publisher = p_addr, action = "publisher_request"));
-        let log = &log;
+        publishers.shuffle(&mut thread_rng());
+        let mut values = None;
+        let mut errs = vec![];
+        for publisher in publishers {
+            let log = self.0.log.fork(ea!(publisher = publisher.addr, action = "publisher_request"));
+            let log = &log;
+            match async {
+                ta_res!(ResolveKeyValues);
 
-        // Request values from publisher
-        let values;
-        if self.0.global_addrs.iter().any(|i| *i == p_addr.0.ip()) {
-            // Publisher is us, short circuit network
-            if let Some(publisher) = &self.0.publisher {
-                values = publisher.get_values(&ident, request_keys.iter().map(|x| x.to_string()).collect()).await?;
-            } else {
-                values = wire::resolve::ResolveKeyValues::V1(HashMap::new());
-            }
-        } else {
-            // Request values via publisher over internet
-            #[derive(Debug)]
-            pub struct SingleKeyVerifier {
-                hash: Blob,
-            }
-
-            impl SingleKeyVerifier {
-                pub fn new(hash: Blob) -> Arc<dyn rustls::client::danger::ServerCertVerifier> {
-                    return Arc::new(SingleKeyVerifier { hash });
-                }
-            }
-
-            impl rustls::client::danger::ServerCertVerifier for SingleKeyVerifier {
-                fn verify_server_cert(
-                    &self,
-                    end_entity: &rustls::pki_types::CertificateDer<'_>,
-                    _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-                    _server_name: &rustls::pki_types::ServerName<'_>,
-                    _ocsp_response: &[u8],
-                    _now: rustls::pki_types::UnixTime,
-                ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-                    if publisher_cert_hash(
-                        end_entity.as_ref(),
-                    ).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))? !=
-                        self.hash {
-                        return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding));
+                // Request values from publisher
+                if self.0.global_addrs.iter().any(|i| *i == publisher.addr.0.ip()) {
+                    // Publisher is us, short circuit network
+                    if let Some(publisher) = &self.0.publisher {
+                        return Ok(
+                            publisher
+                                .get_values(&ident, request_keys.iter().map(|x| x.to_string()).collect())
+                                .await?,
+                        );
+                    } else {
+                        return Ok(wire::resolve::ResolveKeyValues::V1(HashMap::new()));
                     }
-                    return Ok(rustls::client::danger::ServerCertVerified::assertion());
-                }
+                } else {
+                    // Request values via publisher over internet
+                    #[derive(Debug)]
+                    pub struct SingleKeyVerifier {
+                        hash: Blob,
+                    }
 
-                fn verify_tls12_signature(
-                    &self,
-                    _message: &[u8],
-                    _cert: &rustls::pki_types::CertificateDer<'_>,
-                    _dss: &rustls::DigitallySignedStruct,
-                ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-                    return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
-                }
+                    impl SingleKeyVerifier {
+                        pub fn new(hash: Blob) -> Arc<dyn rustls::client::danger::ServerCertVerifier> {
+                            return Arc::new(SingleKeyVerifier { hash });
+                        }
+                    }
 
-                fn verify_tls13_signature(
-                    &self,
-                    _message: &[u8],
-                    _cert: &rustls::pki_types::CertificateDer<'_>,
-                    _dss: &rustls::DigitallySignedStruct,
-                ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-                    return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
-                }
+                    impl rustls::client::danger::ServerCertVerifier for SingleKeyVerifier {
+                        fn verify_server_cert(
+                            &self,
+                            end_entity: &rustls::pki_types::CertificateDer<'_>,
+                            _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+                            _server_name: &rustls::pki_types::ServerName<'_>,
+                            _ocsp_response: &[u8],
+                            _now: rustls::pki_types::UnixTime,
+                        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+                            if publisher_cert_hash(
+                                end_entity.as_ref(),
+                            ).map_err(
+                                |_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding),
+                            )? !=
+                                self.hash {
+                                return Err(
+                                    rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding),
+                                );
+                            }
+                            return Ok(rustls::client::danger::ServerCertVerified::assertion());
+                        }
 
-                fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                    return vec![
-                        rustls::SignatureScheme::RSA_PKCS1_SHA1,
-                        rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-                        rustls::SignatureScheme::RSA_PKCS1_SHA256,
-                        rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-                        rustls::SignatureScheme::RSA_PKCS1_SHA384,
-                        rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-                        rustls::SignatureScheme::RSA_PKCS1_SHA512,
-                        rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-                        rustls::SignatureScheme::RSA_PSS_SHA256,
-                        rustls::SignatureScheme::RSA_PSS_SHA384,
-                        rustls::SignatureScheme::RSA_PSS_SHA512,
-                        rustls::SignatureScheme::ED25519,
-                        rustls::SignatureScheme::ED448
-                    ];
-                }
-            }
+                        fn verify_tls12_signature(
+                            &self,
+                            _message: &[u8],
+                            _cert: &rustls::pki_types::CertificateDer<'_>,
+                            _dss: &rustls::DigitallySignedStruct,
+                        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+                            return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
+                        }
 
-            let uri = Uri::from_str(&format!("https://{}/{}?{}", p_addr, ident, request_keys.join(","))).unwrap();
-            let pub_resp_bytes =
-                htreq::send(
-                    log,
-                    HttpsConnectorBuilder::new()
-                        .with_tls_config(
-                            rustls::ClientConfig::builder()
-                                .dangerous()
-                                .with_custom_certificate_verifier(SingleKeyVerifier::new(p_cert_hash))
-                                .with_no_client_auth(),
+                        fn verify_tls13_signature(
+                            &self,
+                            _message: &[u8],
+                            _cert: &rustls::pki_types::CertificateDer<'_>,
+                            _dss: &rustls::DigitallySignedStruct,
+                        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+                            return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
+                        }
+
+                        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+                            return vec![
+                                rustls::SignatureScheme::RSA_PKCS1_SHA1,
+                                rustls::SignatureScheme::ECDSA_SHA1_Legacy,
+                                rustls::SignatureScheme::RSA_PKCS1_SHA256,
+                                rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                                rustls::SignatureScheme::RSA_PKCS1_SHA384,
+                                rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+                                rustls::SignatureScheme::RSA_PKCS1_SHA512,
+                                rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+                                rustls::SignatureScheme::RSA_PSS_SHA256,
+                                rustls::SignatureScheme::RSA_PSS_SHA384,
+                                rustls::SignatureScheme::RSA_PSS_SHA512,
+                                rustls::SignatureScheme::ED25519,
+                                rustls::SignatureScheme::ED448
+                            ];
+                        }
+                    }
+
+                    let uri =
+                        Uri::from_str(
+                            &format!("https://{}/{}?{}", publisher.addr, ident, request_keys.join(",")),
+                        ).unwrap();
+                    let pub_resp_bytes =
+                        htreq::send(
+                            log,
+                            HttpsConnectorBuilder::new()
+                                .with_tls_config(
+                                    rustls::ClientConfig::builder()
+                                        .dangerous()
+                                        .with_custom_certificate_verifier(SingleKeyVerifier::new(publisher.cert_hash))
+                                        .with_no_client_auth(),
+                                )
+                                .https_only()
+                                .enable_http1()
+                                .build()
+                                .call(uri.clone())
+                                .await
+                                .map_err(
+                                    |e| log.err_with("Error connecting to publisher", ea!(err = e.to_string())),
+                                )?,
+                            128 * 1024 * request_keys.len(),
+                            Duration::seconds(10),
+                            Request::builder()
+                                .method("GET")
+                                .uri(uri)
+                                .header(hyper::header::HOST, publisher.addr.to_string())
+                                .body(Empty::<Bytes>::new())
+                                .unwrap(),
                         )
-                        .https_only()
-                        .enable_http1()
-                        .build()
-                        .call(uri.clone())
-                        .await
-                        .map_err(|e| log.err_with("Error connecting to publisher", ea!(err = e.to_string())))?,
-                    128 * 1024 * request_keys.len(),
-                    Duration::seconds(10),
-                    Request::builder()
-                        .method("GET")
-                        .uri(uri)
-                        .header(hyper::header::HOST, p_addr.to_string())
-                        .body(Empty::<Bytes>::new())
-                        .unwrap(),
-                )
-                    .await
-                    .context("Error getting response from publisher")?;
-            values =
-                serde_json::from_slice::<wire::resolve::ResolveKeyValues>(
-                    &pub_resp_bytes,
-                ).stack_context(&log, "Couldn't parse response")?;
+                            .await
+                            .context("Error getting response from publisher")?;
+                    return Ok(
+                        serde_json::from_slice::<wire::resolve::ResolveKeyValues>(
+                            &pub_resp_bytes,
+                        ).stack_context(&log, "Couldn't parse response")?,
+                    );
+                }
+            }.await {
+                Ok(v) => {
+                    values = Some(v);
+                    break;
+                },
+                Err(e) => {
+                    errs.push(e.stack_context(log, "Error retrieving response from publisher"));
+                },
+            }
         }
+        let Some(values) = values else {
+            if errs.is_empty() {
+                return Err(loga::err("Publisher announcement listed no publishers"));
+            }
+            return Err(loga::agg_err("Value lookup failed on all announced publishers", errs));
+        };
 
         // Store found values
         spawn({
             let resp_kvs = values.clone();
             let cache = self.0.cache.clone();
             let identity = ident.clone();
-            let log = log.clone();
+            let log = self.0.log.clone();
             let ident = ident.clone();
             async move {
                 let log = &log;

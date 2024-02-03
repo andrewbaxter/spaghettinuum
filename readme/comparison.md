@@ -1,8 +1,8 @@
 # Comparisons
 
-These are qualitative comparisons. If I have details wrong or there's an alternative please let me know.
+These are intended to be comparisons over general design rather than specific features. If I have details wrong or there's an alternative please let me know.
 
-## Namecoin, Handshake, etc.
+## Namecoin, ENS, Handshake, etc.
 
 Namecoin and similar share the issue of competition over a scarce resource with DNS. The main differentiator vs DNS is that a blockchain is the arbitor, not an organization.
 
@@ -27,3 +27,9 @@ Some more subtle differences:
 - GNS stores all records in the DHT. Spaghettinuum only stores pointers to the authoritative publisher in the DHT, everything else is stored on the publisher.
 
 - GNS uses a local MITM HTTPS proxy (with local CA cert) to handle TLS certificates, Spaghettinuum uses a new root CA cert and public issuer (Certipasta). For both, these are expected to be temporary measures until browsers support other channles for distributing TLS certificates.
+
+## IPNS
+
+IPNS development was specific to IPFS use cases last I checked: [no arbitrary data, publishing tied tightly to nodes](https://github.com/ipfs/notes/issues/439).
+
+There have been complaints that IPFS is slow, possibly relating to using TCP for the DHT.

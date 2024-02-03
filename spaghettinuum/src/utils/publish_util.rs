@@ -1,8 +1,5 @@
 use std::{
     collections::HashMap,
-    net::{
-        SocketAddr,
-    },
 };
 use chrono::Utc;
 use hyper::Uri;
@@ -14,10 +11,14 @@ use crate::{
     interface::{
         stored::{
             self,
+            announcement::latest::AnnouncementPublisher,
             identity::Identity,
             shared::SerialAddr,
         },
-        wire,
+        wire::{
+            self,
+            api::publish::v1::InfoResponse,
+        },
     },
 };
 use super::{
@@ -32,14 +33,15 @@ use super::{
 };
 
 pub fn generate_publish_announce(
-    signer: &mut Box<dyn IdentitySigner>,
-    publisher_advertise_addr: SocketAddr,
-    publisher_cert_hash: &[u8],
+    signer: &mut dyn IdentitySigner,
+    publishers_info: Vec<InfoResponse>,
 ) -> Result<(Identity, stored::announcement::Announcement), String> {
     let announce_message = bincode::serialize(&stored::announcement::latest::AnnouncementContent {
-        addr: SerialAddr(publisher_advertise_addr),
-        cert_hash: publisher_cert_hash.blob(),
-        published: Utc::now(),
+        publishers: publishers_info.into_iter().map(|info| AnnouncementPublisher {
+            addr: SerialAddr(info.advertise_addr),
+            cert_hash: info.cert_pub_hash,
+        }).collect(),
+        announced: Utc::now(),
     }).unwrap().blob();
     let (identity, request_message_sig) = signer.sign(&announce_message).map_err(|e| e.to_string())?;
     return Ok((identity, stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
@@ -49,53 +51,53 @@ pub fn generate_publish_announce(
     })));
 }
 
-pub async fn announce(log: &Log, server: &Uri, identity_signer: &mut dyn IdentitySigner) -> Result<(), loga::Error> {
-    let info_body =
-        htreq::get(log, &format!("{}info", server), &HashMap::new(), 100 * 1024)
-            .await
-            .context("Error getting publisher info")?;
-    let info: wire::api::publish::latest::InfoResponse =
-        serde_json::from_slice(
-            &info_body,
-        ).stack_context_with(
-            log,
-            "Error parsing info response from publisher as json",
-            ea!(body = String::from_utf8_lossy(&info_body)),
-        )?;
-    log.log_with(
-        DEBUG_OTHER,
-        "Got publisher information",
-        ea!(info = serde_json::to_string_pretty(&info_body).unwrap()),
-    );
-    let announcement_content = stored::announcement::latest::AnnouncementContent {
-        addr: SerialAddr(info.advertise_addr),
-        cert_hash: info.cert_pub_hash,
-        published: Utc::now(),
-    };
-    log.log_with(
-        DEBUG_OTHER,
-        "Unsigned publisher announcement",
-        ea!(message = serde_json::to_string_pretty(&announcement_content).unwrap()),
-    );
-    let (identity, signed_announcement_content) =
-        stored::announcement::latest::Announcement::sign(
+pub async fn announce(
+    log: &Log,
+    identity_signer: &mut dyn IdentitySigner,
+    publishers: &[Uri],
+) -> Result<(), loga::Error> {
+    let mut publishers_info = vec![];
+    for s in publishers {
+        let info_body =
+            htreq::get(log, &format!("{}info", s), &HashMap::new(), 100 * 1024)
+                .await
+                .context("Error getting publisher info")?;
+        let info =
+            serde_json::from_slice::<wire::api::publish::latest::InfoResponse>(
+                &info_body,
+            ).stack_context_with(
+                log,
+                "Error parsing info response from publisher as json",
+                ea!(body = String::from_utf8_lossy(&info_body)),
+            )?;
+        log.log_with(
+            DEBUG_OTHER,
+            "Got publisher information",
+            ea!(info = serde_json::to_string_pretty(&info_body).unwrap()),
+        );
+        publishers_info.push(info);
+    }
+    let (identity, announcement) =
+        generate_publish_announce(
             identity_signer,
-            announcement_content,
-        ).stack_context(&log, "Failed to sign announcement")?;
+            publishers_info,
+        ).map_err(|e| log.err_with("Error generating publisher announcement", ea!(err = e)))?;
     let request = wire::api::publish::v1::AnnounceRequest {
         identity: identity,
-        announcement: stored::announcement::Announcement::V1(signed_announcement_content),
+        announcement: announcement,
     };
-    let url = format!("{}publish/v1/announce", server);
-    htreq::post(log, &url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
-        .await
-        .context("Error making announce request")?;
+    for s in publishers {
+        let url = format!("{}publish/v1/announce", s);
+        htreq::post(log, &url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
+            .await
+            .context("Error making announce request")?;
+    }
     return Ok(());
 }
 
 pub async fn publish(
     log: &Log,
-    server: &Uri,
+    publishers: &[Uri],
     identity_signer: &mut dyn IdentitySigner,
     args: wire::api::publish::latest::PublishRequestContent,
 ) -> Result<(), loga::Error> {
@@ -108,14 +110,16 @@ pub async fn publish(
         identity: identity,
         content: signed_request_content,
     };
-    let url = format!("{}publish/v1/publish", server);
-    log.log_with(
-        DEBUG_OTHER,
-        "Sending publish request",
-        ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
-    );
-    htreq::post(log, &url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
-        .await
-        .context("Error making publish request")?;
+    for s in publishers {
+        let url = format!("{}publish/v1/publish", s);
+        log.log_with(
+            DEBUG_OTHER,
+            "Sending publish request",
+            ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
+        );
+        htreq::post(log, &url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
+            .await
+            .context("Error making publish request")?;
+    }
     return Ok(());
 }

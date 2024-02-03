@@ -306,12 +306,12 @@ impl Publisher {
                             if let Some(accepted) = accepted {
                                 match accepted {
                                     Announcement::V1(accepted) => {
-                                        let have_published = match &announcement {
-                                            Announcement::V1(a) => a.parse_unwrap().published,
+                                        let have_announced = match &announcement {
+                                            Announcement::V1(a) => a.parse_unwrap().announced,
                                         };
-                                        if accepted.parse_unwrap().published > have_published {
-                                            // Newer announcement published elsewhere, delete this announcement to save some
-                                            // network effort
+                                        if accepted.parse_unwrap().announced > have_announced {
+                                            // Newer announcement elsewhere, delete this announcement to save some network
+                                            // effort
                                             publisher.clear_identity(&identity).await.log(&log, WARN, "Error deleting obsolete announcement");
                                         }
                                     },
@@ -347,10 +347,10 @@ impl Publisher {
         match accepted {
             Some(accepted) => {
                 let new_published = match &announcement {
-                    Announcement::V1(a) => a.parse_unwrap().published,
+                    Announcement::V1(a) => a.parse_unwrap().announced,
                 };
                 let accepted_published = match accepted {
-                    Announcement::V1(a) => a.parse_unwrap().published,
+                    Announcement::V1(a) => a.parse_unwrap().announced,
                 };
                 if accepted_published > new_published {
                     return Ok(());

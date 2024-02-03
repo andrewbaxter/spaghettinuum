@@ -53,7 +53,7 @@ pub struct Config {
     /// Identity to use for publishing
     pub identity: BackedIdentityArg,
     /// Url of publisher where this identity is authorized to publish
-    pub publisher: String,
+    pub publishers: Vec<String>,
     /// Configure HTTPS serving using certipasta certs
     #[serde(default)]
     pub serve: Option<ServeConfig>,

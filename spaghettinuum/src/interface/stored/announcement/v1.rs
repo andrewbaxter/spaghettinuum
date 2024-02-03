@@ -12,10 +12,16 @@ use crate::utils::blob::Blob;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
-pub struct AnnouncementContent {
+pub struct AnnouncementPublisher {
     pub addr: SerialAddr,
     pub cert_hash: Blob,
-    pub published: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct AnnouncementContent {
+    pub publishers: Vec<AnnouncementPublisher>,
+    pub announced: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]

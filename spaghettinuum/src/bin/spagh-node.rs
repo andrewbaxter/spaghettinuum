@@ -40,6 +40,7 @@ use spaghettinuum::{
         },
         wire::{
             self,
+            api::publish::latest::InfoResponse,
             node::latest::NodeInfo,
         },
     },
@@ -184,9 +185,11 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 if identity_config.self_publish {
                     let (identity, announcement) =
                         generate_publish_announce(
-                            identity.as_mut().unwrap(),
-                            advertise_addr,
-                            &publisher.pub_cert_hash(),
+                            identity.as_mut().unwrap().as_mut(),
+                            vec![InfoResponse {
+                                advertise_addr: advertise_addr,
+                                cert_pub_hash: publisher.pub_cert_hash(),
+                            }],
                         ).map_err(
                             |e| log.err_with("Failed to generate announcement for self publication", ea!(err = e)),
                         )?;
