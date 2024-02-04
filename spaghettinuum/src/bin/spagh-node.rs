@@ -6,6 +6,7 @@ use aargvark::{
     Aargvark,
     AargvarkJson,
 };
+use chrono::Duration;
 use futures::FutureExt;
 use loga::{
     ea,
@@ -55,6 +56,7 @@ use spaghettinuum::{
     },
     self_tls::{
         self,
+        request_cert,
         request_cert_stream,
         CertPair,
     },
@@ -68,14 +70,15 @@ use spaghettinuum::{
         },
         log::{
             Log,
-            INFO,
-            DEBUG_DNS_S,
             DEBUG_DNS,
+            DEBUG_DNS_S,
             DEBUG_NODE,
             DEBUG_PUBLISH,
             DEBUG_RESOLVE,
             DEBUG_SELF_TLS,
+            INFO,
             NON_DEBUG_FLAGS,
+            WARN,
         },
         db_util,
         publish_util::generate_publish_announce,
@@ -89,6 +92,7 @@ use taskmanager::TaskManager;
 use tokio::{
     fs::create_dir_all,
     select,
+    time::sleep,
 };
 use tokio_stream::{
     StreamExt,
@@ -134,7 +138,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     for a in config.global_addrs {
         global_ips.push(resolve_global_ip(log, a).await?);
     };
-    let mut identity;
+    let identity;
     if let Some(identity_config) = &config.identity {
         identity =
             Some(
@@ -185,7 +189,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 if identity_config.self_publish {
                     let (identity, announcement) =
                         generate_publish_announce(
-                            identity.as_mut().unwrap().as_mut(),
+                            identity.as_ref().unwrap(),
                             vec![InfoResponse {
                                 advertise_addr: advertise_addr,
                                 cert_pub_hash: publisher.pub_cert_hash(),
@@ -284,11 +288,27 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             db_pool.get().await?.interact(|conn| self_tls::db::api_certs_setup(conn)).await??;
             let initial_pair = db_pool.get().await?.interact(|conn| self_tls::db::api_certs_get(conn)).await??;
             let initial_pair = match (initial_pair.pub_pem, initial_pair.priv_pem) {
-                (Some(pub_pem), Some(priv_pem)) => Some(CertPair {
+                (Some(pub_pem), Some(priv_pem)) => CertPair {
                     pub_pem: pub_pem,
                     priv_pem: priv_pem,
-                }),
-                _ => None,
+                },
+                _ => {
+                    loop {
+                        match request_cert(&log, identity.clone()).await {
+                            Ok(p) => break p,
+                            Err(e) => {
+                                log.log_err(
+                                    WARN,
+                                    e.context_with(
+                                        "Error fetching initial certificates, retrying",
+                                        ea!(subsys = "self_tls"),
+                                    ),
+                                );
+                                sleep(Duration::seconds(60).to_std().unwrap()).await;
+                            },
+                        }
+                    }
+                },
             };
             let certs_stream = request_cert_stream(&log, &tm, identity, initial_pair).await?;
             tm.stream("API - persist certs", WatchStream::new(certs_stream.clone()), cap_fn!((pair)(db_pool, log) {

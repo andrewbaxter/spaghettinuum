@@ -62,18 +62,44 @@ pub mod db;
 pub const CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";
 
 /// Requests a TLS public cert from the certifier for the `.s` domain associated
-/// with the provided identity and returns the result as PEM.
+/// with the provided identity and returns the result as PEM. This function
+/// generates a new private/public key pair for the cert.
 pub async fn request_cert(
     log: &Log,
+    message_signer: Arc<Mutex<dyn IdentitySigner>>,
+) -> Result<CertPair, loga::Error> {
+    let priv_key = p256::SecretKey::random(&mut rand::thread_rng());
+    let pub_pem =
+        request_cert_with_key(
+            log,
+            &SubjectPublicKeyInfoOwned::from_key(priv_key.public_key()).unwrap(),
+            message_signer,
+        )
+            .await
+            .context("Error requesting api server tls cert from certifier")?
+            .pub_pem;
+    let priv_pem = encode_priv_pem(priv_key.to_pkcs8_der().unwrap().as_bytes());
+    log.log_with(DEBUG_SELF_TLS, "Received cert", ea!(pub_pem = pub_pem));
+    return Ok(CertPair {
+        priv_pem: priv_pem,
+        pub_pem: pub_pem,
+    });
+}
+
+/// Requests a TLS public cert from the certifier for the `.s` domain associated
+/// with the provided identity and private key and returns the result as PEM.
+pub async fn request_cert_with_key(
+    log: &Log,
     requester_spki: &SubjectPublicKeyInfoOwned,
-    message_signer: &mut Box<dyn IdentitySigner>,
+    message_signer: Arc<Mutex<dyn IdentitySigner>>,
 ) -> Result<wire::certify::latest::CertResponse, loga::Error> {
     let text = serde_json::to_vec(&wire::certify::latest::CertRequestParams {
         stamp: Utc::now(),
         spki_der: requester_spki.to_der().unwrap().blob(),
     }).unwrap().blob();
     log.log_with(DEBUG_SELF_TLS, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
-    let (ident, signature) = message_signer.sign(&text).context("Error signing cert request params")?;
+    let (ident, signature) =
+        message_signer.lock().unwrap().sign(&text).context("Error signing cert request params")?;
     let body = serde_json::to_vec(&wire::certify::CertRequest::V1(wire::certify::latest::CertRequest {
         identity: ident,
         params: wire::certify::latest::SignedCertRequestParams {
@@ -101,8 +127,8 @@ pub struct CertPair {
 pub async fn request_cert_stream(
     log: &Log,
     tm: &TaskManager,
-    mut signer: Box<dyn IdentitySigner>,
-    initial_pair: Option<CertPair>,
+    signer: Arc<Mutex<dyn IdentitySigner>>,
+    initial_pair: CertPair,
 ) -> Result<Receiver<CertPair>, loga::Error> {
     let log = &log.fork(ea!(sys = "self_tls"));
 
@@ -111,27 +137,6 @@ pub async fn request_cert_stream(
         return Ok(not_after - Duration::hours(24 * 7));
     }
 
-    async fn update_cert(log: &Log, identity: &mut Box<dyn IdentitySigner>) -> Result<CertPair, loga::Error> {
-        let priv_key = p256::SecretKey::random(&mut rand::thread_rng());
-        let pub_pem =
-            request_cert(log, &SubjectPublicKeyInfoOwned::from_key(priv_key.public_key()).unwrap(), identity)
-                .await
-                .context("Error requesting api server tls cert from certifier")?
-                .pub_pem;
-        let priv_pem = encode_priv_pem(priv_key.to_pkcs8_der().unwrap().as_bytes());
-        log.log_with(DEBUG_SELF_TLS, "Received cert", ea!(pub_pem = pub_pem));
-        return Ok(CertPair {
-            priv_pem: priv_pem,
-            pub_pem: pub_pem,
-        });
-    }
-
-    let initial_pair = match initial_pair {
-        Some(p) => p,
-        _ => {
-            update_cert(log, &mut signer).await.stack_context(log, "Error retrieving initial certificates")?
-        },
-    };
     let refresh_at =
         decide_refresh_at(&initial_pair.pub_pem).context("Error extracting expiration time from cert pem")?;
     let (certs_stream_tx, certs_stream_rx) = channel(initial_pair);
@@ -157,7 +162,7 @@ pub async fn request_cert_stream(
                 let certs = bb!{
                     'ok _;
                     for _ in 0 .. max_tries {
-                        match update_cert(log, &mut signer).await {
+                        match request_cert(log, signer.clone()).await {
                             Ok(certs) => {
                                 break 'ok Some(certs);
                             },

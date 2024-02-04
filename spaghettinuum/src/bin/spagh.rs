@@ -94,9 +94,11 @@ fn api_urls() -> Result<Vec<Uri>, loga::Error> {
             ENV_API_ADDR,
         ).context_with("Missing environment variable to notify node", ea!(env_var = ENV_API_ADDR))?;
     let mut out = vec![];
-    for url in urls.split('/') {
+    for url in urls.split(',') {
         let url =
-            Uri::from_str(&url).context_with("Couldn't parse environment variable", ea!(env_var = ENV_API_ADDR))?;
+            Uri::from_str(
+                &url,
+            ).context_with("Couldn't parse environment variable", ea!(env_var = ENV_API_ADDR, value = url))?;
         if url.scheme_str() == Some("http") && url.port().is_none() {
             let mut u = url.into_parts();
             u.authority =
@@ -353,31 +355,26 @@ async fn main() {
                 return Err(loga::agg_err("Error making requests to any resolver", errs));
             },
             args::Command::Announce(config) => {
-                let mut signer =
+                let signer =
                     get_identity_signer(
                         config.identity,
                     ).stack_context(&log, "Error constructing signer for identity")?;
-                publish_util::announce(log, signer.as_mut(), &api_urls()?).await?;
+                publish_util::announce(log, signer.clone(), &api_urls()?).await?;
             },
             args::Command::Set(config) => {
-                let mut signer =
+                let signer =
                     get_identity_signer(
                         config.identity,
                     ).stack_context(&log, "Error constructing signer for identity")?;
-                publish_util::publish(
-                    log,
-                    &api_urls()?,
-                    signer.as_mut(),
-                    wire::api::publish::latest::PublishRequestContent {
-                        set: config
-                            .data
-                            .value
-                            .into_iter()
-                            .map(|(k, v)| (k, stored::record::RecordValue::V1(v)))
-                            .collect(),
-                        ..Default::default()
-                    },
-                ).await?;
+                publish_util::publish(log, &api_urls()?, signer, wire::api::publish::latest::PublishRequestContent {
+                    set: config
+                        .data
+                        .value
+                        .into_iter()
+                        .map(|(k, v)| (k, stored::record::RecordValue::V1(v)))
+                        .collect(),
+                    ..Default::default()
+                }).await?;
             },
             args::Command::SetDns(config) => {
                 let subdomain = match &config.subdomain {
@@ -443,49 +440,34 @@ async fn main() {
                         ),
                     );
                 }
-                let mut signer =
+                let signer =
                     get_identity_signer(
                         config.identity,
                     ).stack_context(&log, "Error constructing signer for identity")?;
-                publish_util::publish(
-                    log,
-                    &api_urls()?,
-                    signer.as_mut(),
-                    wire::api::publish::latest::PublishRequestContent {
-                        set: kvs,
-                        ..Default::default()
-                    },
-                ).await?;
+                publish_util::publish(log, &api_urls()?, signer, wire::api::publish::latest::PublishRequestContent {
+                    set: kvs,
+                    ..Default::default()
+                }).await?;
             },
             args::Command::Unset(config) => {
-                let mut signer =
+                let signer =
                     get_identity_signer(
                         config.identity,
                     ).stack_context(&log, "Error constructing signer for identity")?;
-                publish_util::publish(
-                    log,
-                    &api_urls()?,
-                    signer.as_mut(),
-                    wire::api::publish::latest::PublishRequestContent {
-                        clear: config.keys,
-                        ..Default::default()
-                    },
-                ).await?;
+                publish_util::publish(log, &api_urls()?, signer, wire::api::publish::latest::PublishRequestContent {
+                    clear: config.keys,
+                    ..Default::default()
+                }).await?;
             },
             args::Command::UnsetAll(config) => {
-                let mut signer =
+                let signer =
                     get_identity_signer(
                         config.identity,
                     ).stack_context(&log, "Error constructing signer for identity")?;
-                publish_util::publish(
-                    log,
-                    &api_urls()?,
-                    signer.as_mut(),
-                    wire::api::publish::latest::PublishRequestContent {
-                        clear_all: true,
-                        ..Default::default()
-                    },
-                ).await?;
+                publish_util::publish(log, &api_urls()?, signer, wire::api::publish::latest::PublishRequestContent {
+                    clear_all: true,
+                    ..Default::default()
+                }).await?;
             },
             args::Command::Identity(args) => match args {
                 args::Identity::NewLocal(args) => {

@@ -1,4 +1,10 @@
-use std::fs::read;
+use std::{
+    fs::read,
+    sync::{
+        Arc,
+        Mutex,
+    },
+};
 use loga::{
     ResultContext,
     ea,
@@ -108,7 +114,7 @@ mod card {
     }
 }
 
-pub fn get_identity_signer(ident: BackedIdentityArg) -> Result<Box<dyn IdentitySigner>, loga::Error> {
+pub fn get_identity_signer(ident: BackedIdentityArg) -> Result<Arc<Mutex<dyn IdentitySigner>>, loga::Error> {
     match ident {
         BackedIdentityArg::Local(ident_config) => {
             let log = &Log::new().fork(ea!(path = ident_config.to_string_lossy()));
@@ -116,7 +122,7 @@ pub fn get_identity_signer(ident: BackedIdentityArg) -> Result<Box<dyn IdentityS
                 serde_json::from_slice::<BackedIdentityLocal>(
                     &read(&ident_config).stack_context(log, "Error reading identity file")?,
                 ).stack_context(log, "Error parsing json in identity file")?;
-            return Ok(Box::new(ident_data));
+            return Ok(Arc::new(Mutex::new(ident_data)));
         },
         #[cfg(feature = "card")]
         BackedIdentityArg::Card { pcsc_id, pin } => {
@@ -127,13 +133,13 @@ pub fn get_identity_signer(ident: BackedIdentityArg) -> Result<Box<dyn IdentityS
             } else {
                 pin
             };
-            return Ok(Box::new(card::CardIdentitySigner {
+            return Ok(Arc::new(Mutex::new(card::CardIdentitySigner {
                 card: openpgp_card_pcsc::PcscBackend::open_by_ident(&pcsc_id, None)
                     .context_with("Failed to open card", ea!(card = pcsc_id))?
                     .into(),
                 pcsc_id: pcsc_id,
                 pin: pin,
-            }));
+            })));
         },
     };
 }

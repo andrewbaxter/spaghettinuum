@@ -8,6 +8,7 @@ use std::{
         Mutex,
     },
 };
+use chrono::Duration;
 use http_body::Body;
 use http_body_util::{
     combinators::BoxBody,
@@ -70,6 +71,7 @@ use spaghettinuum::{
         wire,
     },
     self_tls::{
+        request_cert,
         request_cert_stream,
         CertPair,
         SimpleResolvesServerCert,
@@ -100,7 +102,9 @@ use tokio::{
         write,
     },
     net::TcpListener,
+    select,
     spawn,
+    time::sleep,
 };
 use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::{
@@ -136,63 +140,86 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             log.err_with("No config passed on command line, and no config set in env var", ea!(env = ENV_CONFIG)),
         );
     };
-    let mut identity_signer =
-        get_identity_signer(config.identity.clone()).stack_context(log, "Error loading identity")?;
-    let mut global_ips = vec![];
-    for a in config.global_addrs {
-        global_ips.push(resolve_global_ip(log, a).await?);
-    };
+    let identity_signer = get_identity_signer(config.identity.clone()).stack_context(log, "Error loading identity")?;
 
     // Publish global ips
-    let mut publisher_urls = vec![];
-    for p in &config.publishers {
-        publisher_urls.push(Uri::from_str(&p).stack_context(log, "Invalid publisher URI")?);
-    }
-    publish_util::announce(log, identity_signer.as_mut(), &publisher_urls).await?;
-    publish_util::publish(
-        log,
-        &publisher_urls,
-        identity_signer.as_mut(),
-        wire::api::publish::v1::PublishRequestContent {
-            clear_all: true,
-            set: {
-                let mut out = HashMap::new();
-                for ip in global_ips {
-                    let key;
-                    let data;
-                    match ip {
-                        std::net::IpAddr::V4(ip) => {
-                            key = RecordType::A;
-                            data =
-                                serde_json::to_value(
-                                    &stored::dns_record::DnsA::V1(
-                                        stored::dns_record::latest::DnsA(vec![ip.to_string()]),
-                                    ),
-                                ).unwrap();
-                        },
-                        std::net::IpAddr::V6(ip) => {
-                            key = RecordType::Aaaa;
-                            data =
-                                serde_json::to_value(
-                                    &stored::dns_record::DnsAaaa::V1(
-                                        stored::dns_record::latest::DnsAaaa(vec![ip.to_string()]),
-                                    ),
-                                ).unwrap();
-                        },
+    let async_publish_ips = {
+        let identity_signer = identity_signer.clone();
+        let log = log.fork(ea!(sys = "publish_ips"));
+        async move {
+            ta_res!(());
+            let log = &log;
+            let mut global_ips = vec![];
+            for a in config.global_addrs {
+                global_ips.push(resolve_global_ip(log, a).await?);
+            };
+            loop {
+                match async {
+                    ta_res!(());
+                    let mut publisher_urls = vec![];
+                    for p in &config.publishers {
+                        publisher_urls.push(Uri::from_str(&p).stack_context(log, "Invalid publisher URI")?);
                     }
-                    let key = format_dns_key(".", key);
-                    if !out.contains_key(&key) {
-                        out.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
-                            ttl: 60,
-                            data: Some(data),
-                        }));
-                    }
+                    publish_util::announce(log, identity_signer.clone(), &publisher_urls).await?;
+                    publish_util::publish(
+                        log,
+                        &publisher_urls,
+                        identity_signer.clone(),
+                        wire::api::publish::v1::PublishRequestContent {
+                            clear_all: true,
+                            set: {
+                                let mut out = HashMap::new();
+                                for ip in &global_ips {
+                                    let key;
+                                    let data;
+                                    match ip {
+                                        std::net::IpAddr::V4(ip) => {
+                                            key = RecordType::A;
+                                            data =
+                                                serde_json::to_value(
+                                                    &stored::dns_record::DnsA::V1(
+                                                        stored::dns_record::latest::DnsA(vec![ip.to_string()]),
+                                                    ),
+                                                ).unwrap();
+                                        },
+                                        std::net::IpAddr::V6(ip) => {
+                                            key = RecordType::Aaaa;
+                                            data =
+                                                serde_json::to_value(
+                                                    &stored::dns_record::DnsAaaa::V1(
+                                                        stored::dns_record::latest::DnsAaaa(vec![ip.to_string()]),
+                                                    ),
+                                                ).unwrap();
+                                        },
+                                    }
+                                    let key = format_dns_key(".", key);
+                                    if !out.contains_key(&key) {
+                                        out.insert(
+                                            key,
+                                            stored::record::RecordValue::latest(stored::record::latest::RecordValue {
+                                                ttl: 60,
+                                                data: Some(data),
+                                            }),
+                                        );
+                                    }
+                                }
+                                out
+                            },
+                            ..Default::default()
+                        },
+                    ).await?;
+                    return Ok(());
+                }.await {
+                    Ok(_) => break,
+                    Err(e) => {
+                        log.log_err(INFO, e.context("Error reaching publisher, retrying"));
+                        sleep(Duration::seconds(60).to_std().unwrap()).await;
+                    },
                 }
-                out
-            },
-            ..Default::default()
-        },
-    ).await?;
+            }
+            return Ok(());
+        }
+    };
 
     // Start server or just tls renewal
     if let Some(serve) = config.serve {
@@ -244,16 +271,25 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 ).stack_context_with(log, "Couldn't parse PEM as utf-8", ea!(path = priv_path.to_string_lossy()))?,
             )
         };
-        let certs_stream =
-            request_cert_stream(
-                &log,
-                &tm,
-                identity_signer,
-                pub_pem.zip(priv_pem).map(|(pub_pem, priv_pem)| CertPair {
-                    pub_pem: pub_pem,
-                    priv_pem: priv_pem,
-                }),
-            ).await?;
+        let initial_certs = match pub_pem.zip(priv_pem) {
+            Some((pub_pem, priv_pem)) => CertPair {
+                pub_pem: pub_pem,
+                priv_pem: priv_pem,
+            },
+            None => loop {
+                match request_cert(&log, identity_signer.clone()).await {
+                    Ok(p) => break p,
+                    Err(e) => {
+                        log.log_err(
+                            WARN,
+                            e.context_with("Error fetching initial certificates, retrying", ea!(subsys = "self_tls")),
+                        );
+                        sleep(Duration::seconds(60).to_std().unwrap()).await;
+                    },
+                }
+            },
+        };
+        let certs_stream = request_cert_stream(&log, &tm, identity_signer.clone(), initial_certs).await?;
         let certs = Arc::new(Mutex::new(None));
         tm.stream(
             "Serve - handle cert changes",
@@ -398,8 +434,12 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                                         if req.method() != Method::GET {
                                             break;
                                         }
-                                        let mut path = content_dir.join(req.uri().path()).absolutize()?.to_path_buf();
-                                        if !path.starts_with(content_dir) {
+                                        let mut path =
+                                            content_dir
+                                                .join(req.uri().path().trim_start_matches('/'))
+                                                .absolutize()?
+                                                .to_path_buf();
+                                        if !path.starts_with(&content_dir) {
                                             break;
                                         }
                                         if path.is_dir() {
@@ -578,6 +618,13 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     } else {
         tm.terminate();
     }
+
+    select!{
+        r = async_publish_ips => {
+            r?;
+        }
+    }
+
     return Ok(());
 }
 

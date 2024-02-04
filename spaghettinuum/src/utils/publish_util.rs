@@ -1,5 +1,9 @@
 use std::{
     collections::HashMap,
+    sync::{
+        Arc,
+        Mutex,
+    },
 };
 use chrono::Utc;
 use hyper::Uri;
@@ -33,7 +37,7 @@ use super::{
 };
 
 pub fn generate_publish_announce(
-    signer: &mut dyn IdentitySigner,
+    signer: &Arc<Mutex<dyn IdentitySigner>>,
     publishers_info: Vec<InfoResponse>,
 ) -> Result<(Identity, stored::announcement::Announcement), String> {
     let announce_message = bincode::serialize(&stored::announcement::latest::AnnouncementContent {
@@ -43,7 +47,8 @@ pub fn generate_publish_announce(
         }).collect(),
         announced: Utc::now(),
     }).unwrap().blob();
-    let (identity, request_message_sig) = signer.sign(&announce_message).map_err(|e| e.to_string())?;
+    let (identity, request_message_sig) =
+        signer.lock().unwrap().sign(&announce_message).map_err(|e| e.to_string())?;
     return Ok((identity, stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
         message: announce_message,
         signature: request_message_sig,
@@ -53,13 +58,13 @@ pub fn generate_publish_announce(
 
 pub async fn announce(
     log: &Log,
-    identity_signer: &mut dyn IdentitySigner,
+    identity_signer: Arc<Mutex<dyn IdentitySigner>>,
     publishers: &[Uri],
 ) -> Result<(), loga::Error> {
     let mut publishers_info = vec![];
     for s in publishers {
         let info_body =
-            htreq::get(log, &format!("{}info", s), &HashMap::new(), 100 * 1024)
+            htreq::get(log, &format!("{}publish/v1/info", s), &HashMap::new(), 100 * 1024)
                 .await
                 .context("Error getting publisher info")?;
         let info =
@@ -73,13 +78,13 @@ pub async fn announce(
         log.log_with(
             DEBUG_OTHER,
             "Got publisher information",
-            ea!(info = serde_json::to_string_pretty(&info_body).unwrap()),
+            ea!(info = serde_json::to_string_pretty(&info).unwrap()),
         );
         publishers_info.push(info);
     }
     let (identity, announcement) =
         generate_publish_announce(
-            identity_signer,
+            &identity_signer,
             publishers_info,
         ).map_err(|e| log.err_with("Error generating publisher announcement", ea!(err = e)))?;
     let request = wire::api::publish::v1::AnnounceRequest {
@@ -98,12 +103,12 @@ pub async fn announce(
 pub async fn publish(
     log: &Log,
     publishers: &[Uri],
-    identity_signer: &mut dyn IdentitySigner,
+    identity_signer: Arc<Mutex<dyn IdentitySigner>>,
     args: wire::api::publish::latest::PublishRequestContent,
 ) -> Result<(), loga::Error> {
     let (identity, signed_request_content) =
         wire::api::publish::v1::JsonSignature::sign(
-            identity_signer,
+            &mut *identity_signer.lock().unwrap(),
             args,
         ).stack_context(&log, "Failed to sign publish request content")?;
     let request = wire::api::publish::latest::PublishRequest {

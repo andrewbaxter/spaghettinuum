@@ -43,12 +43,12 @@ Why it's cool:
 
 **Current status**: Feature complete but very new -- expect bugs and major changes.
 
-_This repo_ is
+**This repo** is
 
 - An implementation of a node, DNS bridge, CLI, and content hosting tools
 - A Rust library for embedding a resolver/publisher in your own software
 
-_Try it out!_
+**Try it out!**
 
 Set up your system to browse the spaghettinuum with [this guide](./readme/guide_browse.md), then try visting my uhh... business card thing at [here](https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s)
 
@@ -126,6 +126,18 @@ So safely browsing the web _today_ requires:
 3. Treating any other websites as untrustworthy
 
 Which would all be the same with gibberish names.
+
+## Censorship and anonymity
+
+Unlike something like IPFS where everything is naturally decentralized, including the content, with Spaghettinuum only the publisher announcements (SOA records) use peer-to-peer hosting and distribution.
+
+This means that unless you ensure resiliance yourself (ex: by setting up multiple servers, announcers) a Spaghettinuum can be taken down either by taking down the publisher or the hosting server.
+
+Generally speaking, peer-to-peer hosting and other similar techniques have restrictions such as requiring static content, data size restrictions, client computation memory and cpu burdens, and general complexity.
+
+I feel like the most important piece to decentralize is the name: even if everything else is taken down, even if there is some downtime, as long as you still control your name you can republish it later somewhere. The restrictions above make common use cases like hosting dynamic content with private databases, personal services, etc. more difficult.
+
+I'd like this to be support other decentralization, but at the core I think a simpler approach will be easier to adopt and make it more stable once adopted.
 
 # Privacy
 
