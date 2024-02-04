@@ -26,6 +26,6 @@ jobs:
             config.system.build.docker_image \
             ;
           export TAG="${GITHUB_REF#refs/*/}"
-          docker image import image.tar.gz spaghettinuum:latest
-          docker image tag spaghettinuum:latest spaghettinuum:$TAG
-          docker image push --all-tags spaghettinuum
+          docker image import image.tar.gz ghcr.io/andrewbaxter/spaghettinuum:latest
+          docker image tag ghcr.io/andrewbaxter/spaghettinuum:latest ghcr.io/andrewbaxter/spaghettinuum:$TAG
+          docker image push --all-tags ghcr.io/andrewbaxter/spaghettinuum
