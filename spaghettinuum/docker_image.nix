@@ -40,7 +40,7 @@ buildSystem
                       rustPlatform.buildRustPackage {
                         pname = "spaghettinuum";
                         version = "0.0.0";
-                        src = ./spaghettinuum;
+                        src = ../spaghettinuum;
                         # Based on final path element of src
                         sourceRoot = "spaghettinuum";
                         # For build.rs:
@@ -54,7 +54,7 @@ buildSystem
                           cd rw
                         '';
                         cargoLock = {
-                          lockFile = ./spaghettinuum/Cargo.lock;
+                          lockFile = ../spaghettinuum/Cargo.lock;
                         };
                         buildFeatures = [
                           "card"

@@ -1,4 +1,4 @@
-![spaghettinuum](logo.svg)
+![spaghettinuum](readme/logo.svg)
 
 The spaghettinuum is an alternative to DNS based around a distributed hash table (DHT). Replacing the web with a plate of pasta. A little less centralized and a little more noodly.
 
