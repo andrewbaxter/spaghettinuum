@@ -151,15 +151,15 @@ Which would all be the same with gibberish names.
 
 ## Censorship and anonymity
 
-Unlike something like IPFS where everything is naturally decentralized, including the content, with Spaghettinuum only the publisher announcements (SOA records) use peer-to-peer hosting and distribution.
+Unlike something like IPFS where everything is naturally decentralized (including the content), with Spaghettinuum only the publisher announcements (SOA records) use peer-to-peer hosting and distribution.
 
-This means that unless you ensure resiliance yourself (ex: by setting up multiple servers, announcers) a Spaghettinuum can be taken down either by taking down the publisher or the hosting server.
+This means that unless you ensure resiliance yourself (ex: by setting up multiple servers, announcers) a Spaghettinuum site can be taken down either by taking down the publisher or the hosting server.
 
 Generally speaking, peer-to-peer hosting and other similar techniques have restrictions such as requiring static content, data size restrictions, client computation memory and cpu burdens, and general complexity.
 
-I feel like the most important piece to decentralize is the name: even if everything else is taken down, even if there is some downtime, as long as you still control your name you can republish it later somewhere. The restrictions above make common use cases like hosting dynamic content with private databases, personal services, etc. more difficult.
+I feel like the most important piece to decentralize is the name: even if everything else is taken down and even if there is some downtime, as long as you still control your name you can re-host your site somewhere else later. In order to make hosting dynamic content (services, private databases) Spaghettinuum focuses on just decentralizing the name. I hope that the simplicity also makes it easier to adopt and more stable.
 
-I'd like this to be support other decentralization, but at the core I think a simpler approach will be easier to adopt and make it more stable once adopted.
+I hope to support improved censorship resistance and anonymity though as far as it doesn't impact other goals.
 
 # Privacy
 
