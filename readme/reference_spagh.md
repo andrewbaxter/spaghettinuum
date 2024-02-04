@@ -12,7 +12,7 @@ This is a command line tool for working with the various servers. You can use it
 
 ## Installation
 
-Install with `cargo install spaghettinuum`.
+Install with `cargo install spaghettinuum` or use the [Docker image](https://github.com/andrewbaxter/spaghettinuum/pkgs/container/spaghettinuum).
 
 ## Environment variables
 

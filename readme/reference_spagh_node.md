@@ -14,7 +14,7 @@ However, if you want to publish anything (website, service discovery, etc) you'l
 
 ## Installation
 
-Install with `cargo install spaghettinuum`.
+Install with `cargo install spaghettinuum` or use the [Docker image](https://github.com/andrewbaxter/spaghettinuum/pkgs/container/spaghettinuum).
 
 ## Environment variables
 

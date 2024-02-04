@@ -2,16 +2,26 @@
 
 The spaghettinuum is an alternative to DNS based around a distributed hash table (DHT). Replacing the web with a plate of pasta. A little less centralized and a little more noodly.
 
-```console
+```
 # spagh identity new-local ./my.ident
+```
+
+```json
 {
   "id": "yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r"
 }
+```
+
+```
 # spagh announce local ./my.ident
+```
+
+```
 # spagh set local ./my.ident - << BODY
 {
   "dns/./a": {
-    "v1": ["203.0.113.111"]
+    "ttl": 60,
+    "data": "v1": ["203.0.113.111"]
   },
   "serial_number": {
     "ttl": 60,
@@ -22,11 +32,23 @@ The spaghettinuum is an alternative to DNS based around a distributed hash table
   }
 }
 BODY
+```
+
+```
 # dig yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s
+```
+
+```
 ...
 203.0.113.111
 ...
+```
+
+```
 # spagh get yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r serial_number
+```
+
+```json
 {
   "long": "1234123412341234-1234",
   "short": "1234"

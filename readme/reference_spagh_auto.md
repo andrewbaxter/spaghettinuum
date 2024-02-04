@@ -12,7 +12,7 @@ This is a small helper for hosting content on the spaghettinuum. It can do the f
 
 ## Installation
 
-Install with `cargo install spaghettinuum`.
+Install with `cargo install spaghettinuum` or use the [Docker image](https://github.com/andrewbaxter/spaghettinuum/pkgs/container/spaghettinuum).
 
 ## Environment variables
 

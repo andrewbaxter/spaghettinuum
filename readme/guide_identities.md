@@ -62,6 +62,10 @@ Any card that supports OpenPGP PC/SC and Ed25519 keys should work. The Yubikey 5
 
   This will list the card identites, their ids, and the PC/SC id (like `0006:12341234`) used for command line arguments and configs.
 
+### Troubleshooting
+
+- Make sure your Yubikey isn't plugged into the USB 2 socket upside down
+
 ## Referring to identities in configs and the command line
 
 When running publishing commands or running servers that self-publish you need to refer to an identity not by its normal id but by the type and path or PC/SC ID. The command documentation also explains this, but to prepare you for when you encounter it:
