@@ -90,7 +90,7 @@ fn store_fresh_duration() -> Duration {
 }
 
 // All stored values expire after 24h
-fn expiry() -> Duration {
+fn store_expire_duration() -> Duration {
     return Duration::hours(24);
 }
 
@@ -162,6 +162,7 @@ struct NextFindTimeout {
 #[derive(Clone)]
 struct ValueState {
     value: stored::announcement::Announcement,
+    received: DateTime<Utc>,
     updated: DateTime<Utc>,
 }
 
@@ -449,12 +450,8 @@ impl Node {
             let mut unfresh = vec![];
             let now = Utc::now();
             dir.0.store.lock().unwrap().retain(|k, v| {
-                match &v.value {
-                    stored::announcement::Announcement::V1(value) => {
-                        if value.parse_unwrap().announced + expiry() < now {
-                            return false;
-                        }
-                    },
+                if v.received + store_expire_duration() < now {
+                    return false;
                 }
                 if v.updated + store_fresh_duration() < now {
                     v.updated = now;
@@ -653,6 +650,7 @@ impl Node {
                             .log_with(DEBUG_NODE, "Own store request, storing locally", ea!(value = key.dbg_str()));
                         self.0.store.lock().unwrap().insert(key.clone(), ValueState {
                             value: value.clone(),
+                            received: Utc::now(),
                             updated: Utc::now(),
                         });
                     },
@@ -1053,10 +1051,6 @@ impl Node {
                             found_published = content.announced;
                         },
                     }
-                    if found_published + expiry() < Utc::now() {
-                        log.log_with(DEBUG_NODE, "Got expired value", ea!(published = found_published.to_rfc3339()));
-                        break;
-                    }
                     match &mut state.value {
                         Some(state_value) => {
                             let have_published;
@@ -1245,9 +1239,10 @@ impl Node {
                                     have_published = have_value.parse_unwrap().announced;
                                 },
                             }
-                            if new_announced > have_published {
+                            if new_announced >= have_published {
                                 e.insert(ValueState {
                                     value: m.value,
+                                    received: Utc::now(),
                                     updated: Utc::now(),
                                 });
                             }
@@ -1255,6 +1250,7 @@ impl Node {
                         Entry::Vacant(e) => {
                             e.insert(ValueState {
                                 value: m.value,
+                                received: Utc::now(),
                                 updated: Utc::now(),
                             });
                         },
