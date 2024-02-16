@@ -904,7 +904,7 @@ pub async fn start_dns_bridge(
             );
         }
     }
-    tm.critical_task::<_, loga::Error>("DNS bridge - server", {
+    tm.critical_task("DNS bridge - server", {
         let log = log.clone();
         let tm = tm.clone();
         async move {
