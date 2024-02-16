@@ -226,9 +226,9 @@ struct FindState {
     updated: DateTime<Utc>,
     nearest: Vec<NearestNodeEntry>,
     outstanding: Vec<OutstandingNodeEntry>,
-    // TODO rename -> seen
-    requested: HashSet<node_identity::NodeIdentity>,
-    // for storing value, or retrieving value
+    seen: HashSet<node_identity::NodeIdentity>,
+    // For storing value, or retrieving value. Only used for identity searches (None
+    // otherwise).
     value: Option<stored::announcement::Announcement>,
     futures: Vec<ManualFutureCompleter<FindResult>>,
 }
@@ -745,10 +745,35 @@ impl Node {
                         node: NearestNodeEntryNode::Self_,
                     }],
                     outstanding: vec![],
-                    requested: HashSet::new(),
+                    seen: HashSet::new(),
                     value: match &goal {
                         FindGoal::Coord(_) => None,
-                        FindGoal::Identity(i) => self.0.store.lock().unwrap().get(i).map(|x| x.value.clone()),
+                        FindGoal::Identity(i) => match self
+                            .0
+                            .store
+                            .lock()
+                            .unwrap()
+                            .get(i)
+                            .map(|x| x.value.clone()) {
+                            Some(v) => {
+                                self
+                                    .0
+                                    .log
+                                    .log_with(
+                                        DEBUG_NODE,
+                                        "Starting find with initial value",
+                                        ea!(value = v.dbg_str(), goal = goal.dbg_str()),
+                                    );
+                                Some(v)
+                            },
+                            None => {
+                                self
+                                    .0
+                                    .log
+                                    .log_with(DEBUG_NODE, "Starting find with no value", ea!(goal = goal.dbg_str()));
+                                None
+                            },
+                        },
                     },
                     futures: vec![],
                 }),
@@ -812,6 +837,20 @@ impl Node {
     }
 
     async fn complete_state(&self, state: FindState) {
+        match &state.value {
+            Some(v) => self
+                .0
+                .log
+                .log_with(
+                    DEBUG_NODE,
+                    "Completing state with value",
+                    ea!(value = v.dbg_str(), goal = state.goal.dbg_str()),
+                ),
+            None => self
+                .0
+                .log
+                .log_with(DEBUG_NODE, "Completing state with no value", ea!(goal = state.goal.dbg_str())),
+        }
         for f in state.futures {
             f.complete(FindResult {
                 value: state.value.clone(),
@@ -938,7 +977,7 @@ impl Node {
                 FindGoal::Identity(i) => ident_coord(i),
             };
             for n in content.nodes {
-                if !state.requested.insert(n.ident.clone()) {
+                if !state.seen.insert(n.ident.clone()) {
                     // Already considered/requested this node previously - this overlaps info in
                     // nearest/outstanding partially, but if we reject a response (ex: bad signature)
                     // it will never go into the nearest/outstanding collections so we could request
@@ -1040,11 +1079,16 @@ impl Node {
                         },
                         _ => (),
                     }
+                    log.log_with(
+                        DEBUG_NODE,
+                        "Found better value for find, replacing",
+                        ea!(old = state.value.dbg_str(), new = state.value.dbg_str(), goal = state.goal.dbg_str()),
+                    );
                     state.value = Some(value);
                 };
             }
 
-            // If done cleanup or else update timeouts
+            // If done, cleanup or else update timeouts
             if state.outstanding.is_empty() {
                 // Remove outstanding state to complete it
                 Some(state_entry.remove())

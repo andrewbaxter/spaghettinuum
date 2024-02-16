@@ -524,7 +524,7 @@ async fn main() {
                     for url in api_urls()? {
                         let url = format!("{}admin/health", url);
                         log.log_with(DEBUG_OTHER, "Sending health detail request (GET)", ea!(url = url));
-                        htreq::get(log, &url, &admin_headers()?, 100).await?;
+                        htreq::get(log, &url, &admin_headers()?, 10 * 1024).await?;
                     }
                 },
                 args::Admin::AllowIdentity(config) => {
