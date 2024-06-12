@@ -42,7 +42,7 @@ impl<T: Serialize + DeserializeOwned, I> std::fmt::Debug for BincodeSignature<T,
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct DhtCoord(pub GenericArray<u8, generic_array::typenum::U32>);
 
 impl Serialize for DhtCoord {

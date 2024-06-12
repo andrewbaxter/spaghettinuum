@@ -48,11 +48,8 @@ pub struct AcmeConfig {
 pub struct DnsBridgeConfig {
     /// Normal DNS - typically port 53.
     pub udp_bind_addrs: Vec<StrSocketAddr>,
-    /// TCP for DNS over TLS.  If you set up `tls` below this will be TLS, otherwise
-    /// raw TCP which you can proxy with your own TLS cert.
+    /// TCP for DNS over TLS. Please set up your own TLS reverse proxy.
     pub tcp_bind_addrs: Vec<StrSocketAddr>,
-    /// Self managed DNS over TLS via ACME.
-    pub tls: Option<AcmeConfig>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

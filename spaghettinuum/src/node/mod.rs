@@ -76,8 +76,12 @@ use tokio::net::UdpSocket;
 
 pub mod db;
 
-const HASH_SIZE: usize = 256usize;
-const NEIGHBORHOOD: usize = 8usize;
+// Number of bits in hash, minus the number of bits in size of bucket
+// (neighborhood)
+const NEIGHBORHOOD_BITS: usize = 3;
+const NEIGHBORHOOD: usize = 1 << NEIGHBORHOOD_BITS;
+const HASH_BITS: usize = 256;
+const BUCKET_COUNT: usize = HASH_BITS - NEIGHBORHOOD_BITS + 1;
 const PARALLEL: usize = 3;
 
 fn req_timeout() -> Duration {
@@ -113,7 +117,7 @@ fn dist_<N: ArrayLength<u8>>(a: &GenericArray<u8, N>, b: &GenericArray<u8, N>) -
 
 fn dist(a: &DhtCoord, b: &DhtCoord) -> (usize, DhtCoord) {
     let (leading_zeros, out) = dist_(&a.0, &b.0);
-    return (leading_zeros, DhtCoord(out));
+    return (leading_zeros.min(BUCKET_COUNT - 1), DhtCoord(out));
 }
 
 #[cfg(test)]
@@ -142,6 +146,32 @@ mod dist_tests {
         let (lz, d) = dist_(SmallBytes::from_slice(&[128u8, 0u8]), SmallBytes::from_slice(&[0u8, 0u8]));
         assert_eq!(lz, 0);
         assert_eq!(d.as_slice(), &[128u8, 0u8]);
+    }
+
+    #[test]
+    fn assert_nearest_bucket_size_at_least_k() {
+        // All zeros
+        let self_coord = DhtCoord(GenericArray::default());
+
+        fn coord_from_int(n: usize) -> DhtCoord {
+            let mut n = n.to_le_bytes().to_vec();
+            n.resize(HASH_BITS / 8, 0u8);
+            n.reverse();
+            return DhtCoord(GenericArray::<u8, generic_array::typenum::U32>::from_slice(&n).to_owned());
+        }
+
+        // Nearest 8 go in last bucket
+        for n in 0 .. NEIGHBORHOOD {
+            assert_eq!(dist(&coord_from_int(n), &self_coord).0, BUCKET_COUNT - 1);
+        }
+
+        // Next 8 go in semi-last bucket (next bit flipped, 1 prefix of same size)
+        for n in NEIGHBORHOOD .. (NEIGHBORHOOD * 2) {
+            assert_eq!(dist(&coord_from_int(n), &self_coord).0, BUCKET_COUNT - 2);
+        }
+
+        // Next goes in next higher bucket
+        assert_eq!(dist(&coord_from_int(NEIGHBORHOOD * 2), &self_coord).0, BUCKET_COUNT - 3);
     }
 }
 
@@ -177,7 +207,7 @@ struct NextChallengeTimeout {
 }
 
 struct Buckets {
-    buckets: [Vec<wire::node::latest::NodeState>; HASH_SIZE],
+    buckets: [Vec<wire::node::latest::NodeState>; BUCKET_COUNT],
     addrs: HashMap<SocketAddr, NodeIdentity>,
 }
 
@@ -204,7 +234,7 @@ pub struct Node(Arc<NodeInner>);
 #[derive(Clone, Debug)]
 struct OutstandingNodeEntry {
     dist: DhtCoord,
-    leading_zeros: usize,
+    bucket_i: usize,
     challenge: Blob,
     node: wire::node::latest::NodeInfo,
 }
@@ -241,7 +271,7 @@ struct FindResult {
 
 struct PingState {
     req_id: usize,
-    leading_zeros: usize,
+    bucket_i: usize,
 }
 
 struct ChallengeState {
@@ -440,7 +470,7 @@ impl Node {
                 state_entry.remove()
             };
             for o in &state.outstanding {
-                dir.mark_node_unresponsive(o.node.ident, o.leading_zeros, true);
+                dir.mark_node_unresponsive(o.node.ident, o.bucket_i, true);
             }
             dir.complete_state(state).await;
         }));
@@ -467,7 +497,7 @@ impl Node {
         // Pings
         tm.periodic("Node - neighbor aliveness", Duration::minutes(10).to_std().unwrap(), cap_fn!(()(dir, ping_timeout_write) {
             for i in 0 .. NEIGHBORHOOD {
-                for leading_zeros in 0 .. HASH_SIZE {
+                for leading_zeros in 0 .. BUCKET_COUNT {
                     let (id, addr) =
                         if let Some(node) = dir.0.buckets.lock().unwrap().buckets[leading_zeros].get(i) {
                             (node.node.ident.clone(), node.node.address.clone())
@@ -479,7 +509,7 @@ impl Node {
                         Entry::Occupied(_) => continue,
                         Entry::Vacant(e) => e.insert(PingState {
                             req_id: req_id,
-                            leading_zeros: leading_zeros,
+                            bucket_i: leading_zeros,
                         }),
                     };
                     dir.send(&addr.0, wire::node::Protocol::V1(wire::node::latest::Message::Ping)).await;
@@ -507,7 +537,7 @@ impl Node {
                 }
                 state_entry.remove()
             };
-            dir.mark_node_unresponsive(e.key.0, state.leading_zeros, true);
+            dir.mark_node_unresponsive(e.key.0, state.bucket_i, true);
         }));
 
         // Challenge timeouts
@@ -674,9 +704,9 @@ impl Node {
         return res.value;
     }
 
-    fn mark_node_unresponsive(&self, key: node_identity::NodeIdentity, leading_zeros: usize, unresponsive: bool) {
+    fn mark_node_unresponsive(&self, key: node_identity::NodeIdentity, bucket_i: usize, unresponsive: bool) {
         let mut buckets = self.0.buckets.lock().unwrap();
-        let bucket = &mut buckets.buckets[leading_zeros];
+        let bucket = &mut buckets.buckets[bucket_i];
         for n in bucket {
             if n.node.ident == key {
                 n.unresponsive = unresponsive;
@@ -782,10 +812,10 @@ impl Node {
             let closest_peers = self.get_closest_peers(goal_coord, PARALLEL);
             for p in closest_peers {
                 let challenge = generate_challenge();
-                let (leading_zeros, dist) = dist(&node_ident_coord(&p.ident), &goal_coord);
+                let (bucket_i, dist) = dist(&node_ident_coord(&p.ident), &goal_coord);
                 state.outstanding.push(OutstandingNodeEntry {
                     dist: dist,
-                    leading_zeros: leading_zeros,
+                    bucket_i: bucket_i,
                     challenge: challenge.clone(),
                     node: p.clone(),
                 });
@@ -983,7 +1013,7 @@ impl Node {
                     continue;
                 }
                 let candidate_hash = node_ident_coord(&n.ident);
-                let (leading_zeros, candidate_dist) = dist(&candidate_hash, &goal_coord);
+                let (bucket_i, candidate_dist) = dist(&candidate_hash, &goal_coord);
 
                 // If nearest list is full and found node is farther away than any current nodes,
                 // drop it
@@ -1023,7 +1053,7 @@ impl Node {
                     dist: candidate_dist,
                     challenge: challenge.clone(),
                     node: n.clone(),
-                    leading_zeros: leading_zeros,
+                    bucket_i,
                 });
                 state.outstanding.sort_by_key(|e| e.dist);
 
@@ -1149,26 +1179,46 @@ impl Node {
 
     fn get_closest_peers(&self, goal_coord: DhtCoord, count: usize) -> Vec<wire::node::latest::NodeInfo> {
         let buckets = self.0.buckets.lock().unwrap();
-        let (leading_zeros, _) = dist(&goal_coord, &self.0.own_coord);
+        let (bucket_i, _) = dist(&goal_coord, &self.0.own_coord);
         let mut nodes: Vec<wire::node::latest::NodeInfo> = vec![];
-        'outer1: for bucket in leading_zeros .. HASH_SIZE {
-            for state in &buckets.buckets[bucket] {
-                if nodes.len() >= count {
-                    break 'outer1;
-                }
-                nodes.push(state.node.clone());
-            }
-        }
-        if leading_zeros > 0 {
-            'outer: for bucket in (0 .. leading_zeros - 1).rev() {
+
+        bb!{
+            'full _;
+            // 1. Start with nodes in the same k-bucket, since all nodes in a bucket are in a
+            //    distinct subtree from all higher and lower-k buckets, so nodes in that bucket will
+            //    naturally be closest. (All k-buckets are distinct subtrees of increasing distance
+            //    from the current node).
+            //
+            // 2. Failing that, try buckets nearer to the current node (higher leading zeros)
+            //    because all nearer buckets form a combined distinct subtree than any more distant
+            //    nodes
+            for bucket in bucket_i .. BUCKET_COUNT {
                 for state in &buckets.buckets[bucket] {
-                    if nodes.len() >= count {
-                        break 'outer;
+                    if state.unresponsive {
+                        continue;
                     }
                     nodes.push(state.node.clone());
+                    if nodes.len() >= count {
+                        break 'full;
+                    }
+                }
+            }
+            // 3. Failing that, try more distant buckets
+            if bucket_i > 0 {
+                for bucket in (0 .. bucket_i - 1).rev() {
+                    for state in &buckets.buckets[bucket] {
+                        if state.unresponsive {
+                            continue;
+                        }
+                        nodes.push(state.node.clone());
+                        if nodes.len() >= count {
+                            break 'full;
+                        }
+                    }
                 }
             }
         }
+
         return nodes;
     }
 
@@ -1269,7 +1319,7 @@ impl Node {
                         Entry::Occupied(s) => s.remove(),
                         Entry::Vacant(_) => return Ok(()),
                     };
-                    self.mark_node_unresponsive(k, state.leading_zeros, false);
+                    self.mark_node_unresponsive(k, state.bucket_i, false);
                 },
                 wire::node::latest::Message::Challenge(challenge) => {
                     self
@@ -1300,7 +1350,7 @@ impl Node {
             log.log(DEBUG_NODE, "Own node id, ignoring");
             return false;
         }
-        let (leading_zeros, _) = dist(&node_ident_coord(&id), &self.0.own_coord);
+        let (bucket_i, _) = dist(&node_ident_coord(&id), &self.0.own_coord);
         let mut buckets = self.0.buckets.lock().unwrap();
         let buckets = &mut *buckets;
 
@@ -1312,8 +1362,8 @@ impl Node {
             new_ident: NodeIdentity,
         ) {
             if let Some(old) = buckets.addrs.get(&addr) {
-                let (leading_zeros, _) = dist(&node_ident_coord(old), own_coord);
-                let bucket = &mut buckets.buckets[leading_zeros];
+                let (bucket_i, _) = dist(&node_ident_coord(old), own_coord);
+                let bucket = &mut buckets.buckets[bucket_i];
                 for i in 0 .. bucket.len() {
                     let n = &mut bucket[i];
                     if &n.node.ident == old {
@@ -1331,7 +1381,7 @@ impl Node {
         }
 
         let new_node = 'logic : loop {
-            let bucket = &mut buckets.buckets[leading_zeros];
+            let bucket = &mut buckets.buckets[bucket_i];
             let mut last_unresponsive: Option<usize> = None;
 
             // Updated or already known

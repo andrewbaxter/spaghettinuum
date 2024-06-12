@@ -49,10 +49,7 @@ serde_json = "1"
 taskmanager = "0.5"
 loga = "0.4"
 aargvark = { version = "0.1.2", features = ["serde_json", "http_types", "url"] }
-poem = { version = "2", features = [
-    "rustls",
-    "acme-native-roots",
-], path = "fork-poem/poem" }
+poem = { version = "2", features = ["rustls"] }
 openpgp-card-pcsc = { version = "0.3", optional = true }
 openpgp-card-sequoia = { version = "0.1", optional = true }
 sequoia-openpgp = { version = "1.17", features = [
