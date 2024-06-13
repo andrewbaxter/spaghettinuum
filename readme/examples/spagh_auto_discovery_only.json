@@ -19,6 +19,8 @@
     "identity": {
         "local": "./my.ident"
     },
-    "publisher": "https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s",
+    "publishers": [
+        "https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s"
+    ],
     "serve": null
 }

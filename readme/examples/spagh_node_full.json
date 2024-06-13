@@ -40,18 +40,9 @@
     "resolver": {
         "dns_bridge": {
             "tcp_bind_addrs": [
-                "0:853",
-                "[::]:853"
+                "0:8853",
+                "[::]:8853"
             ],
-            "tls": {
-                "acme_directory_url": "https://acme-v02.api.letsencrypt.org/directory",
-                "bind_addrs": [],
-                "contacts": [
-                    "mailto:spagh@example.org"
-                ],
-                "eab": null,
-                "name": "spagh.example.org"
-            },
             "udp_bind_addrs": [
                 "0:53",
                 "[::]:53"

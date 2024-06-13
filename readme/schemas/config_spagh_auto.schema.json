@@ -5,7 +5,7 @@
   "required": [
     "global_addrs",
     "identity",
-    "publisher"
+    "publishers"
   ],
   "properties": {
     "global_addrs": {
@@ -23,9 +23,12 @@
         }
       ]
     },
-    "publisher": {
+    "publishers": {
       "description": "Url of publisher where this identity is authorized to publish",
-      "type": "string"
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "serve": {
       "description": "Configure HTTPS serving using certipasta certs",
@@ -53,33 +56,6 @@
           "properties": {
             "local": {
               "type": "string"
-            }
-          },
-          "additionalProperties": false
-        },
-        {
-          "description": "PC/SC card with ED25519 key",
-          "type": "object",
-          "required": [
-            "card"
-          ],
-          "properties": {
-            "card": {
-              "type": "object",
-              "required": [
-                "pcsc_id",
-                "pin"
-              ],
-              "properties": {
-                "pcsc_id": {
-                  "description": "Card to register, using id per pcscd (not identity id)",
-                  "type": "string"
-                },
-                "pin": {
-                  "description": "Card pin",
-                  "type": "string"
-                }
-              }
             }
           },
           "additionalProperties": false

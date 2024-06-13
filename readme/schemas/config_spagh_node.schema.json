@@ -8,7 +8,7 @@
   ],
   "properties": {
     "admin_token": {
-      "description": "When configuring the publisher, admin endpoints must be accessed with this as a bearer http authorization token.  Required for publisher.",
+      "description": "HTTP authorization bearer token for accessing publisher admin endpoints. If None, remote admin operations will be disabled (only self-publish will work).",
       "default": null,
       "type": [
         "string",
@@ -81,43 +81,6 @@
     }
   },
   "definitions": {
-    "AcmeConfig": {
-      "description": "Use ACME to provision a TLS cert.  This uses the HTTP verification method.  For verification, a http server is started briefly on port 80, so make sure traffic can reach the server on port 80 and the normal api listener isn't operating on port 80.",
-      "type": "object",
-      "required": [
-        "acme_directory_url",
-        "contacts",
-        "name"
-      ],
-      "properties": {
-        "acme_directory_url": {
-          "description": "Ex: `https://acme.zerossl.com/v2/DV90`",
-          "type": "string"
-        },
-        "contacts": {
-          "description": "Contacts by which the issuer can reach you if there's an issue.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "eab": {
-          "description": "External account binding credentials provided by SSL cert issuer in advance. Not all cert providers need this (Let's Encrypt doesn't need it).",
-          "anyOf": [
-            {
-              "$ref": "#/definitions/EabConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "name": {
-          "description": "DNS name (A, AAAA) for the certificate, must also be a valid DNS record. Explanation: Unless you own an IP block it's basically impossible to get a TLS cert for a bare ip address. DoT clients will either ignore the name on the certificate or allow the user to specify an alternative, so we can get an SSL cert that way.",
-          "type": "string"
-        }
-      }
-    },
     "BackedIdentityArg": {
       "description": "An identity with its associated secret.",
       "oneOf": [
@@ -130,33 +93,6 @@
           "properties": {
             "local": {
               "type": "string"
-            }
-          },
-          "additionalProperties": false
-        },
-        {
-          "description": "PC/SC card with ED25519 key",
-          "type": "object",
-          "required": [
-            "card"
-          ],
-          "properties": {
-            "card": {
-              "type": "object",
-              "required": [
-                "pcsc_id",
-                "pin"
-              ],
-              "properties": {
-                "pcsc_id": {
-                  "description": "Card to register, using id per pcscd (not identity id)",
-                  "type": "string"
-                },
-                "pin": {
-                  "description": "Card pin",
-                  "type": "string"
-                }
-              }
             }
           },
           "additionalProperties": false
@@ -196,22 +132,11 @@
       ],
       "properties": {
         "tcp_bind_addrs": {
-          "description": "TCP for DNS over TLS.  If you set up `tls` below this will be TLS, otherwise raw TCP which you can proxy with your own TLS cert.",
+          "description": "TCP for DNS over TLS. Please set up your own TLS reverse proxy.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/StrSocketAddr"
           }
-        },
-        "tls": {
-          "description": "Self managed DNS over TLS via ACME.",
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AcmeConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
         },
         "udp_bind_addrs": {
           "description": "Normal DNS - typically port 53.",
@@ -219,23 +144,6 @@
           "items": {
             "$ref": "#/definitions/StrSocketAddr"
           }
-        }
-      }
-    },
-    "EabConfig": {
-      "type": "object",
-      "required": [
-        "hmac_b64",
-        "kid"
-      ],
-      "properties": {
-        "hmac_b64": {
-          "description": "Provided by ACME provider.",
-          "type": "string"
-        },
-        "kid": {
-          "description": "Provided by ACME provider.",
-          "type": "string"
         }
       }
     },

@@ -1,6 +1,0 @@
-[submodule "fork-poem"]
-	path = spaghettinuum/fork-poem
-	url = https://github.com/andrewbaxter/fork-poem.git
-[submodule "fork-jsonwebtoken"]
-	path = spaghettinuum/fork-jsonwebtoken
-	url = https://github.com/andrewbaxter/fork-jsonwebtoken.git
