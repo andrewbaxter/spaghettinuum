@@ -1,35 +1,43 @@
-use std::{
-    collections::HashMap,
-    pin::Pin,
-};
-use futures::Future;
-use itertools::Itertools;
-use loga::{
-    ea,
-    DebugDisplay,
-};
-use poem::{
-    Endpoint,
-    async_trait,
-    http::{
-        StatusCode,
-        header::AUTHORIZATION,
+use {
+    super::{
+        blob::{
+            Blob,
+            ToBlob,
+        },
+        log::{
+            Log,
+            DEBUG_HTSERVE,
+        },
     },
-    IntoResponse,
-};
-use serde::Serialize;
-use sha2::{
-    Digest,
-    Sha256,
-};
-use super::{
-    blob::{
-        Blob,
-        ToBlob,
+    futures::Future,
+    http_body_util::BodyExt,
+    htwrap::htserve::{
+        body_full,
+        response_200,
+        response_400,
+        response_401,
+        response_404,
+        response_503,
+        response_503_text,
+        Body,
     },
-    log::{
-        Log,
-        DEBUG_HTSERVE,
+    hyper::body::Incoming,
+    itertools::Itertools,
+    loga::{
+        ea,
+        DebugDisplay,
+        ErrContext,
+    },
+    serde::Serialize,
+    sha2::{
+        Digest,
+        Sha256,
+    },
+    std::{
+        collections::HashMap,
+        convert::Infallible,
+        pin::Pin,
+        sync::Arc,
     },
 };
 
@@ -121,145 +129,151 @@ pub enum Tree {
     Leaf(Leaf),
 }
 
-pub struct Handler {
+struct Handler_ {
     root: Tree,
     log: Log,
 }
 
-#[async_trait]
-impl Endpoint for Handler {
-    type Output = poem::Response;
+#[derive(Clone)]
+pub struct Handler(Arc<Handler_>);
 
-    async fn call(&self, req: poem::Request) -> poem::Result<Self::Output> {
-        let method = req.method().clone();
-        let url = req.uri().to_string();
-        let headers = req.headers().clone();
-        let bearer =
-            headers
-                .get(AUTHORIZATION)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "))
-                .map(|v| v.to_string());
-        let path;
-        let query;
-        match req.uri().path_and_query() {
-            Some(pq) => {
-                let path0 = pq.path().trim_matches('/');
-                if path0 == "" {
-                    path = vec![];
-                } else {
-                    path = path0.split("/").map(str::to_string).collect();
-                }
-                match pq.query() {
-                    Some(q) => query = q.to_string(),
-                    None => query = "".to_string(),
-                }
-            },
-            None => {
+pub async fn handle(handler: Handler, req: hyper::Request<Incoming>) -> Result<hyper::Response<Body>, Infallible> {
+    let method = req.method().clone();
+    let url = req.uri().to_string();
+    let headers = req.headers().clone();
+    let bearer =
+        headers
+            .get(hyper::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(|v| v.to_string());
+    let path;
+    let query;
+    match req.uri().path_and_query() {
+        Some(pq) => {
+            let path0 = pq.path().trim_matches('/');
+            if path0 == "" {
                 path = vec![];
-                query = "".to_string();
-            },
-        }
-        let body = req.into_body().into_bytes().await?.blob();
-        self
-            .log
-            .log_with(
-                DEBUG_HTSERVE,
-                "Receive",
-                ea!(
-                    method = method,
-                    url = url,
-                    headers = headers.pretty_dbg_str(),
-                    body = String::from_utf8_lossy(&body)
-                ),
-            );
-        let mut i = 0;
-        let mut at = &self.root;
-        let leaf = 'recurse : loop {
-            match at {
-                Tree::Branch(b) => {
-                    if i >= path.len() {
-                        self
+            } else {
+                path = path0.split("/").map(str::to_string).collect();
+            }
+            match pq.query() {
+                Some(q) => query = q.to_string(),
+                None => query = "".to_string(),
+            }
+        },
+        None => {
+            path = vec![];
+            query = "".to_string();
+        },
+    }
+    let body = match req.into_body().collect().await {
+        Ok(b) => b,
+        Err(e) => {
+            handler.0.log.log_err(DEBUG_HTSERVE, e.context("Error reading request body"));
+            return Ok(response_400("Error reading body"));
+        },
+    }.to_bytes().blob();
+    handler
+        .0
+        .log
+        .log_with(
+            DEBUG_HTSERVE,
+            "Receive",
+            ea!(
+                method = method,
+                url = url,
+                headers = headers.pretty_dbg_str(),
+                body = String::from_utf8_lossy(&body)
+            ),
+        );
+    let mut i = 0;
+    let mut at = &handler.0.root;
+    let leaf = 'recurse : loop {
+        match at {
+            Tree::Branch(b) => {
+                if i >= path.len() {
+                    handler
+                        .0
+                        .log
+                        .log_with(
+                            DEBUG_HTSERVE,
+                            "Path matching ended at branch",
+                            ea!(path = path.dbg_str(), seg = i),
+                        );
+                    return Ok(response_404());
+                }
+                match b.get(&path[i]) {
+                    Some(t) => {
+                        at = t.as_ref();
+                        i += 1;
+                    },
+                    None => {
+                        handler
+                            .0
                             .log
                             .log_with(
                                 DEBUG_HTSERVE,
-                                "Path matching ended at branch",
+                                "No route for path segment in parent branch",
                                 ea!(path = path.dbg_str(), seg = i),
                             );
-                        return Ok(StatusCode::NOT_FOUND.into_response());
-                    }
-                    match b.get(&path[i]) {
-                        Some(t) => {
-                            at = t.as_ref();
-                            i += 1;
-                        },
-                        None => {
-                            self
+                        return Ok(response_404());
+                    },
+                }
+            },
+            Tree::Leaf(l) => {
+                match method.as_str() {
+                    "GET" => {
+                        let Some(m) =& l.get else {
+                            handler
+                                .0
                                 .log
-                                .log_with(
-                                    DEBUG_HTSERVE,
-                                    "No route for path segment in parent branch",
-                                    ea!(path = path.dbg_str(), seg = i),
-                                );
-                            return Ok(StatusCode::NOT_FOUND.into_response());
-                        },
-                    }
-                },
-                Tree::Leaf(l) => {
-                    match method.as_str() {
-                        "GET" => {
-                            let Some(m) =& l.get else {
-                                self
-                                    .log
-                                    .log_with(DEBUG_HTSERVE, "No GET handler", ea!(path = path.dbg_str(), seg = i));
-                                return Ok(StatusCode::NOT_FOUND.into_response());
-                            };
-                            break 'recurse m;
-                        },
-                        "POST" => {
-                            let Some(m) =& l.post else {
-                                self
-                                    .log
-                                    .log_with(DEBUG_HTSERVE, "No POST handler", ea!(path = path.dbg_str(), seg = i));
-                                return Ok(StatusCode::NOT_FOUND.into_response());
-                            };
-                            break 'recurse m;
-                        },
-                        "DELETE" => {
-                            let Some(m) =& l.delete else {
-                                self
-                                    .log
-                                    .log_with(
-                                        DEBUG_HTSERVE,
-                                        "No DELETE handler",
-                                        ea!(path = path.dbg_str(), seg = i),
-                                    );
-                                return Ok(StatusCode::NOT_FOUND.into_response());
-                            };
-                            break 'recurse m;
-                        },
-                        _ => {
-                            return Ok(StatusCode::NOT_FOUND.into_response());
-                        },
-                    }
-                },
-            }
-        };
-        let resp = match leaf(Request {
-            path: path[i..].to_vec(),
-            query: query,
-            body: body,
-            auth_bearer: bearer,
-        }).await {
-            Response::Ok => StatusCode::OK.into_response(),
-            Response::AuthErr => StatusCode::UNAUTHORIZED.into_response(),
-            Response::InternalErr => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-            Response::ExternalErr(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-            Response::UserErr(e) => (StatusCode::BAD_REQUEST, e).into_response(),
-            Response::Json(b) => (StatusCode::OK, b.to_vec()).into_response(),
-        };
-        return Ok(resp);
-    }
+                                .log_with(DEBUG_HTSERVE, "No GET handler", ea!(path = path.dbg_str(), seg = i));
+                            return Ok(response_404());
+                        };
+                        break 'recurse m;
+                    },
+                    "POST" => {
+                        let Some(m) =& l.post else {
+                            handler
+                                .0
+                                .log
+                                .log_with(DEBUG_HTSERVE, "No POST handler", ea!(path = path.dbg_str(), seg = i));
+                            return Ok(response_404());
+                        };
+                        break 'recurse m;
+                    },
+                    "DELETE" => {
+                        let Some(m) =& l.delete else {
+                            handler
+                                .0
+                                .log
+                                .log_with(DEBUG_HTSERVE, "No DELETE handler", ea!(path = path.dbg_str(), seg = i));
+                            return Ok(response_404());
+                        };
+                        break 'recurse m;
+                    },
+                    _ => {
+                        return Ok(response_404());
+                    },
+                }
+            },
+        }
+    };
+    let resp = match leaf(Request {
+        path: path[i..].to_vec(),
+        query: query,
+        body: body,
+        auth_bearer: bearer,
+    }).await {
+        Response::Ok => response_200(),
+        Response::AuthErr => response_401(),
+        Response::InternalErr => response_503(),
+        Response::ExternalErr(e) => response_503_text(e),
+        Response::UserErr(e) => response_400(e),
+        Response::Json(b) => hyper::Response::builder().status(200).body(body_full(b.to_vec())).unwrap(),
+    };
+    return Ok(resp);
 }
 
 pub struct Routes(Option<Tree>);
@@ -412,9 +426,9 @@ impl Routes {
 
         let mut t = self.0.take().unwrap();
         compact(&mut t);
-        return Handler {
+        return Handler(Arc::new(Handler_ {
             root: t,
             log: log,
-        };
+        }));
     }
 }

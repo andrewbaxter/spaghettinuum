@@ -1,135 +1,108 @@
-use crate::{
-    bb,
-    interface::{
-        config::node::resolver_config::DnsBridgeConfig,
-        stored::{
-            self,
-            dns_record::{
-                format_dns_key,
-                COMMON_HTTP_RECORD_TYPES,
+use {
+    super::Resolver,
+    crate::{
+        interface::{
+            config::node::resolver_config::DnsBridgeConfig,
+            stored::{
+                self,
+                dns_record::{
+                    format_dns_key,
+                    COMMON_HTTP_RECORD_TYPES,
+                },
+                identity::Identity,
             },
-            identity::Identity,
+            wire,
         },
-        wire,
-    },
-    ta_res,
-    ta_vis_res,
-    utils::{
-        db_util::{
-            setup_db,
-            DbTx,
+        ta_res,
+        ta_vis_res,
+        utils::{
+            db_util::setup_db,
+            log::{
+                Log,
+                DEBUG_DNS_NONS,
+                DEBUG_DNS_S,
+                WARN,
+            },
+            ResultVisErr,
+            VisErr,
         },
-        tls_util::{
-            rustls21_load_certified_key,
-            extract_expiry,
-            encode_priv_pem,
+    },
+    async_trait::async_trait,
+    chrono::{
+        Duration,
+        Utc,
+    },
+    futures::StreamExt,
+    hickory_proto::{
+        op::{
+            Header,
+            Message,
+            MessageParts,
+            Query,
+            ResponseCode,
         },
-        log::{
-            Log,
-            DEBUG_DNS_S,
-            DEBUG_DNS_NONS,
-            DEBUG_DNS,
-            WARN,
-            INFO,
+        rr::{
+            rdata::{
+                A,
+                AAAA,
+                CNAME,
+                MX,
+                TXT,
+            },
+            DNSClass,
+            RData,
+            Record,
+            RecordType,
         },
-        time_util::ToInstant,
-    },
-};
-use crate::utils::{
-    ResultVisErr,
-    VisErr,
-};
-use chrono::{
-    Duration,
-    Utc,
-    DateTime,
-};
-use futures::StreamExt;
-use hickory_proto::{
-    rr::{
-        rdata::{
-            A,
-            AAAA,
-            CNAME,
-            MX,
-            TXT,
+        xfer::{
+            DnsHandle,
+            DnsRequest,
+            DnsRequestOptions,
         },
-        RData,
-        RecordType,
-        DNSClass,
-        Record,
     },
-    xfer::{
-        DnsHandle,
-        DnsRequest,
-        DnsRequestOptions,
+    hickory_resolver::{
+        config::NameServerConfigGroup,
+        name_server::{
+            GenericConnector,
+            NameServerPool,
+            TokioConnectionProvider,
+            TokioRuntimeProvider,
+        },
+        Name,
     },
-    op::{
-        Message,
-        Query,
-        MessageParts,
-        Header,
-        ResponseCode,
+    hickory_server::{
+        authority::MessageResponseBuilder,
+        server::{
+            Request,
+            ResponseInfo,
+        },
     },
-};
-use hickory_resolver::{
-    config::{
-        NameServerConfigGroup,
+    loga::{
+        ea,
+        DebugDisplay,
+        ErrContext,
+        ResultContext,
     },
-    name_server::{
-        TokioConnectionProvider,
-        NameServerPool,
-        TokioRuntimeProvider,
-        GenericConnector,
+    std::{
+        net::{
+            Ipv4Addr,
+            Ipv6Addr,
+        },
+        path::Path,
+        str::FromStr,
+        sync::{
+            Arc,
+            Mutex,
+        },
     },
-    Name,
-};
-use loga::{
-    ea,
-    ResultContext,
-    DebugDisplay,
-    ErrContext,
-};
-use poem::{
-    async_trait,
-};
-use std::{
-    net::{
-        Ipv4Addr,
-        Ipv6Addr,
-        IpAddr,
-        SocketAddr,
-        SocketAddrV4,
-        SocketAddrV6,
+    taskmanager::TaskManager,
+    tokio::{
+        net::{
+            TcpListener,
+            UdpSocket,
+        },
+        select,
     },
-    str::FromStr,
-    sync::{
-        Arc,
-        Mutex,
-    },
-    path::Path,
-};
-use taskmanager::TaskManager;
-use tokio::{
-    net::{
-        UdpSocket,
-        TcpListener,
-    },
-    select,
-    time::{
-        sleep,
-        sleep_until,
-    },
-};
-use hickory_server::{
-    authority::MessageResponseBuilder,
-    server::{
-        Request,
-        ResponseInfo,
-    },
-};
-use super::{
-    Resolver,
 };
 
 pub mod db;
@@ -146,7 +119,6 @@ pub async fn start_dns_bridge(
     log: &Log,
     tm: &TaskManager,
     resolver: &Resolver,
-    global_addrs: &[IpAddr],
     dns_config: DnsBridgeConfig,
     persistent_dir: &Path,
 ) -> Result<(), loga::Error> {

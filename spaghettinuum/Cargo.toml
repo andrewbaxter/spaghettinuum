@@ -38,7 +38,7 @@ tokio = { version = "1", features = [
 der = "0.7"
 # For hickory ssl
 rustls_21 = { package = "rustls", version = "0.21" }
-# For poem, acme setup
+# For htreq, acme setup
 rustls = { version = "0.22" }
 bincode = "1"
 enum_dispatch = "0.3"
@@ -49,7 +49,6 @@ serde_json = "1"
 taskmanager = "0.5"
 loga = "0.4"
 aargvark = { version = "0.1.2", features = ["serde_json", "http_types", "url"] }
-poem = { version = "2", features = ["rustls"] }
 openpgp-card-pcsc = { version = "0.3", optional = true }
 openpgp-card-sequoia = { version = "0.1", optional = true }
 sequoia-openpgp = { version = "1.17", features = [
@@ -97,6 +96,7 @@ hyper = "1"
 hyper-rustls = { version = "0.26", features = [] }
 hyper-util = { version = "0.1", features = [
     "service",
+    "server-auto",
     "http1",
     "client-legacy",
     "tokio",
@@ -108,6 +108,9 @@ tokio-rustls = "0.25"
 path-absolutize = "3"
 mime_guess = "2"
 jsonschema = "0.17"
+htwrap = "0.1"
+async-trait = "0.1"
+http = "1"
 
 [target.'cfg(target_env = "musl")'.dependencies]
 # Add feature to transitive dep of rusqlite, working around crates.io obstructive nannying

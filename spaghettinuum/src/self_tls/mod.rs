@@ -21,14 +21,14 @@ use p256::pkcs8::EncodePrivateKey;
 use rustls::server::ResolvesServerCert;
 use taskmanager::TaskManager;
 use tokio::{
+    select,
     sync::watch::{
-        Receiver,
+        self,
         channel,
     },
-    select,
     time::{
-        sleep_until,
         sleep,
+        sleep_until,
     },
 };
 use x509_cert::{
@@ -129,7 +129,7 @@ pub async fn request_cert_stream(
     tm: &TaskManager,
     signer: Arc<Mutex<dyn IdentitySigner>>,
     initial_pair: CertPair,
-) -> Result<Receiver<CertPair>, loga::Error> {
+) -> Result<watch::Receiver<CertPair>, loga::Error> {
     let log = &log.fork(ea!(sys = "self_tls"));
 
     fn decide_refresh_at(pub_pem: &str) -> Result<DateTime<Utc>, loga::Error> {

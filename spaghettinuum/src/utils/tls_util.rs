@@ -1,18 +1,20 @@
-use std::{
-    sync::Arc,
+use {
+    std::sync::{
+        Arc,
+        RwLock,
+    },
+    chrono::{
+        DateTime,
+        Duration,
+        Utc,
+    },
+    loga::ResultContext,
+    pem::Pem,
+    rustls::{
+        server::ResolvesServerCert,
+    },
+    x509_cert::Certificate,
 };
-use chrono::{
-    DateTime,
-    Duration,
-    Utc,
-};
-use loga::ResultContext;
-use pem::Pem;
-use x509_cert::Certificate;
-
-pub fn encode_pub_pem(der: &[u8]) -> String {
-    return Pem::new("CERTIFICATE", der).to_string();
-}
 
 pub fn encode_priv_pem(der: &[u8]) -> String {
     return Pem::new("PRIVATE KEY", der).to_string();
@@ -38,17 +40,14 @@ pub fn extract_expiry(pub_pem: &[u8]) -> Result<DateTime<Utc>, loga::Error> {
     );
 }
 
-pub fn load_certified_key(
-    mut pub_pem: &[u8],
-    mut priv_pem: &[u8],
-) -> Result<Arc<rustls::sign::CertifiedKey>, loga::Error> {
+pub fn load_certified_key(pub_pem: &str, priv_pem: &str) -> Result<Arc<rustls::sign::CertifiedKey>, loga::Error> {
     let mut certs = vec![];
-    for cert in rustls_pemfile::certs(&mut pub_pem) {
+    for cert in rustls_pemfile::certs(&mut pub_pem.as_bytes()) {
         let cert = cert.context("Invalid cert in public cert PEM")?;
         certs.push(rustls::pki_types::CertificateDer::from(cert.to_vec()));
     }
     let key =
-        rustls_pemfile::pkcs8_private_keys(&mut priv_pem)
+        rustls_pemfile::pkcs8_private_keys(&mut priv_pem.as_bytes())
             .next()
             .context("Private key PEM has no private certs in it")?
             .context("Error reading private key PEM")?;
@@ -67,16 +66,16 @@ pub fn load_certified_key(
 }
 
 pub fn rustls21_load_certified_key(
-    mut pub_pem: &[u8],
-    mut priv_pem: &[u8],
+    pub_pem: &str,
+    priv_pem: &str,
 ) -> Result<Arc<rustls_21::sign::CertifiedKey>, loga::Error> {
     let mut certs = vec![];
-    for cert in rustls_pemfile::certs(&mut pub_pem) {
+    for cert in rustls_pemfile::certs(&mut pub_pem.as_bytes()) {
         let cert = cert.context("Invalid cert in public cert PEM")?;
         certs.push(rustls_21::Certificate(cert.to_vec()));
     }
     let key =
-        rustls_pemfile::pkcs8_private_keys(&mut priv_pem)
+        rustls_pemfile::pkcs8_private_keys(&mut priv_pem.as_bytes())
             .next()
             .context("Private key PEM has no private certs in it")?
             .context("Error reading private key PEM")?;
@@ -88,4 +87,18 @@ pub fn rustls21_load_certified_key(
             ),
         ),
     );
+}
+
+pub struct SingleCertResolver(pub Arc<RwLock<Arc<rustls::sign::CertifiedKey>>>);
+
+impl std::fmt::Debug for SingleCertResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SingleCertResolver").field(&self.0.read().unwrap()).finish()
+    }
+}
+
+impl ResolvesServerCert for SingleCertResolver {
+    fn resolve(&self, _client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        return Some(self.0.read().unwrap().clone());
+    }
 }

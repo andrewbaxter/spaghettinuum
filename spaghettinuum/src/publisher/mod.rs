@@ -1,115 +1,98 @@
-use std::{
-    sync::Arc,
-    collections::HashMap,
-    path::Path,
-    net::{
-        SocketAddr,
-    },
-    str::FromStr,
-};
-use chrono::{
-    Utc,
-    Duration,
-};
-use deadpool_sqlite::{
-    Pool,
-};
-use der::{
-    Decode,
-    asn1::{
-        GeneralizedTime,
-    },
-    Encode,
-};
-use good_ormning_runtime::GoodError;
-use p256::{
-    pkcs8::EncodePrivateKey,
-    ecdsa::{
-        DerSignature,
-    },
-};
-use sha2::{
-    Digest,
-};
-use loga::{
-    ea,
-    DebugDisplay,
-    ResultContext,
-};
-use poem::{
-    Server,
-    listener::{
-        TcpListener,
-        RustlsConfig,
-        RustlsCertificate,
-        Listener,
-    },
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
-use sha2::Sha256;
-use taskmanager::TaskManager;
-use tokio::select;
-use x509_cert::{
-    spki::{
-        SubjectPublicKeyInfoOwned,
-    },
-    builder::{
-        CertificateBuilder,
-        Profile,
-        Builder,
-    },
-    name::RdnSequence,
-    serial_number::SerialNumber,
-    time::Time,
-    Certificate,
-};
-use crate::{
-    cap_fn,
-    interface::{
-        config::shared::StrSocketAddr,
-        stored::{
-            self,
-            announcement::Announcement,
-            identity::Identity,
+use {
+    crate::{
+        cap_fn,
+        interface::{
+            config::shared::StrSocketAddr,
+            stored::{
+                self,
+                announcement::Announcement,
+                identity::Identity,
+            },
+            wire,
         },
-        wire,
+        node::Node,
+        ta_res,
+        ta_vis_res,
+        utils::{
+            blob::{
+                Blob,
+                ToBlob,
+            },
+            db_util::{
+                setup_db,
+                DbTx,
+            },
+            htserve::{
+                self,
+                auth,
+                auth_hash,
+                Leaf,
+                Response,
+                Routes,
+            },
+            log::{
+                Log,
+                DEBUG_PUBLISH,
+                WARN,
+            },
+            signed::IdentSignatureMethods,
+            ResultVisErr,
+            VisErr,
+        },
     },
-    node::{
-        Node,
+    chrono::{
+        Duration,
+        Utc,
     },
-    ta_res,
-    ta_vis_res,
-    utils::{
-        blob::{
-            Blob,
-            ToBlob,
+    deadpool_sqlite::Pool,
+    der::{
+        asn1::GeneralizedTime,
+        Decode,
+        Encode,
+    },
+    good_ormning_runtime::GoodError,
+    loga::{
+        ea,
+        DebugDisplay,
+        ErrContext,
+        ResultContext,
+    },
+    p256::{
+        ecdsa::DerSignature,
+        pkcs8::EncodePrivateKey,
+    },
+    rustls::pki_types::{
+        CertificateDer,
+        PrivateKeyDer,
+        PrivatePkcs8KeyDer,
+    },
+    serde::{
+        Deserialize,
+        Serialize,
+    },
+    sha2::{
+        Digest,
+        Sha256,
+    },
+    std::{
+        collections::HashMap,
+        net::SocketAddr,
+        path::Path,
+        str::FromStr,
+        sync::Arc,
+    },
+    taskmanager::TaskManager,
+    x509_cert::{
+        builder::{
+            Builder,
+            CertificateBuilder,
+            Profile,
         },
-        db_util::{
-            setup_db,
-            DbTx,
-        },
-        htserve::{
-            auth,
-            auth_hash,
-            Leaf,
-            Response,
-            Routes,
-        },
-        log::{
-            Log,
-            DEBUG_PUBLISH,
-            WARN,
-        },
-        signed::IdentSignatureMethods,
-        tls_util::{
-            encode_priv_pem,
-            encode_pub_pem,
-        },
-        ResultVisErr,
-        VisErr,
+        name::RdnSequence,
+        serial_number::SerialNumber,
+        spki::SubjectPublicKeyInfoOwned,
+        time::Time,
+        Certificate,
     },
 };
 
@@ -225,70 +208,119 @@ impl Publisher {
             advertise_addr: advertise_addr,
             db_pool: db_pool,
         }));
-        tm.critical_task("Publisher - network server", {
-            let log = log.fork(ea!(subsys = "protocol"));
-            let mut routes = Routes::new();
-            let tm = tm.clone();
-            routes.add("", Leaf::new().get(cap_fn!((mut r)(publisher, log) {
-                match async {
-                    ta_vis_res!(Response);
-                    log.log_with(DEBUG_PUBLISH, "Recieved request", ea!(path = r.path.dbg_str()));
+        tm.stream(
+            "Publisher - network server",
+            tokio_stream::wrappers::TcpListenerStream::new(
+                tokio::net::TcpListener::bind(&bind_addr.resolve()?)
+                    .await
+                    .stack_context(&log, "Error binding to address")?,
+            ),
+            {
+                let log = log.fork(ea!(subsys = "protocol"));
+                let mut routes = Routes::new();
+                routes.add("", Leaf::new().get(cap_fn!((mut r)(publisher, log) {
+                    match async {
+                        ta_vis_res!(Response);
+                        log.log_with(DEBUG_PUBLISH, "Recieved request", ea!(path = r.path.dbg_str()));
 
-                    // Params
-                    let Some(ident) = r.path.pop() else {
-                        return Ok(Response::user_err("Missing identity in path"));
-                    };
-                    let ident = Identity::from_str(&ident).context("Couldn't parse identity").err_external()?;
+                        // Params
+                        let Some(ident) = r.path.pop() else {
+                            return Ok(Response::user_err("Missing identity in path"));
+                        };
+                        let ident = Identity::from_str(&ident).context("Couldn't parse identity").err_external()?;
 
-                    // Respond
-                    return Ok(
-                        Response::json(
-                            publisher
-                                .get_values(&ident, r.query.split(",").map(|k| k.to_string()).collect())
-                                .await
-                                .err_internal()?,
-                        ),
-                    );
-                }.await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        match e {
-                            VisErr::Internal(e) => {
-                                publisher.0.log.log_err(WARN, e.context("Error processing request"));
-                                return Response::InternalErr;
-                            },
-                            VisErr::External(e) => {
-                                return Response::external_err(e.to_string());
-                            },
-                        }
-                    },
-                }
-            })));
-            async move {
-                let server =
-                    Server::new(
-                        TcpListener::bind(
-                            bind_addr.resolve()?,
-                        ).rustls(
-                            RustlsConfig
-                            ::new().fallback(
-                                RustlsCertificate::new()
-                                    .key(encode_priv_pem(&certs.priv_der))
-                                    .cert(encode_pub_pem(&certs.pub_der)),
+                        // Respond
+                        return Ok(
+                            Response::json(
+                                publisher
+                                    .get_values(&ident, r.query.split(",").map(|k| k.to_string()).collect())
+                                    .await
+                                    .err_internal()?,
                             ),
-                        ),
-                    ).run(routes.build(log.fork(ea!(subsys = "router"))));
-
-                select!{
-                    _ = tm.until_terminate() => {
-                        return Ok(());
+                        );
+                    }.await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            match e {
+                                VisErr::Internal(e) => {
+                                    publisher.0.log.log_err(WARN, e.context("Error processing request"));
+                                    return Response::InternalErr;
+                                },
+                                VisErr::External(e) => {
+                                    return Response::external_err(e.to_string());
+                                },
+                            }
+                        },
                     }
-                    r = server => {
-                        return r.stack_context(&log, "Exited with error");
+                })));
+                let routes = routes.build(log.clone());
+                let tls_acceptor = {
+                    let mut server_config =
+                        rustls::ServerConfig::builder()
+                            .with_no_client_auth()
+                            .with_single_cert(
+                                vec![CertificateDer::from(certs.pub_der.clone().to_vec())],
+                                PrivateKeyDer::from(PrivatePkcs8KeyDer::from(certs.priv_der.clone().to_vec())),
+                            )
+                            .context("Error setting up tls listener")?;
+                    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
+                    tokio_rustls::TlsAcceptor::from(Arc::new(server_config))
+                };
+                move |stream| {
+                    let log = log.clone();
+                    let tls_acceptor = tls_acceptor.clone();
+                    let routes = routes.clone();
+                    async move {
+                        let stream = match stream {
+                            Ok(s) => s,
+                            Err(e) => {
+                                log.log_err(DEBUG_PUBLISH, e.context("Error opening peer stream"));
+                                return;
+                            },
+                        };
+                        let peer_addr = match stream.peer_addr() {
+                            Ok(a) => a,
+                            Err(e) => {
+                                log.log_err(DEBUG_PUBLISH, e.context("Error getting connection peer address"));
+                                return;
+                            },
+                        };
+                        let stream = match tls_acceptor.accept(stream).await {
+                            Ok(a) => a,
+                            Err(e) => {
+                                log.log_err(DEBUG_PUBLISH, e.context("Error setting up tls stream"));
+                                return;
+                            },
+                        };
+                        tokio::task::spawn(async move {
+                            match async move {
+                                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                                    .serve_connection(
+                                        hyper_util::rt::TokioIo::new(stream),
+                                        hyper::service::service_fn(move |req| htserve::handle(routes.clone(), req)),
+                                    )
+                                    .await
+                                    .map_err(
+                                        |e| loga::err_with(
+                                            "Error serving HTTP on connection",
+                                            ea!(err = e.to_string()),
+                                        ),
+                                    )?;
+                                return Ok(()) as Result<(), loga::Error>;
+                            }.await {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    log.log_err(
+                                        DEBUG_PUBLISH,
+                                        e.context_with("Error serving connection", ea!(peer = peer_addr)),
+                                    );
+                                },
+                            }
+                        });
                     }
                 }
-            }
-        });
+            },
+        );
         tm.periodic("Publisher - periodic announce", Duration::hours(4).to_std().unwrap(), {
             let log = log.fork(ea!(subsys = "periodic_announce"));
             cap_fn!(()(log, publisher, node) {

@@ -9,6 +9,7 @@ use crate::utils::blob::Blob;
 pub struct Certs {
     #[serde(rename = "pub")]
     pub pub_der: Blob,
+    // PKCS8 der
     #[serde(rename = "priv")]
     pub priv_der: Blob,
 }

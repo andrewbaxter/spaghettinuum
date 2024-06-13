@@ -9,6 +9,7 @@ use std::{
     },
 };
 use chrono::Duration;
+use http::uri::PathAndQuery;
 use http_body::Body;
 use http_body_util::{
     combinators::BoxBody,
@@ -44,7 +45,6 @@ use loga::{
     ErrContext,
     ResultContext,
 };
-use poem::http::uri::PathAndQuery;
 use rustls::ServerConfig;
 use spaghettinuum::{
     bb,
@@ -295,7 +295,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             "Serve - handle cert changes",
             WatchStream::new(certs_stream.clone()),
             cap_fn!((p)(certs, pub_path, priv_path, log) {
-                *certs.lock().unwrap() = match load_certified_key(p.pub_pem.as_bytes(), p.priv_pem.as_bytes()) {
+                *certs.lock().unwrap() = match load_certified_key(&p.pub_pem, &p.priv_pem) {
                     Ok(v) => Some(v),
                     Err(e) => {
                         log.log_err(WARN, e.context("Error reading received certs"));

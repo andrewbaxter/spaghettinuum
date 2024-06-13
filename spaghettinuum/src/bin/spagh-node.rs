@@ -1,102 +1,99 @@
-use std::{
-    net::SocketAddr,
-    collections::HashMap,
-};
-use aargvark::{
-    Aargvark,
-    AargvarkJson,
-};
-use chrono::Duration;
-use futures::FutureExt;
-use loga::{
-    ea,
-    ResultContext,
-};
-use poem::{
-    Server,
-    listener::{
-        TcpListener,
-        Listener,
-        RustlsConfig,
-        RustlsCertificate,
+use {
+    aargvark::{
+        Aargvark,
+        AargvarkJson,
     },
-};
-use spaghettinuum::{
-    bb,
-    cap_fn,
-    interface::{
-        config::{
-            node::Config,
-            DebugFlag,
-            Flag,
-            ENV_CONFIG,
-        },
-        stored::{
-            self,
-            dns_record::{
-                format_dns_key,
-                RecordType,
+    chrono::Duration,
+    loga::{
+        ea,
+        ErrContext,
+        ResultContext,
+    },
+    spaghettinuum::{
+        bb,
+        cap_fn,
+        interface::{
+            config::{
+                node::Config,
+                DebugFlag,
+                Flag,
+                ENV_CONFIG,
             },
-            shared::SerialAddr,
+            stored::{
+                self,
+                dns_record::{
+                    format_dns_key,
+                    RecordType,
+                },
+                shared::SerialAddr,
+            },
+            wire::{
+                self,
+                api::publish::latest::InfoResponse,
+                node::latest::NodeInfo,
+            },
         },
-        wire::{
+        node::Node,
+        publisher::{
             self,
-            api::publish::latest::InfoResponse,
-            node::latest::NodeInfo,
+            Publisher,
         },
-    },
-    node::Node,
-    publisher::{
-        self,
-        Publisher,
-    },
-    resolver::{
-        self,
-        Resolver,
-    },
-    self_tls::{
-        self,
-        request_cert,
-        request_cert_stream,
-        CertPair,
-    },
-    ta_res,
-    utils::{
-        htserve::{
+        resolver::{
             self,
-            auth,
-            auth_hash,
-            Routes,
+            Resolver,
         },
-        log::{
-            Log,
-            DEBUG_DNS,
-            DEBUG_DNS_S,
-            DEBUG_NODE,
-            DEBUG_PUBLISH,
-            DEBUG_RESOLVE,
-            DEBUG_SELF_TLS,
-            INFO,
-            NON_DEBUG_FLAGS,
-            WARN,
+        self_tls::{
+            self,
+            request_cert,
+            request_cert_stream,
+            CertPair,
         },
-        db_util,
-        publish_util::generate_publish_announce,
-        ip_util::{
-            resolve_global_ip,
+        ta_res,
+        utils::{
+            backed_identity::get_identity_signer,
+            db_util,
+            htserve::{
+                self,
+                auth,
+                auth_hash,
+                Routes,
+            },
+            ip_util::resolve_global_ip,
+            log::{
+                Log,
+                DEBUG_DNS,
+                DEBUG_DNS_S,
+                DEBUG_NODE,
+                DEBUG_OTHER,
+                DEBUG_PUBLISH,
+                DEBUG_RESOLVE,
+                DEBUG_SELF_TLS,
+                INFO,
+                NON_DEBUG_FLAGS,
+                WARN,
+            },
+            publish_util::generate_publish_announce,
+            tls_util::{
+                load_certified_key,
+                SingleCertResolver,
+            },
         },
-        backed_identity::get_identity_signer,
     },
-};
-use taskmanager::TaskManager;
-use tokio::{
-    fs::create_dir_all,
-    select,
-    time::sleep,
-};
-use tokio_stream::{
-    StreamExt,
-    wrappers::WatchStream,
+    std::{
+        collections::HashMap,
+        net::SocketAddr,
+        sync::{
+            Arc,
+            RwLock,
+        },
+    },
+    taskmanager::TaskManager,
+    tokio::{
+        fs::create_dir_all,
+        task::spawn_blocking,
+        time::sleep,
+    },
+    tokio_stream::wrappers::WatchStream,
 };
 
 #[derive(Aargvark)]
@@ -262,7 +259,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                     .await
                     .stack_context(log, "Error setting up resolver")?;
             if let Some(dns_config) = resolver_config.dns_bridge {
-                resolver::dns::start_dns_bridge(log, &tm, &resolver, &global_ips, dns_config, &config.persistent_dir)
+                resolver::dns::start_dns_bridge(log, &tm, &resolver, dns_config, &config.persistent_dir)
                     .await
                     .stack_context(log, "Error setting up resolver DNS bridge")?;
             }
@@ -277,7 +274,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 log.err("Configuration enables resolver or publisher but no api http bind address present in config"),
             );
         }
-        let mut certs_stream_rx = None;
+        let mut latest_certs = None;
 
         bb!{
             let Some(identity) = identity else {
@@ -310,95 +307,220 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                     }
                 },
             };
+            let latest_certs1 =
+                Arc::new(
+                    RwLock::new(
+                        load_certified_key(
+                            &initial_pair.pub_pem,
+                            &initial_pair.priv_pem,
+                        ).context("Initial certs are invalid")?,
+                    ),
+                );
             let certs_stream = request_cert_stream(&log, &tm, identity, initial_pair).await?;
-            tm.stream("API - persist certs", WatchStream::new(certs_stream.clone()), cap_fn!((pair)(db_pool, log) {
-                match async move {
-                    ta_res!(());
-                    db_pool
-                        .get()
-                        .await?
-                        .interact(
-                            move |conn| self_tls::db::api_certs_set(
-                                conn,
-                                Some(&pair.pub_pem),
-                                Some(&pair.priv_pem),
-                            ),
-                        )
-                        .await??;
-                    return Ok(());
-                }.await {
-                    Ok(_) => (),
-                    Err(e) => {
-                        log.log_err(DEBUG_SELF_TLS, e.context("Error persisting new certs"));
-                    },
-                }
-            }));
-            certs_stream_rx = Some(certs_stream);
+            tm.stream(
+                "API - process new certs",
+                WatchStream::new(certs_stream.clone()),
+                cap_fn!((pair)(db_pool, log, latest_certs1) {
+                    match async {
+                        ta_res!(());
+                        match load_certified_key(&pair.pub_pem, &pair.priv_pem) {
+                            Ok(p) => {
+                                spawn_blocking({
+                                    let latest_certs1 = latest_certs1.clone();
+                                    move || {
+                                        *latest_certs1.write().unwrap() = p;
+                                    }
+                                }).await.unwrap();
+                            },
+                            Err(e) => {
+                                log.log_err(WARN, e.context("New certs are invalid"));
+                                return Ok(());
+                            },
+                        };
+                        db_pool
+                            .get()
+                            .await?
+                            .interact(
+                                move |conn| self_tls::db::api_certs_set(
+                                    conn,
+                                    Some(&pair.pub_pem),
+                                    Some(&pair.priv_pem),
+                                ),
+                            )
+                            .await??;
+                        return Ok(());
+                    }.await {
+                        Ok(_) => (),
+                        Err(e) => {
+                            log.log_err(DEBUG_SELF_TLS, e.context("Error persisting new certs"));
+                        },
+                    }
+                }),
+            );
+            latest_certs = Some(latest_certs1);
         };
 
+        let mut routes = Routes::new();
+        routes.add("health", htserve::Leaf::new().get(cap_fn!((_r)() {
+            return htserve::Response::Ok;
+        })));
+        if let Some(admin_token) = &config.admin_token {
+            let admin_token = auth_hash(admin_token);
+            routes.add("admin/health", htserve::Leaf::new().get(cap_fn!((r)(node, admin_token) {
+                // Auth
+                if !auth(&admin_token, &r.auth_bearer) {
+                    return htserve::Response::AuthErr;
+                }
+
+                // Process + respond
+                return htserve::Response::json(node.health_detail());
+            })));
+        }
+        if let Some(resolver) = &resolver {
+            routes.nest("resolve", resolver::build_api_endpoints(&log, resolver));
+        }
+        if let Some(publisher) = &publisher {
+            routes.nest(
+                "publish",
+                publisher::build_api_endpoints(publisher, config.admin_token.as_ref(), &config.persistent_dir)
+                    .await
+                    .stack_context(&log, "Error building publisher endpoints")?,
+            );
+        }
+        let routes = routes.build(log.fork(ea!(subsys = "router")));
         for bind_addr in config.api_bind_addrs {
             let bind_addr = bind_addr.resolve().stack_context(&log, "Error resolving api bind address")?;
-            let mut api_endpoints = Routes::new();
-            api_endpoints.add("health", htserve::Leaf::new().get(cap_fn!((_r)() {
-                return htserve::Response::Ok;
-            })));
-            if let Some(admin_token) = &config.admin_token {
-                let admin_token = auth_hash(admin_token);
-                api_endpoints.add("admin/health", htserve::Leaf::new().get(cap_fn!((r)(node, admin_token) {
-                    // Auth
-                    if !auth(&admin_token, &r.auth_bearer) {
-                        return htserve::Response::AuthErr;
-                    }
-
-                    // Process + respond
-                    return htserve::Response::json(node.health_detail());
-                })));
-            }
-            if let Some(resolver) = &resolver {
-                api_endpoints.nest("resolve", resolver::build_api_endpoints(&log, resolver));
-            }
-            if let Some(publisher) = &publisher {
-                api_endpoints.nest(
-                    "publish",
-                    publisher::build_api_endpoints(publisher, config.admin_token.as_ref(), &config.persistent_dir)
-                        .await
-                        .stack_context(&log, "Error building publisher endpoints")?,
+            let log = log.clone();
+            let routes = routes.clone();
+            if let Some(latest_certs) = latest_certs.clone() {
+                let tls_acceptor = {
+                    let mut server_config =
+                        rustls::ServerConfig::builder()
+                            .with_no_client_auth()
+                            .with_cert_resolver(Arc::new(SingleCertResolver(latest_certs)));
+                    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
+                    tokio_rustls::TlsAcceptor::from(Arc::new(server_config))
+                };
+                tm.stream(
+                    format!("API - Server ({})", bind_addr),
+                    tokio_stream::wrappers::TcpListenerStream::new(
+                        tokio::net::TcpListener::bind(&bind_addr)
+                            .await
+                            .stack_context(&log, "Error binding to address")?,
+                    ),
+                    move |stream| {
+                        let log = log.clone();
+                        let tls_acceptor = tls_acceptor.clone();
+                        let routes = routes.clone();
+                        async move {
+                            let stream = match stream {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    log.log_err(DEBUG_OTHER, e.context("Error opening peer stream"));
+                                    return;
+                                },
+                            };
+                            let peer_addr = match stream.peer_addr() {
+                                Ok(a) => a,
+                                Err(e) => {
+                                    log.log_err(DEBUG_OTHER, e.context("Error getting connection peer address"));
+                                    return;
+                                },
+                            };
+                            let stream = match tls_acceptor.accept(stream).await {
+                                Ok(a) => a,
+                                Err(e) => {
+                                    log.log_err(DEBUG_OTHER, e.context("Error setting up tls stream"));
+                                    return;
+                                },
+                            };
+                            tokio::task::spawn(async move {
+                                match async move {
+                                    hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                                        .serve_connection(
+                                            hyper_util::rt::TokioIo::new(stream),
+                                            hyper::service::service_fn(
+                                                move |req| htserve::handle(routes.clone(), req),
+                                            ),
+                                        )
+                                        .await
+                                        .map_err(
+                                            |e| loga::err_with(
+                                                "Error serving HTTP on connection",
+                                                ea!(err = e.to_string()),
+                                            ),
+                                        )?;
+                                    return Ok(()) as Result<(), loga::Error>;
+                                }.await {
+                                    Ok(_) => (),
+                                    Err(e) => {
+                                        log.log_err(
+                                            DEBUG_PUBLISH,
+                                            e.context_with("Error serving connection", ea!(peer = peer_addr)),
+                                        );
+                                    },
+                                }
+                            });
+                        }
+                    },
+                );
+            } else {
+                tm.stream(
+                    format!("API - Server ({})", bind_addr),
+                    tokio_stream::wrappers::TcpListenerStream::new(
+                        tokio::net::TcpListener::bind(&bind_addr)
+                            .await
+                            .stack_context(&log, "Error binding to address")?,
+                    ),
+                    move |stream| {
+                        let log = log.clone();
+                        let routes = routes.clone();
+                        async move {
+                            let stream = match stream {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    log.log_err(DEBUG_OTHER, e.context("Error opening peer stream"));
+                                    return;
+                                },
+                            };
+                            let peer_addr = match stream.peer_addr() {
+                                Ok(a) => a,
+                                Err(e) => {
+                                    log.log_err(DEBUG_OTHER, e.context("Error getting connection peer address"));
+                                    return;
+                                },
+                            };
+                            tokio::task::spawn(async move {
+                                match async move {
+                                    hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                                        .serve_connection(
+                                            hyper_util::rt::TokioIo::new(stream),
+                                            hyper::service::service_fn(
+                                                move |req| htserve::handle(routes.clone(), req),
+                                            ),
+                                        )
+                                        .await
+                                        .map_err(
+                                            |e| loga::err_with(
+                                                "Error serving HTTP on connection",
+                                                ea!(err = e.to_string()),
+                                            ),
+                                        )?;
+                                    return Ok(()) as Result<(), loga::Error>;
+                                }.await {
+                                    Ok(_) => (),
+                                    Err(e) => {
+                                        log.log_err(
+                                            DEBUG_PUBLISH,
+                                            e.context_with("Error serving connection", ea!(peer = peer_addr)),
+                                        );
+                                    },
+                                }
+                            });
+                        }
+                    },
                 );
             }
-            let api_endpoints = api_endpoints.build(log.fork(ea!(subsys = "router")));
-            let server = match &certs_stream_rx {
-                Some(certs_stream_rx) => {
-                    Server::new(
-                        TcpListener::bind(
-                            bind_addr,
-                        ).rustls(
-                            WatchStream::new(
-                                certs_stream_rx.clone(),
-                            ).map(
-                                |p| RustlsConfig
-                                ::new().fallback(RustlsCertificate::new().cert(p.pub_pem).key(p.priv_pem)),
-                            ),
-                        ),
-                    )
-                        .run(api_endpoints)
-                        .boxed()
-                },
-                None => {
-                    Server::new(TcpListener::bind(bind_addr)).run(api_endpoints).boxed()
-                },
-            };
-            tm.critical_task(format!("API - Server ({})", bind_addr), {
-                let log = log.clone();
-                let tm = tm.clone();
-                async move {
-                    select!{
-                        _ = tm.until_terminate() => {
-                            return Ok(());
-                        }
-                        r = server => return r.stack_context_with(&log, "Exited with error", ea!(addr = bind_addr)),
-                    };
-                }
-            });
         }
     }
     return Ok(());

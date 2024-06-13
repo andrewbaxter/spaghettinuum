@@ -1,22 +1,20 @@
-use std::{
-    path::Path,
+use {
+    super::log::Log,
+    async_trait::async_trait,
+    deadpool_sqlite::{
+        Config,
+        Pool,
+        Runtime,
+    },
+    good_ormning_runtime::GoodError,
+    loga::{
+        ea,
+        ErrContext,
+        ResultContext,
+    },
+    rusqlite::Transaction,
+    std::path::Path,
 };
-use deadpool_sqlite::{
-    Config,
-    Pool,
-    Runtime,
-};
-use good_ormning_runtime::GoodError;
-use loga::{
-    ResultContext,
-    ea,
-    ErrContext,
-};
-use poem::async_trait;
-use rusqlite::{
-    Transaction,
-};
-use super::log::Log;
 
 pub async fn setup_db(
     p: &Path,

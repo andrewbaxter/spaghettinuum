@@ -1,57 +1,57 @@
-use itertools::Itertools;
-use loga::{
-    ea,
-    ResultContext,
-};
-use poem::{
+use {
     http::{
-        Uri,
         uri::Authority,
+        Uri,
     },
-};
-use serde::{
-    de::DeserializeOwned,
-    Serialize,
-};
-use serde_json::json;
-use spaghettinuum::{
-    interface::config::{
-        identity::BackedIdentityLocal,
-        ENV_API_ADDR,
-        ENV_API_ADMIN_TOKEN,
+    itertools::Itertools,
+    loga::{
+        ea,
+        ResultContext,
     },
-    interface::{
-        stored::{
-            self,
-            dns_record::{
-                format_dns_key,
-                RecordType,
+    serde::{
+        de::DeserializeOwned,
+        Serialize,
+    },
+    serde_json::json,
+    spaghettinuum::{
+        interface::config::{
+            identity::BackedIdentityLocal,
+            ENV_API_ADDR,
+            ENV_API_ADMIN_TOKEN,
+        },
+        interface::{
+            stored::{
+                self,
+                dns_record::{
+                    format_dns_key,
+                    RecordType,
+                },
+                identity::Identity,
             },
-            identity::Identity,
+            wire,
         },
-        wire,
+        ta_res,
+        utils::{
+            log::{
+                ALL_FLAGS,
+                NON_DEBUG_FLAGS,
+                DEBUG_OTHER,
+                WARN,
+                Log,
+            },
+            backed_identity::{
+                get_identity_signer,
+            },
+            local_identity::write_identity,
+            htreq,
+            publish_util,
+        },
     },
-    ta_res,
-    utils::{
-        log::{
-            ALL_FLAGS,
-            NON_DEBUG_FLAGS,
-            DEBUG_OTHER,
-            WARN,
-            Log,
-        },
-        backed_identity::{
-            get_identity_signer,
-        },
-        local_identity::write_identity,
-        htreq,
-        publish_util,
+    std::{
+        collections::HashMap,
+        env::self,
+        str::FromStr,
     },
-};
-use std::{
-    collections::HashMap,
-    env::self,
-    str::FromStr,
 };
 #[cfg(feature = "card")]
 use spaghettinuum::{
