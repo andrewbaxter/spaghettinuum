@@ -1,8 +1,10 @@
 use std::{
     collections::HashMap,
+    str::FromStr,
     sync::{
         Arc,
         Mutex,
+        RwLock,
     },
 };
 use chrono::{
@@ -13,8 +15,11 @@ use chrono::{
 use der::{
     Encode,
 };
+use http::Uri;
+use htwrap::htreq;
 use loga::{
     ea,
+    Log,
     ResultContext,
 };
 use p256::pkcs8::EncodePrivateKey;
@@ -47,12 +52,6 @@ use crate::{
             extract_expiry,
         },
         blob::ToBlob,
-        log::{
-            Log,
-            DEBUG_SELF_TLS,
-            WARN,
-        },
-        htreq,
         time_util::ToInstant,
     },
 };
@@ -79,7 +78,7 @@ pub async fn request_cert(
             .context("Error requesting api server tls cert from certifier")?
             .pub_pem;
     let priv_pem = encode_priv_pem(priv_key.to_pkcs8_der().unwrap().as_bytes());
-    log.log_with(DEBUG_SELF_TLS, "Received cert", ea!(pub_pem = pub_pem));
+    log.log_with(loga::DEBUG, "Received cert", ea!(pub_pem = pub_pem));
     return Ok(CertPair {
         priv_pem: priv_pem,
         pub_pem: pub_pem,
@@ -97,7 +96,7 @@ pub async fn request_cert_with_key(
         stamp: Utc::now(),
         spki_der: requester_spki.to_der().unwrap().blob(),
     }).unwrap().blob();
-    log.log_with(DEBUG_SELF_TLS, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
+    log.log_with(loga::DEBUG, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
     let (ident, signature) =
         message_signer.lock().unwrap().sign(&text).context("Error signing cert request params")?;
     let body = serde_json::to_vec(&wire::certify::CertRequest::V1(wire::certify::latest::CertRequest {
@@ -107,12 +106,18 @@ pub async fn request_cert_with_key(
             text: text,
         },
     })).unwrap();
-    log.log_with(
-        DEBUG_SELF_TLS,
-        "Sending cert request body",
-        ea!(url = CERTIFIER_URL, body = String::from_utf8_lossy(&body)),
-    );
-    let body = htreq::post(log, CERTIFIER_URL, &HashMap::new(), body, 100 * 1024).await?;
+    let url = Uri::from_str(CERTIFIER_URL).unwrap();
+    let log = log.fork(ea!(url = url));
+    log.log_with(loga::DEBUG, "Sending cert request body", ea!(body = String::from_utf8_lossy(&body)));
+    let body =
+        htreq::post(
+            &log,
+            &mut htreq::connect(&url).await.stack_context(&log, "Error connecting to certifier url")?,
+            &url,
+            &HashMap::new(),
+            body,
+            100 * 1024,
+        ).await?;
     return Ok(serde_json::from_slice(&body).context("Error parsing cert request response body as json")?);
 }
 
@@ -148,7 +153,7 @@ pub async fn request_cert_stream(
             let mut refresh_at = refresh_at;
             let log = &log;
             loop {
-                log.log_with(DEBUG_SELF_TLS, "Sleeping until cert needs refresh", ea!(deadline = refresh_at));
+                log.log_with(loga::DEBUG, "Sleeping until cert needs refresh", ea!(deadline = refresh_at));
 
                 select!{
                     _ = tm.until_terminate() => {
@@ -167,7 +172,7 @@ pub async fn request_cert_stream(
                                 break 'ok Some(certs);
                             },
                             Err(e) => {
-                                log.log_err(WARN, e.context("Error getting new certs"));
+                                log.log_err(loga::WARN, e.context("Error getting new certs"));
                                 sleep(backoff).await;
                                 backoff = backoff * 2;
                             },
@@ -185,11 +190,11 @@ pub async fn request_cert_stream(
     return Ok(certs_stream_rx);
 }
 
-pub struct SimpleResolvesServerCert(pub Arc<Mutex<Option<Arc<rustls::sign::CertifiedKey>>>>);
+pub struct SimpleResolvesServerCert(pub Arc<RwLock<Arc<rustls::sign::CertifiedKey>>>);
 
 impl std::fmt::Debug for SimpleResolvesServerCert {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return self.0.lock().unwrap().fmt(f);
+        return self.0.read().unwrap().fmt(f);
     }
 }
 
@@ -198,6 +203,6 @@ impl ResolvesServerCert for SimpleResolvesServerCert {
         &self,
         _client_hello: rustls::server::ClientHello,
     ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
-        return self.0.lock().unwrap().clone();
+        return Some(self.0.read().unwrap().clone());
     }
 }

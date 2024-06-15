@@ -1,37 +1,18 @@
-use std::path::PathBuf;
-use schemars::JsonSchema;
-use serde::{
-    Deserialize,
-    Serialize,
-};
-use super::shared::{
-    BackedIdentityArg,
-    GlobalAddrConfig,
-    StrSocketAddr,
-};
-
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ServeMode {
-    StaticFiles {
-        /// Where files to serve are
-        content_dir: PathBuf,
+use {
+    super::{
+        content::ContentConfig,
+        shared::{
+            BackedIdentityArg,
+            GlobalAddrConfig,
+        },
     },
-    ReverseProxy {
-        /// Base url of upstream HTTP server. The request path is appended.
-        upstream_url: String,
+    schemars::JsonSchema,
+    serde::{
+        Deserialize,
+        Serialize,
     },
-}
-
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct ContentConfig {
-    /// Interface IPs and ports to bind to
-    pub bind_addrs: Vec<StrSocketAddr>,
-    /// What content to serve
-    #[serde(default)]
-    pub mode: Option<ServeMode>,
-}
+    std::path::PathBuf,
+};
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -42,7 +23,7 @@ pub struct ServeConfig {
     /// How to serve content.  If not specified, just keeps certificates in the cert
     /// dir up to date.
     #[serde(default)]
-    pub content: Option<ContentConfig>,
+    pub content: Vec<ContentConfig>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

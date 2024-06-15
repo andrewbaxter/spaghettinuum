@@ -17,12 +17,6 @@ use {
         ta_vis_res,
         utils::{
             db_util::setup_db,
-            log::{
-                Log,
-                DEBUG_DNS_NONS,
-                DEBUG_DNS_S,
-                WARN,
-            },
             ResultVisErr,
             VisErr,
         },
@@ -81,6 +75,7 @@ use {
         ea,
         DebugDisplay,
         ErrContext,
+        Log,
         ResultContext,
     },
     std::{
@@ -159,7 +154,7 @@ pub async fn start_dns_bridge(
                     Some(b"s") | Some(b"s.") => true,
                     _ => false,
                 }) {
-                    self.0.log.log_with(DEBUG_DNS_S, "Received spagh request", ea!(request = request.dbg_str()));
+                    self.0.log.log_with(loga::DEBUG, "Received spagh request", ea!(request = request.dbg_str()));
                     let Some(ident_part) = query_name_iter.next() else {
                         return Err(
                             loga::err_with(
@@ -230,7 +225,7 @@ pub async fn start_dns_bridge(
                                             let n = match Ipv4Addr::from_str(&n) {
                                                 Err(e) => {
                                                     log.log_err(
-                                                        DEBUG_DNS_S,
+                                                        loga::DEBUG,
                                                         e.context_with("Ipv4 addr in record invalid", ea!(name = n)),
                                                     );
                                                     continue;
@@ -271,7 +266,7 @@ pub async fn start_dns_bridge(
                                             let n = match Ipv6Addr::from_str(&n) {
                                                 Err(e) => {
                                                     log.log_err(
-                                                        DEBUG_DNS_S,
+                                                        loga::DEBUG,
                                                         e.context_with(
                                                             "Ipv6 addr in AAAA record invalid",
                                                             ea!(name = n),
@@ -346,7 +341,7 @@ pub async fn start_dns_bridge(
                                             let n = match Name::from_utf8(&n) {
                                                 Err(e) => {
                                                     log.log_err(
-                                                        DEBUG_DNS_S,
+                                                        loga::DEBUG,
                                                         e.context_with(
                                                             "Mx name in record invalid for DNS",
                                                             ea!(name = n),
@@ -419,7 +414,7 @@ pub async fn start_dns_bridge(
                                             self1
                                                 .log
                                                 .log_err(
-                                                    DEBUG_DNS_S,
+                                                    loga::DEBUG,
                                                     e.context_with(
                                                         "Cname name in record invalid for DNS",
                                                         ea!(name = n),
@@ -475,10 +470,7 @@ pub async fn start_dns_bridge(
                             .err_internal()?,
                     );
                 } else {
-                    self
-                        .0
-                        .log
-                        .log_with(DEBUG_DNS_NONS, "Received non-spagh request", ea!(request = request.dbg_str()));
+                    self.0.log.log_with(loga::DEBUG, "Received non-spagh request", ea!(request = request.dbg_str()));
                     let resp = self1.upstream.send(DnsRequest::new(Message::from(MessageParts {
                         header: *request.header(),
                         queries: vec![{
@@ -562,7 +554,7 @@ pub async fn start_dns_bridge(
                 Err(e) => {
                     match e {
                         VisErr::External(e) => {
-                            self1.log.log_err(DEBUG_DNS_S, e.context("Request failed due to external issue"));
+                            self1.log.log_err(loga::DEBUG, e.context("Request failed due to external issue"));
                             match response_handle
                                 .send_response(
                                     MessageResponseBuilder::from_message_request(
@@ -572,13 +564,13 @@ pub async fn start_dns_bridge(
                                 .await {
                                 Ok(r) => return r,
                                 Err(e) => {
-                                    self1.log.log_err(WARN, e.context("Failed to send error response"));
+                                    self1.log.log_err(loga::WARN, e.context("Failed to send error response"));
                                     return ResponseInfo::from(*request.header());
                                 },
                             };
                         },
                         VisErr::Internal(e) => {
-                            self1.log.log_err(WARN, e.context("Request failed due to internal issue"));
+                            self1.log.log_err(loga::WARN, e.context("Request failed due to internal issue"));
                             match response_handle
                                 .send_response(
                                     MessageResponseBuilder::from_message_request(
@@ -588,7 +580,7 @@ pub async fn start_dns_bridge(
                                 .await {
                                 Ok(r) => return r,
                                 Err(e) => {
-                                    self1.log.log_err(WARN, e.context("Failed to send error response"));
+                                    self1.log.log_err(loga::WARN, e.context("Failed to send error response"));
                                     return ResponseInfo::from(*request.header());
                                 },
                             };

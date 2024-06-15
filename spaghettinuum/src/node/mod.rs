@@ -24,12 +24,6 @@ use crate::utils::signed::{
 use crate::utils::blob::{
     Blob,
 };
-use crate::utils::log::{
-    Log,
-    INFO,
-    WARN,
-    DEBUG_NODE,
-};
 use crate::utils::time_util::ToInstant;
 use constant_time_eq::constant_time_eq;
 use tokio::select;
@@ -46,9 +40,10 @@ use generic_array::ArrayLength;
 use generic_array::GenericArray;
 use loga::{
     ea,
-    ResultContext,
     DebugDisplay,
     ErrContext,
+    Log,
+    ResultContext,
 };
 use manual_future::ManualFuture;
 use manual_future::ManualFutureCompleter;
@@ -314,13 +309,12 @@ impl Node {
     /// * `persist_path`: Save state to this file before shutting down to make next startup
     ///   faster
     pub async fn new(
-        log: &Log,
+        log: Log,
         tm: TaskManager,
         bind_addr: StrSocketAddr,
         bootstrap: &[wire::node::latest::NodeInfo],
         persistent_path: &Path,
     ) -> Result<Node, loga::Error> {
-        let log = &log.fork(ea!(sys = "node"));
         let mut do_bootstrap = false;
         let own_ident;
         let own_secret;
@@ -331,13 +325,13 @@ impl Node {
         let db_pool =
             setup_db(&persistent_path.join("node.sqlite3"), db::migrate)
                 .await
-                .stack_context(log, "Error initializing database")?;
-        let db = db_pool.get().await.stack_context(log, "Error getting database connection")?;
+                .stack_context(&log, "Error initializing database")?;
+        let db = db_pool.get().await.stack_context(&log, "Error getting database connection")?;
         match db
             .interact(|conn| db::secret_get(&conn))
             .await
-            .stack_context(log, "Error interacting with database")?
-            .stack_context(log, "Error retrieving secret")? {
+            .stack_context(&log, "Error interacting with database")?
+            .stack_context(&log, "Error retrieving secret")? {
             Some(s) => {
                 own_ident = s.get_identity();
                 own_secret = s;
@@ -352,8 +346,8 @@ impl Node {
             for e in db
                 .interact(|conn| db::neighbors_get(&conn))
                 .await
-                .stack_context(log, "Error interacting with database")?
-                .stack_context(log, "Error retrieving old neighbors")? {
+                .stack_context(&log, "Error interacting with database")?
+                .stack_context(&log, "Error retrieving old neighbors")? {
                 let state = match e {
                     wire::node::NodeState::V1(s) => s,
                 };
@@ -361,7 +355,7 @@ impl Node {
                 match initial_buckets.addrs.entry(state.node.address.0) {
                     Entry::Occupied(v) => {
                         log.log_with(
-                            WARN,
+                            loga::WARN,
                             "Duplicate neighbor address in database, skipping",
                             ea!(addr = state.node.address, ident1 = state.node.ident, ident2 = v.get()),
                         );
@@ -372,7 +366,7 @@ impl Node {
                     },
                 }
                 log.log_with(
-                    DEBUG_NODE,
+                    loga::DEBUG,
                     "Restoring neighbor",
                     ea!(ident = state.node.ident, addr = state.node.address),
                 );
@@ -383,7 +377,7 @@ impl Node {
                 do_bootstrap = true;
             }
         }
-        log.log_with(INFO, "Starting", ea!(own_node_ident = own_ident));
+        log.log_with(loga::INFO, "Starting", ea!(own_node_ident = own_ident));
         let sock = {
             let log = log.fork(ea!(addr = bind_addr));
             UdpSocket::bind(bind_addr.resolve()?).await.stack_context(&log, "Failed to open node UDP port")?
@@ -412,7 +406,7 @@ impl Node {
             challenge_states: Mutex::new(HashMap::new()),
         }));
         if do_bootstrap {
-            log.log_with(DEBUG_NODE, "No neighbors, bootstrapping", ea!(count = bootstrap.len()));
+            log.log_with(loga::DEBUG, "No neighbors, bootstrapping", ea!(count = bootstrap.len()));
             for b in bootstrap {
                 if b.ident == dir.0.own_ident {
                     continue;
@@ -443,7 +437,7 @@ impl Node {
                 return Ok(()) as Result<_, loga::Error>;
             }.await {
                 Ok(_) => { },
-                Err(e) => log.log_err(WARN, e.context("Failed to persist state")),
+                Err(e) => log.log_err(loga::WARN, e.context("Failed to persist state")),
             }
         }));
 
@@ -466,7 +460,7 @@ impl Node {
                     // time pushed back while this timeout was in the queue
                     return;
                 }
-                dir.0.log.log_with(DEBUG_NODE, "Find timed out", ea!(key = &e.key.0.dbg_str()));
+                dir.0.log.log_with(loga::DEBUG, "Find timed out", ea!(key = &e.key.0.dbg_str()));
                 state_entry.remove()
             };
             for o in &state.outstanding {
@@ -582,14 +576,14 @@ impl Node {
                                 Ok(()) => { },
                                 Err(e) => {
                                     log.log_err(
-                                        DEBUG_NODE,
+                                        loga::DEBUG,
                                         e.context_with("Received invalid directory message", ea!(addr = addr)),
                                     );
                                 },
                             }
                         },
                         Err(e) => {
-                            log.log_err(WARN, e.context("Error receiving packet"));
+                            log.log_err(loga::WARN, e.context("Error receiving packet"));
                         },
                     };
                 }
@@ -677,7 +671,7 @@ impl Node {
                         self
                             .0
                             .log
-                            .log_with(DEBUG_NODE, "Own store request, storing locally", ea!(value = key.dbg_str()));
+                            .log_with(loga::DEBUG, "Own store request, storing locally", ea!(value = key.dbg_str()));
                         self.0.store.lock().unwrap().insert(key.clone(), ValueState {
                             value: value.clone(),
                             received: Utc::now(),
@@ -788,7 +782,7 @@ impl Node {
                                     .0
                                     .log
                                     .log_with(
-                                        DEBUG_NODE,
+                                        loga::DEBUG,
                                         "Starting find with initial value",
                                         ea!(value = v.dbg_str(), goal = goal.dbg_str()),
                                     );
@@ -798,7 +792,7 @@ impl Node {
                                 self
                                     .0
                                     .log
-                                    .log_with(DEBUG_NODE, "Starting find with no value", ea!(goal = goal.dbg_str()));
+                                    .log_with(loga::DEBUG, "Starting find with no value", ea!(goal = goal.dbg_str()));
                                 None
                             },
                         },
@@ -870,14 +864,14 @@ impl Node {
                 .0
                 .log
                 .log_with(
-                    DEBUG_NODE,
+                    loga::DEBUG,
                     "Completing state with value",
                     ea!(value = v.dbg_str(), goal = state.goal.dbg_str()),
                 ),
             None => self
                 .0
                 .log
-                .log_with(DEBUG_NODE, "Completing state with no value", ea!(goal = state.goal.dbg_str())),
+                .log_with(loga::DEBUG, "Completing state with no value", ea!(goal = state.goal.dbg_str())),
         }
         for f in state.futures {
             f.complete(FindResult {
@@ -904,7 +898,7 @@ impl Node {
 
         // Confirm sender is legit routable, add to own routing table
         if resp.sender.verify(&state.challenge, &resp.signature).is_err() {
-            log.log(DEBUG_NODE, "Bad sender signature");
+            log.log(loga::DEBUG, "Bad sender signature");
             return;
         }
         let state = state_entry.remove();
@@ -913,7 +907,7 @@ impl Node {
 
     async fn handle_find_resp(&self, resp: wire::node::latest::FindResponse) {
         let Ok(content) = resp.content.verify(&resp.sender) else {
-            self.0.log.log(DEBUG_NODE, "Find response has invalid signature");
+            self.0.log.log(loga::DEBUG, "Find response has invalid signature");
             return;
         };
         let log: Log = self.0.log.fork(ea!(action = "find_response", from_node_ident = resp.sender.dbg_str()));
@@ -926,7 +920,7 @@ impl Node {
             let mut state_entry = match borrowed_states.entry(content.goal.clone()) {
                 Entry::Occupied(s) => s,
                 Entry::Vacant(_) => {
-                    log.log(DEBUG_NODE, "No request state matching response target");
+                    log.log(loga::DEBUG, "No request state matching response target");
                     return;
                 },
             };
@@ -940,7 +934,7 @@ impl Node {
                         return false;
                     } else {
                         log.log_with(
-                            DEBUG_NODE,
+                            loga::DEBUG,
                             "Wrong challenge",
                             ea!(want = e.challenge, got = content.challenge),
                         );
@@ -1075,7 +1069,7 @@ impl Node {
                     match &value {
                         stored::announcement::Announcement::V1(found) => {
                             let Ok(content) = found.verify(&goal_identity) else {
-                                log.log(DEBUG_NODE, "Got value with bad signature");
+                                log.log(loga::DEBUG, "Got value with bad signature");
                                 break;
                             };
                             found_published = content.announced;
@@ -1091,7 +1085,7 @@ impl Node {
                             }
                             if have_published > found_published {
                                 log.log_with(
-                                    DEBUG_NODE,
+                                    loga::DEBUG,
                                     "Received value older than one we already have",
                                     ea!(
                                         have_published = have_published.to_rfc3339(),
@@ -1104,7 +1098,7 @@ impl Node {
                         _ => (),
                     }
                     log.log_with(
-                        DEBUG_NODE,
+                        loga::DEBUG,
                         "Found better value for find, replacing",
                         ea!(old = state.value.dbg_str(), new = state.value.dbg_str(), goal = state.goal.dbg_str()),
                     );
@@ -1224,7 +1218,7 @@ impl Node {
 
     async fn handle(&self, m: wire::node::Protocol, reply_to: &SocketAddr) -> Result<(), loga::Error> {
         let log = self.0.log.fork(ea!(from_addr = reply_to, message = m.dbg_str()));
-        log.log(DEBUG_NODE, "Received");
+        log.log(loga::DEBUG, "Received");
         match m {
             wire::node::Protocol::V1(v1) => match v1 {
                 wire::node::latest::Message::FindRequest(m) => {
@@ -1268,7 +1262,7 @@ impl Node {
                     self.handle_find_resp(m).await;
                 },
                 wire::node::latest::Message::Store(m) => {
-                    log.log_with(DEBUG_NODE, "Storing", ea!(value = m.key.dbg_str()));
+                    log.log_with(loga::DEBUG, "Storing", ea!(value = m.key.dbg_str()));
                     let new_announced;
                     match &m.value {
                         stored::announcement::Announcement::V1(value) => {
@@ -1347,7 +1341,7 @@ impl Node {
         let log = self.0.log.fork(ea!(activity = "add_good_node", node = id.dbg_str()));
         let log = &log;
         if id == self.0.own_ident {
-            log.log(DEBUG_NODE, "Own node id, ignoring");
+            log.log(loga::DEBUG, "Own node id, ignoring");
             return false;
         }
         let (bucket_i, _) = dist(&node_ident_coord(&id), &self.0.own_coord);
@@ -1368,7 +1362,7 @@ impl Node {
                     let n = &mut bucket[i];
                     if &n.node.ident == old {
                         log.log_with(
-                            DEBUG_NODE,
+                            loga::DEBUG,
                             "Replaced node with same addr",
                             ea!(addr = addr, old_ident = old, new_ident = new_ident),
                         );
@@ -1402,7 +1396,7 @@ impl Node {
                         if changed {
                             self.0.dirty.store(true, Ordering::Relaxed);
                         }
-                        log.log(DEBUG_NODE, "Updated existing node");
+                        log.log(loga::DEBUG, "Updated existing node");
                         store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident);
                     }
                     break 'logic false;
@@ -1420,7 +1414,7 @@ impl Node {
                         unresponsive: false,
                     });
                     self.0.dirty.store(true, Ordering::Relaxed);
-                    log.log(DEBUG_NODE, "Added node to empty slot");
+                    log.log(loga::DEBUG, "Added node to empty slot");
                     store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident);
                 }
                 break true;
@@ -1436,12 +1430,12 @@ impl Node {
                         unresponsive: false,
                     });
                     self.0.dirty.store(true, Ordering::Relaxed);
-                    log.log(DEBUG_NODE, "Replaced dead node");
+                    log.log(loga::DEBUG, "Replaced dead node");
                     store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident);
                 }
                 break 'logic true;
             }
-            log.log(DEBUG_NODE, "Nowhere to place, dropping");
+            log.log(loga::DEBUG, "Nowhere to place, dropping");
             break false;
         };
         return new_node;
@@ -1449,7 +1443,7 @@ impl Node {
 
     async fn send(&self, addr: &SocketAddr, data: wire::node::Protocol) {
         let bytes = data.to_bytes();
-        self.0.log.log_with(DEBUG_NODE, "Sending", ea!(to_addr = addr, message = data.dbg_str()));
+        self.0.log.log_with(loga::DEBUG, "Sending", ea!(to_addr = addr, message = data.dbg_str()));
         self.0.socket.send_to(&bytes, addr).await.unwrap();
     }
 }

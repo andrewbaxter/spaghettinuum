@@ -198,15 +198,11 @@
         },
         "content": {
           "description": "How to serve content.  If not specified, just keeps certificates in the cert dir up to date.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ContentConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ContentConfig"
+          }
         }
       }
     },

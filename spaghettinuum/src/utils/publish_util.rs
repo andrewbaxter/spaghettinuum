@@ -1,18 +1,10 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        Mutex,
+use {
+    super::{
+        backed_identity::IdentitySigner,
+        blob::ToBlob,
+        signed::IdentSignatureMethods,
     },
-};
-use chrono::Utc;
-use hyper::Uri;
-use loga::{
-    ea,
-    ResultContext,
-};
-use crate::{
-    interface::{
+    crate::interface::{
         stored::{
             self,
             announcement::latest::AnnouncementPublisher,
@@ -24,16 +16,25 @@ use crate::{
             api::publish::v1::InfoResponse,
         },
     },
-};
-use super::{
-    backed_identity::IdentitySigner,
-    blob::ToBlob,
-    htreq,
-    log::{
-        Log,
-        DEBUG_OTHER,
+    chrono::Utc,
+    htwrap::{
+        htreq,
+        UriJoin,
     },
-    signed::IdentSignatureMethods,
+    hyper::Uri,
+    loga::{
+        ea,
+        Log,
+        ResultContext,
+    },
+    std::{
+        collections::HashMap,
+        str::FromStr,
+        sync::{
+            Arc,
+            Mutex,
+        },
+    },
 };
 
 pub fn generate_publish_announce(
@@ -63,8 +64,15 @@ pub async fn announce(
 ) -> Result<(), loga::Error> {
     let mut publishers_info = vec![];
     for s in publishers {
+        let url = s.join("publish/v1/info");
         let info_body =
-            htreq::get(log, &format!("{}publish/v1/info", s), &HashMap::new(), 100 * 1024)
+            htreq::get(
+                &log,
+                &mut htreq::connect(&url).await.context("Error connecting to publisher")?,
+                &url,
+                &HashMap::new(),
+                100 * 1024,
+            )
                 .await
                 .context("Error getting publisher info")?;
         let info =
@@ -76,7 +84,7 @@ pub async fn announce(
                 ea!(body = String::from_utf8_lossy(&info_body)),
             )?;
         log.log_with(
-            DEBUG_OTHER,
+            loga::DEBUG,
             "Got publisher information",
             ea!(info = serde_json::to_string_pretty(&info).unwrap()),
         );
@@ -92,8 +100,15 @@ pub async fn announce(
         announcement: announcement,
     };
     for s in publishers {
-        let url = format!("{}publish/v1/announce", s);
-        htreq::post(log, &url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
+        let url = Uri::from_str(&format!("{}publish/v1/announce", s)).unwrap();
+        htreq::post(
+            log,
+            &mut htreq::connect(&url).await.context("Error connecting to publisher")?,
+            &url,
+            &HashMap::new(),
+            serde_json::to_vec(&request).unwrap(),
+            100,
+        )
             .await
             .context("Error making announce request")?;
     }
@@ -116,13 +131,20 @@ pub async fn publish(
         content: signed_request_content,
     };
     for s in publishers {
-        let url = format!("{}publish/v1/publish", s);
+        let url = s.join("publish/v1/publish");
         log.log_with(
-            DEBUG_OTHER,
+            loga::DEBUG,
             "Sending publish request",
             ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
         );
-        htreq::post(log, &url, &HashMap::new(), serde_json::to_vec(&request).unwrap(), 100)
+        htreq::post(
+            log,
+            &mut htreq::connect(&url).await.context("Error connecting to publisher")?,
+            &url,
+            &HashMap::new(),
+            serde_json::to_vec(&request).unwrap(),
+            100,
+        )
             .await
             .context("Error making publish request")?;
     }

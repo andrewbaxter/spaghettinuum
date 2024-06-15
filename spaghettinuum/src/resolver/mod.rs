@@ -1,75 +1,80 @@
-use crate::{
-    bb,
-    cap_fn,
-    interface::{
-        stored::{
-            self,
-            identity::Identity,
+use {
+    crate::{
+        bb,
+        cap_fn,
+        interface::{
+            stored::{
+                self,
+                identity::Identity,
+            },
+            wire::{
+                self,
+                resolve::ResolveKeyValues,
+            },
         },
-        wire::{
-            self,
-            resolve::ResolveKeyValues,
+        node::Node,
+        publisher::{
+            Publisher,
+        },
+        ta_res,
+        ta_vis_res,
+        utils::{
+            db_util::setup_db,
+            htserve::{
+                self,
+                Response,
+                Routes,
+            },
+            signed::IdentSignatureMethods,
+            tls_util::SingleKeyVerifier,
+            ResultVisErr,
+            VisErr,
         },
     },
-    publisher::{
-        publisher_cert_hash,
-        Publisher,
+    chrono::{
+        DateTime,
+        Duration,
+        Utc,
     },
-    ta_res,
-    ta_vis_res,
-    utils::{
-        blob::Blob,
-        db_util::setup_db,
-        htreq,
-        htserve::{
-            Routes,
-            self,
-            Response,
-        },
-        log::{
-            Log,
-            WARN,
-            DEBUG_RESOLVE,
-        },
-        signed::IdentSignatureMethods,
-        ResultVisErr,
-        VisErr,
+    http_body_util::Empty,
+    htwrap::htreq::{
+        self,
+        Conn,
     },
+    hyper::{
+        body::Bytes,
+        Request,
+        Uri,
+    },
+    hyper_rustls::HttpsConnectorBuilder,
+    itertools::Itertools,
+    loga::{
+        ea,
+        ErrContext,
+        Log,
+        ResultContext,
+    },
+    moka::future::Cache,
+    rand::{
+        seq::SliceRandom,
+        thread_rng,
+    },
+    rustls::ClientConfig,
+    std::{
+        collections::HashMap,
+        net::IpAddr,
+        path::Path,
+        str::FromStr,
+        sync::Arc,
+    },
+    taskmanager::TaskManager,
+    tokio::{
+        select,
+        spawn,
+        time::sleep,
+    },
+    tower_service::Service,
 };
-use crate::node::Node;
-use chrono::{
-    DateTime,
-    Duration,
-    Utc,
-};
-use http_body_util::Empty;
-use hyper::{
-    Request,
-    body::Bytes,
-    Uri,
-};
-use hyper_rustls::HttpsConnectorBuilder;
-use itertools::Itertools;
-use loga::{
-    ea,
-    ErrContext,
-    ResultContext,
-};
-use moka::future::Cache;
-use rand::{
-    seq::SliceRandom,
-    thread_rng,
-};
-use tower_service::Service;
-use std::{
-    collections::HashMap,
-    net::IpAddr,
-    path::Path,
-    str::FromStr,
-    sync::Arc,
-};
-use taskmanager::TaskManager;
-use tokio::spawn;
 
 pub mod db;
 pub mod dns;
@@ -78,7 +83,7 @@ struct Resolver_ {
     node: Node,
     log: Log,
     cache: Cache<(Identity, String), (DateTime<Utc>, Option<String>)>,
-    publisher: Option<Publisher>,
+    publisher: Publisher,
     global_addrs: Vec<IpAddr>,
 }
 
@@ -102,10 +107,9 @@ impl Resolver {
         node: Node,
         max_cache: Option<u64>,
         persistent_dir: &Path,
-        publisher: Option<Publisher>,
+        publisher: Publisher,
         global_addrs: Vec<IpAddr>,
     ) -> Result<Resolver, loga::Error> {
-        let log = &log.fork(ea!(sys = "resolver"));
         let db_pool =
             setup_db(&persistent_dir.join("resolver.sqlite3"), db::migrate)
                 .await
@@ -137,7 +141,7 @@ impl Resolver {
                 return Ok(()) as Result<(), loga::Error>;
             }.await {
                 Err(e) => {
-                    log.log_err(WARN, e.context("Error seeding cache with persisted data"));
+                    log.log_err(loga::WARN, e.context("Error seeding cache with persisted data"));
                 },
                 _ => { },
             }
@@ -175,7 +179,7 @@ impl Resolver {
                 }.await {
                     Ok(_) => { },
                     Err(e) => {
-                        log.log_err(WARN, e.context("Failed to persist cache at shutdown"));
+                        log.log_err(loga::WARN, e.context("Failed to persist cache at shutdown"));
                     },
                 }
             }
@@ -209,7 +213,7 @@ impl Resolver {
                                         .0
                                         .log
                                         .log_err(
-                                            WARN,
+                                            loga::WARN,
                                             e.context_with("Couldn't parse cache value as json", ea!(key = k)),
                                         );
                                     break 'missing;
@@ -223,7 +227,7 @@ impl Resolver {
                         data: v,
                     });
                 } else {
-                    self.0.log.log_with(DEBUG_RESOLVE, "Cache miss", ea!(ident = ident, key = k));
+                    self.0.log.log_with(loga::DEBUG, "Cache miss", ea!(ident = ident, key = k));
                     break 'missing;
                 }
             }
@@ -254,97 +258,15 @@ impl Resolver {
                 // Request values from publisher
                 if self.0.global_addrs.iter().any(|i| *i == publisher.addr.0.ip()) {
                     // Publisher is us, short circuit network
-                    if let Some(publisher) = &self.0.publisher {
-                        return Ok(
-                            publisher
-                                .get_values(&ident, request_keys.iter().map(|x| x.to_string()).collect())
-                                .await?,
-                        );
-                    } else {
-                        return Ok(wire::resolve::ResolveKeyValues::V1(HashMap::new()));
-                    }
+                    return Ok(self.0.publisher.get_values(&ident, request_keys.iter().map(|x| x.to_string()).collect()).await?);
                 } else {
                     // Request values via publisher over internet
-                    #[derive(Debug)]
-                    pub struct SingleKeyVerifier {
-                        hash: Blob,
-                    }
-
-                    impl SingleKeyVerifier {
-                        pub fn new(hash: Blob) -> Arc<dyn rustls::client::danger::ServerCertVerifier> {
-                            return Arc::new(SingleKeyVerifier { hash });
-                        }
-                    }
-
-                    impl rustls::client::danger::ServerCertVerifier for SingleKeyVerifier {
-                        fn verify_server_cert(
-                            &self,
-                            end_entity: &rustls::pki_types::CertificateDer<'_>,
-                            _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-                            _server_name: &rustls::pki_types::ServerName<'_>,
-                            _ocsp_response: &[u8],
-                            _now: rustls::pki_types::UnixTime,
-                        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-                            if publisher_cert_hash(
-                                end_entity.as_ref(),
-                            ).map_err(
-                                |_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding),
-                            )? !=
-                                self.hash {
-                                return Err(
-                                    rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding),
-                                );
-                            }
-                            return Ok(rustls::client::danger::ServerCertVerified::assertion());
-                        }
-
-                        fn verify_tls12_signature(
-                            &self,
-                            _message: &[u8],
-                            _cert: &rustls::pki_types::CertificateDer<'_>,
-                            _dss: &rustls::DigitallySignedStruct,
-                        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-                            return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
-                        }
-
-                        fn verify_tls13_signature(
-                            &self,
-                            _message: &[u8],
-                            _cert: &rustls::pki_types::CertificateDer<'_>,
-                            _dss: &rustls::DigitallySignedStruct,
-                        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-                            return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
-                        }
-
-                        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                            return vec![
-                                rustls::SignatureScheme::RSA_PKCS1_SHA1,
-                                rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-                                rustls::SignatureScheme::RSA_PKCS1_SHA256,
-                                rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-                                rustls::SignatureScheme::RSA_PKCS1_SHA384,
-                                rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-                                rustls::SignatureScheme::RSA_PKCS1_SHA512,
-                                rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-                                rustls::SignatureScheme::RSA_PSS_SHA256,
-                                rustls::SignatureScheme::RSA_PSS_SHA384,
-                                rustls::SignatureScheme::RSA_PSS_SHA512,
-                                rustls::SignatureScheme::ED25519,
-                                rustls::SignatureScheme::ED448
-                            ];
-                        }
-                    }
-
-                    let uri =
-                        Uri::from_str(
-                            &format!("https://{}/{}?{}", publisher.addr, ident, request_keys.join(",")),
-                        ).unwrap();
-                    let pub_resp_bytes =
-                        htreq::send(
-                            log,
+                    let url = Uri::from_str(&format!("https://{}/{}?{}", publisher.addr, ident, request_keys.join(","))).unwrap();
+                    let connect = async {
+                        return Ok(
                             HttpsConnectorBuilder::new()
                                 .with_tls_config(
-                                    rustls::ClientConfig::builder()
+                                    ClientConfig::builder()
                                         .dangerous()
                                         .with_custom_certificate_verifier(SingleKeyVerifier::new(publisher.cert_hash))
                                         .with_no_client_auth(),
@@ -352,16 +274,33 @@ impl Resolver {
                                 .https_only()
                                 .enable_http1()
                                 .build()
-                                .call(uri.clone())
+                                .call(url.clone())
                                 .await
                                 .map_err(
-                                    |e| log.err_with("Error connecting to publisher", ea!(err = e.to_string())),
+                                    |e| loga::err_with("Connection failed", ea!(err = e.to_string(), url = url)),
                                 )?,
+                        );
+                    };
+                    let mut conn =
+                        Conn::new(
+                            hyper::client::conn::http1::handshake(select!{
+                                _ = sleep(
+                                    Duration::try_seconds(10).unwrap().to_std().unwrap()
+                                ) => Err(loga::err("Timeout connecting")),
+                                res = connect => res,
+                            }.context_with("Error connecting to publisher", ea!(url = url))?)
+                                .await
+                                .context("Error completing http handshake")?,
+                        );
+                    let pub_resp_bytes =
+                        htreq::send_simple(
+                            log,
+                            &mut conn,
                             128 * 1024 * request_keys.len(),
                             Duration::seconds(10),
                             Request::builder()
                                 .method("GET")
-                                .uri(uri)
+                                .uri(url)
                                 .header(hyper::header::HOST, publisher.addr.to_string())
                                 .body(Empty::<Bytes>::new())
                                 .unwrap(),
@@ -403,7 +342,7 @@ impl Resolver {
                 match &resp_kvs {
                     wire::resolve::ResolveKeyValues::V1(resp_kvs) => {
                         for (k, v) in resp_kvs {
-                            log.log_with(DEBUG_RESOLVE, "Cache store", ea!(ident = ident, key = k));
+                            log.log_with(loga::DEBUG, "Cache store", ea!(ident = ident, key = k));
                             cache
                                 .insert(
                                     (identity.clone(), k.to_owned()),
@@ -421,7 +360,7 @@ impl Resolver {
 
 /// Launch a publisher into the task manager and return the API endpoints for
 /// attaching to the user-facing HTTP servers.
-pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
+pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> Routes {
     struct Inner {
         resolver: Resolver,
         log: Log,
@@ -429,7 +368,7 @@ pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
 
     let state = Arc::new(Inner {
         resolver: resolver.clone(),
-        log: log.fork(ea!(sys = "resolver")),
+        log: log,
     });
     let mut r = Routes::new();
     r.add("v1", htserve::Leaf::new().get(cap_fn!((mut req)(state) {
@@ -461,7 +400,7 @@ pub fn build_api_endpoints(log: &Log, resolver: &Resolver) -> Routes {
                     return Response::ExternalErr(e.to_string());
                 },
                 VisErr::Internal(e) => {
-                    state.log.log_err(WARN, e.context("Error responding to query"));
+                    state.log.log_err(loga::WARN, e.context("Error responding to query"));
                     return Response::InternalErr;
                 },
             },

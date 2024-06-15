@@ -18,3 +18,6 @@ pub mod self_tls;
 
 /// Other assorted methods and tools.
 pub mod utils;
+
+/// Methods for serving http content (static/reverse proxy)
+pub mod content;

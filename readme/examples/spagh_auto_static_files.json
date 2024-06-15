@@ -20,19 +20,21 @@
         "local": "./my.ident"
     },
     "publishers": [
-        "https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s"
+        "https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s:12434"
     ],
     "serve": {
         "cert_dir": "/var/spagh/certs",
-        "content": {
-            "bind_addrs": [
-                "[::]:443"
-            ],
-            "mode": {
-                "static_files": {
-                    "content_dir": "/srv/mysite"
+        "content": [
+            {
+                "bind_addrs": [
+                    "[::]:443"
+                ],
+                "mode": {
+                    "static_files": {
+                        "content_dir": "/srv/mysite"
+                    }
                 }
             }
-        }
+        ]
     }
 }

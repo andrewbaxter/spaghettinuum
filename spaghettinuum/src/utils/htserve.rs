@@ -1,13 +1,7 @@
 use {
-    super::{
-        blob::{
-            Blob,
-            ToBlob,
-        },
-        log::{
-            Log,
-            DEBUG_HTSERVE,
-        },
+    super::blob::{
+        Blob,
+        ToBlob,
     },
     futures::Future,
     http_body_util::BodyExt,
@@ -27,6 +21,7 @@ use {
         ea,
         DebugDisplay,
         ErrContext,
+        Log,
     },
     serde::Serialize,
     sha2::{
@@ -170,7 +165,7 @@ pub async fn handle(handler: Handler, req: hyper::Request<Incoming>) -> Result<h
     let body = match req.into_body().collect().await {
         Ok(b) => b,
         Err(e) => {
-            handler.0.log.log_err(DEBUG_HTSERVE, e.context("Error reading request body"));
+            handler.0.log.log_err(loga::DEBUG, e.context("Error reading request body"));
             return Ok(response_400("Error reading body"));
         },
     }.to_bytes().blob();
@@ -178,7 +173,7 @@ pub async fn handle(handler: Handler, req: hyper::Request<Incoming>) -> Result<h
         .0
         .log
         .log_with(
-            DEBUG_HTSERVE,
+            loga::DEBUG,
             "Receive",
             ea!(
                 method = method,
@@ -196,11 +191,7 @@ pub async fn handle(handler: Handler, req: hyper::Request<Incoming>) -> Result<h
                     handler
                         .0
                         .log
-                        .log_with(
-                            DEBUG_HTSERVE,
-                            "Path matching ended at branch",
-                            ea!(path = path.dbg_str(), seg = i),
-                        );
+                        .log_with(loga::DEBUG, "Path matching ended at branch", ea!(path = path.dbg_str(), seg = i));
                     return Ok(response_404());
                 }
                 match b.get(&path[i]) {
@@ -213,7 +204,7 @@ pub async fn handle(handler: Handler, req: hyper::Request<Incoming>) -> Result<h
                             .0
                             .log
                             .log_with(
-                                DEBUG_HTSERVE,
+                                loga::DEBUG,
                                 "No route for path segment in parent branch",
                                 ea!(path = path.dbg_str(), seg = i),
                             );
@@ -228,7 +219,7 @@ pub async fn handle(handler: Handler, req: hyper::Request<Incoming>) -> Result<h
                             handler
                                 .0
                                 .log
-                                .log_with(DEBUG_HTSERVE, "No GET handler", ea!(path = path.dbg_str(), seg = i));
+                                .log_with(loga::DEBUG, "No GET handler", ea!(path = path.dbg_str(), seg = i));
                             return Ok(response_404());
                         };
                         break 'recurse m;
@@ -238,7 +229,7 @@ pub async fn handle(handler: Handler, req: hyper::Request<Incoming>) -> Result<h
                             handler
                                 .0
                                 .log
-                                .log_with(DEBUG_HTSERVE, "No POST handler", ea!(path = path.dbg_str(), seg = i));
+                                .log_with(loga::DEBUG, "No POST handler", ea!(path = path.dbg_str(), seg = i));
                             return Ok(response_404());
                         };
                         break 'recurse m;
@@ -248,7 +239,7 @@ pub async fn handle(handler: Handler, req: hyper::Request<Incoming>) -> Result<h
                             handler
                                 .0
                                 .log
-                                .log_with(DEBUG_HTSERVE, "No DELETE handler", ea!(path = path.dbg_str(), seg = i));
+                                .log_with(loga::DEBUG, "No DELETE handler", ea!(path = path.dbg_str(), seg = i));
                             return Ok(response_404());
                         };
                         break 'recurse m;

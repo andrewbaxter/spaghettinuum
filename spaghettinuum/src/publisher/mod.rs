@@ -30,12 +30,8 @@ use {
                 Response,
                 Routes,
             },
-            log::{
-                Log,
-                DEBUG_PUBLISH,
-                WARN,
-            },
             signed::IdentSignatureMethods,
+            tls_util::publisher_cert_hash,
             ResultVisErr,
             VisErr,
         },
@@ -47,7 +43,6 @@ use {
     deadpool_sqlite::Pool,
     der::{
         asn1::GeneralizedTime,
-        Decode,
         Encode,
     },
     good_ormning_runtime::GoodError,
@@ -55,6 +50,7 @@ use {
         ea,
         DebugDisplay,
         ErrContext,
+        Log,
         ResultContext,
     },
     p256::{
@@ -66,14 +62,7 @@ use {
         PrivateKeyDer,
         PrivatePkcs8KeyDer,
     },
-    serde::{
-        Deserialize,
-        Serialize,
-    },
-    sha2::{
-        Digest,
-        Sha256,
-    },
+    serde::Deserialize,
     std::{
         collections::HashMap,
         net::SocketAddr,
@@ -92,31 +81,11 @@ use {
         serial_number::SerialNumber,
         spki::SubjectPublicKeyInfoOwned,
         time::Time,
-        Certificate,
     },
 };
 
 pub mod db;
 pub mod admin_db;
-
-#[derive(Serialize, Deserialize)]
-struct SerialTlsCert {
-    pub_der: Blob,
-    priv_der: Blob,
-}
-
-pub fn publisher_cert_hash(cert_der: &[u8]) -> Result<Blob, ()> {
-    return Ok(
-        <Sha256 as Digest>::digest(
-            Certificate::from_der(&cert_der)
-                .map_err(|_| ())?
-                .tbs_certificate
-                .subject_public_key_info
-                .to_der()
-                .map_err(|_| ())?,
-        ).blob(),
-    );
-}
 
 struct PublisherInner {
     log: Log,
@@ -150,7 +119,6 @@ impl Publisher {
         advertise_addr: SocketAddr,
         persistent_dir: &Path,
     ) -> Result<Publisher, loga::Error> {
-        let log = &log.fork(ea!(sys = "publisher"));
         let db_pool =
             setup_db(&persistent_dir.join("publisher.sqlite3"), db::migrate)
                 .await
@@ -221,7 +189,7 @@ impl Publisher {
                 routes.add("", Leaf::new().get(cap_fn!((mut r)(publisher, log) {
                     match async {
                         ta_vis_res!(Response);
-                        log.log_with(DEBUG_PUBLISH, "Recieved request", ea!(path = r.path.dbg_str()));
+                        log.log_with(loga::DEBUG, "Recieved request", ea!(path = r.path.dbg_str()));
 
                         // Params
                         let Some(ident) = r.path.pop() else {
@@ -243,7 +211,7 @@ impl Publisher {
                         Err(e) => {
                             match e {
                                 VisErr::Internal(e) => {
-                                    publisher.0.log.log_err(WARN, e.context("Error processing request"));
+                                    publisher.0.log.log_err(loga::WARN, e.context("Error processing request"));
                                     return Response::InternalErr;
                                 },
                                 VisErr::External(e) => {
@@ -274,21 +242,21 @@ impl Publisher {
                         let stream = match stream {
                             Ok(s) => s,
                             Err(e) => {
-                                log.log_err(DEBUG_PUBLISH, e.context("Error opening peer stream"));
+                                log.log_err(loga::DEBUG, e.context("Error opening peer stream"));
                                 return;
                             },
                         };
                         let peer_addr = match stream.peer_addr() {
                             Ok(a) => a,
                             Err(e) => {
-                                log.log_err(DEBUG_PUBLISH, e.context("Error getting connection peer address"));
+                                log.log_err(loga::DEBUG, e.context("Error getting connection peer address"));
                                 return;
                             },
                         };
                         let stream = match tls_acceptor.accept(stream).await {
                             Ok(a) => a,
                             Err(e) => {
-                                log.log_err(DEBUG_PUBLISH, e.context("Error setting up tls stream"));
+                                log.log_err(loga::DEBUG, e.context("Error setting up tls stream"));
                                 return;
                             },
                         };
@@ -311,7 +279,7 @@ impl Publisher {
                                 Ok(_) => (),
                                 Err(e) => {
                                     log.log_err(
-                                        DEBUG_PUBLISH,
+                                        loga::DEBUG,
                                         e.context_with("Error serving connection", ea!(peer = peer_addr)),
                                     );
                                 },
@@ -344,7 +312,7 @@ impl Publisher {
                                         if accepted.parse_unwrap().announced > have_announced {
                                             // Newer announcement elsewhere, delete this announcement to save some network
                                             // effort
-                                            publisher.clear_identity(&identity).await.log(&log, WARN, "Error deleting obsolete announcement");
+                                            publisher.clear_identity(&identity).await.log(&log, loga::WARN, "Error deleting obsolete announcement");
                                         }
                                     },
                                 }
@@ -358,7 +326,7 @@ impl Publisher {
                 }.await {
                     Ok(_) => { },
                     Err(e) => {
-                        log.log_err(WARN, e.context("Error while re-announcing publishers"));
+                        log.log_err(loga::WARN, e.context("Error while re-announcing publishers"));
                     },
                 }
             })
@@ -519,6 +487,7 @@ impl Publisher {
 }
 
 pub async fn build_api_endpoints(
+    log: Log,
     publisher: &Publisher,
     admin_token: Option<&String>,
     persist_dir: &Path,
@@ -529,6 +498,7 @@ pub async fn build_api_endpoints(
             .context("Error initializing database")?;
 
     struct State {
+        log: Log,
         db_pool: Pool,
         publisher: Publisher,
     }
@@ -578,6 +548,7 @@ pub async fn build_api_endpoints(
     }
 
     let state = Arc::new(State {
+        log: log,
         db_pool: db_pool,
         publisher: publisher.clone(),
     });
@@ -616,7 +587,7 @@ pub async fn build_api_endpoints(
                     return r;
                 },
                 Err(e) => {
-                    state.publisher.0.log.log_err(WARN, e.context("Error publishing key values"));
+                    state.log.log_err(loga::WARN, e.context("Error publishing key values"));
                     return Response::InternalErr;
                 },
             }
@@ -648,7 +619,7 @@ pub async fn build_api_endpoints(
                     return r;
                 },
                 Err(e) => {
-                    state.publisher.0.log.log_err(WARN, e.context("Error unpublishing key values"));
+                    state.log.log_err(loga::WARN, e.context("Error unpublishing key values"));
                     return Response::InternalErr;
                 },
             }
@@ -680,7 +651,7 @@ pub async fn build_api_endpoints(
                     return r;
                 },
                 Err(e) => {
-                    state.publisher.0.log.log_err(WARN, e.context("Error publishing key values"));
+                    state.log.log_err(loga::WARN, e.context("Error publishing key values"));
                     return Response::InternalErr;
                 },
             }
@@ -733,7 +704,7 @@ pub async fn build_api_endpoints(
                         return d;
                     },
                     Err(e) => {
-                        state.publisher.0.log.log_err(WARN, e.context("Error getting published identities"));
+                        state.log.log_err(loga::WARN, e.context("Error getting published identities"));
                         return Response::InternalErr;
                     },
                 }
@@ -760,7 +731,11 @@ pub async fn build_api_endpoints(
                         return d;
                     },
                     Err(e) => {
-                        state.publisher.0.log.log_err(WARN, e.context("Error registering identity for publishing"));
+                        state
+                            .publisher
+                            .0
+                            .log
+                            .log_err(loga::WARN, e.context("Error registering identity for publishing"));
                         return Response::InternalErr;
                     },
                 }
@@ -793,7 +768,7 @@ pub async fn build_api_endpoints(
                             .publisher
                             .0
                             .log
-                            .log_err(WARN, e.context("Error unregistering identity for publishing"));
+                            .log_err(loga::WARN, e.context("Error unregistering identity for publishing"));
                         return Response::InternalErr;
                     },
                 }
@@ -829,7 +804,11 @@ pub async fn build_api_endpoints(
                         return d;
                     },
                     Err(e) => {
-                        state.publisher.0.log.log_err(WARN, e.context("Error getting published keys for identity"));
+                        state
+                            .publisher
+                            .0
+                            .log
+                            .log_err(loga::WARN, e.context("Error getting published keys for identity"));
                         return Response::InternalErr;
                     },
                 }
@@ -877,7 +856,7 @@ pub async fn build_api_endpoints(
                         return d;
                     },
                     Err(e) => {
-                        state.publisher.0.log.log_err(WARN, e.context("Error getting published identities"));
+                        state.log.log_err(loga::WARN, e.context("Error getting published identities"));
                         return Response::InternalErr;
                     },
                 }

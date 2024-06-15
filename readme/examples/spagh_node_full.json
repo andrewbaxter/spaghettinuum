@@ -1,8 +1,8 @@
 {
     "admin_token": "hunter2",
     "api_bind_addrs": [
-        "0:443",
-        "[::]:443"
+        "0:12434",
+        "[::]:12434"
     ],
     "global_addrs": [
         {
@@ -22,11 +22,7 @@
         }
     ],
     "identity": {
-        "identity": {
-            "local": "/var/spagh/host.ident"
-        },
-        "self_publish": true,
-        "self_tls": true
+        "local": "/var/spagh/host.ident"
     },
     "node": {
         "bind_addr": "0:43890",

@@ -6,8 +6,9 @@ use std::{
     },
 };
 use loga::{
-    ResultContext,
     ea,
+    Log,
+    ResultContext,
 };
 use crate::{
     interface::{
@@ -22,7 +23,6 @@ use crate::{
 };
 use super::{
     blob::Blob,
-    log::Log,
 };
 
 pub trait IdentitySigner: Send {

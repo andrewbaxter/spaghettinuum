@@ -38,7 +38,7 @@ tokio = { version = "1", features = [
 der = "0.7"
 # For hickory ssl
 rustls_21 = { package = "rustls", version = "0.21" }
-# For htreq, acme setup
+# For htreq
 rustls = { version = "0.22" }
 bincode = "1"
 enum_dispatch = "0.3"
@@ -46,12 +46,12 @@ ed25519-dalek = { version = "2", features = ["serde", "digest", "rand_core"] }
 zbase32 = "0.1"
 itertools = "0.10"
 serde_json = "1"
-taskmanager = "0.5"
-loga = "0.4"
+taskmanager = "0.6"
+loga = "0.5"
 aargvark = { version = "0.1.2", features = ["serde_json", "http_types", "url"] }
 openpgp-card-pcsc = { version = "0.3", optional = true }
 openpgp-card-sequoia = { version = "0.1", optional = true }
-sequoia-openpgp = { version = "1.17", features = [
+sequoia-openpgp = { version = "1", features = [
     "ed25519-dalek",
     "sha2",
 ], optional = true }
@@ -108,7 +108,7 @@ tokio-rustls = "0.25"
 path-absolutize = "3"
 mime_guess = "2"
 jsonschema = "0.17"
-htwrap = "0.1"
+htwrap = { version = "0.2" }
 async-trait = "0.1"
 http = "1"
 

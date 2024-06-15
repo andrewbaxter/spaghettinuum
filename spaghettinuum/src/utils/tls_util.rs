@@ -1,17 +1,27 @@
 use {
-    std::sync::{
-        Arc,
-        RwLock,
+    super::blob::{
+        Blob,
+        ToBlob,
     },
     chrono::{
         DateTime,
         Duration,
         Utc,
     },
+    der::{
+        Decode,
+        Encode,
+    },
     loga::ResultContext,
     pem::Pem,
-    rustls::{
-        server::ResolvesServerCert,
+    rustls::server::ResolvesServerCert,
+    sha2::{
+        Digest,
+        Sha256,
+    },
+    std::sync::{
+        Arc,
+        RwLock,
     },
     x509_cert::Certificate,
 };
@@ -100,5 +110,84 @@ impl std::fmt::Debug for SingleCertResolver {
 impl ResolvesServerCert for SingleCertResolver {
     fn resolve(&self, _client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
         return Some(self.0.read().unwrap().clone());
+    }
+}
+
+pub fn publisher_cert_hash(cert_der: &[u8]) -> Result<Blob, ()> {
+    return Ok(
+        <Sha256 as Digest>::digest(
+            Certificate::from_der(&cert_der)
+                .map_err(|_| ())?
+                .tbs_certificate
+                .subject_public_key_info
+                .to_der()
+                .map_err(|_| ())?,
+        ).blob(),
+    );
+}
+
+#[derive(Debug)]
+pub struct SingleKeyVerifier {
+    hash: Blob,
+}
+
+impl SingleKeyVerifier {
+    pub fn new(hash: Blob) -> Arc<dyn rustls::client::danger::ServerCertVerifier> {
+        return Arc::new(SingleKeyVerifier { hash });
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for SingleKeyVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if publisher_cert_hash(
+            end_entity.as_ref(),
+        ).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))? !=
+            self.hash {
+            return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding));
+        }
+        return Ok(rustls::client::danger::ServerCertVerified::assertion());
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        return vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA1,
+            rustls::SignatureScheme::ECDSA_SHA1_Legacy,
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+            rustls::SignatureScheme::ED25519,
+            rustls::SignatureScheme::ED448
+        ];
     }
 }

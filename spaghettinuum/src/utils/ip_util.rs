@@ -1,49 +1,42 @@
-use std::{
-    net::{
-        IpAddr,
+use {
+    std::{
+        net::{
+            IpAddr,
+        },
+        str::FromStr,
     },
-    str::FromStr,
-};
-use chrono::Duration;
-use http_body_util::Empty;
-use hyper::{
-    Request,
-    Uri,
-    body::Bytes,
-};
-use hyper_rustls::{
-    HttpsConnectorBuilder,
-};
-use loga::{
-    ea,
-    ResultContext,
-};
-use network_interface::{
-    NetworkInterface,
-    NetworkInterfaceConfig,
-};
-use tokio::time::sleep;
-use crate::{
-    interface::config::shared::{
-        GlobalAddrConfig,
-        IpVer,
+    chrono::Duration,
+    http_body_util::Full,
+    htwrap::htreq::{
+        uri_parts,
+        HostPart,
     },
-    utils::{
-        htreq::{
-            self,
-            uri_parts,
-            rustls_client_config,
+    hyper::{
+        Request,
+        Uri,
+        body::Bytes,
+    },
+    loga::{
+        ea,
+        Log,
+        ResultContext,
+    },
+    network_interface::{
+        NetworkInterface,
+        NetworkInterfaceConfig,
+    },
+    tokio::time::sleep,
+    crate::{
+        interface::config::shared::{
+            GlobalAddrConfig,
+            IpVer,
         },
     },
-};
-use super::{
-    unstable_ip::{
-        UnstableIpv4,
-        UnstableIpv6,
-    },
-    log::{
-        Log,
-        INFO,
+    super::{
+        unstable_ip::{
+            UnstableIpv4,
+            UnstableIpv6,
+        },
     },
 };
 
@@ -113,14 +106,12 @@ pub async fn remote_resolve_global_ip(
     lookup: &str,
     contact_ip_ver: Option<IpVer>,
 ) -> Result<IpAddr, loga::Error> {
-    use tower_service::Service;
-
     let log = &log.fork(ea!(lookup = lookup));
     let lookup = hyper::Uri::from_str(&lookup).stack_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
     let (lookup_scheme, lookup_host, lookup_port) = uri_parts(&lookup).stack_context(log, "Incomplete URL")?;
     let (lookup_ip, lookup_host) = match lookup_host {
-        htreq::HostPart::Ip(i) => (i, i.to_string()),
-        htreq::HostPart::Name(lookup_host) => {
+        HostPart::Ip(i) => (i, i.to_string()),
+        HostPart::Name(lookup_host) => {
             let ip =
                 hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
                     let mut opts = hickory_resolver::config::ResolverOpts::default();
@@ -143,32 +134,26 @@ pub async fn remote_resolve_global_ip(
             (ip, lookup_host)
         },
     };
+    let url = Uri::from_str(&format!("{}://{}:{}", lookup_scheme, match lookup_ip {
+        IpAddr::V4(v) => v.to_string(),
+        IpAddr::V6(v) => format!("[{}]", v),
+    }, lookup_port)).unwrap();
+    let mut conn = htwrap::htreq::connect(&url).await.context("Error connecting to lookup host")?;
     let resp =
-        htreq::send(
+        htwrap::htreq::send_simple(
             log,
-            HttpsConnectorBuilder::new()
-                .with_tls_config(rustls_client_config())
-                .https_or_http()
-                .with_server_name(lookup_host.clone())
-                .enable_http1()
-                .build()
-                .call(Uri::from_str(&format!("{}://{}:{}", lookup_scheme, match lookup_ip {
-                    IpAddr::V4(v) => v.to_string(),
-                    IpAddr::V6(v) => format!("[{}]", v),
-                }, lookup_port)).unwrap())
-                .await
-                .map_err(|e| loga::err_with("Error connecting to lookup host", ea!(err = e.to_string())))?,
+            &mut conn,
             1024,
             Duration::seconds(10),
             Request::builder()
                 .uri(lookup)
                 .header(hyper::header::HOST, lookup_host)
-                .body(Empty::<Bytes>::new())
+                .body(Full::<Bytes>::new(Bytes::new()))
                 .unwrap(),
         )
             .await
             .stack_context(log, "Error sending request")?;
-    let ip = String::from_utf8(resp.to_vec()).stack_context(log, "Failed to parse response as utf8")?;
+    let ip = String::from_utf8(resp).stack_context(log, "Failed to parse response as utf8")?;
     let ip = IpAddr::from_str(&ip).stack_context_with(log, "Failed to parse response as socket addr", ea!(ip = ip))?;
     return Ok(ip);
 }
@@ -176,7 +161,7 @@ pub async fn remote_resolve_global_ip(
 pub async fn resolve_global_ip(log: &Log, config: GlobalAddrConfig) -> Result<IpAddr, loga::Error> {
     return Ok(match config {
         GlobalAddrConfig::Fixed(s) => {
-            log.log_with(INFO, "Identified fixed public ip address from config", ea!(addr = s));
+            log.log_with(loga::INFO, "Identified fixed public ip address from config", ea!(addr = s));
             s
         },
         GlobalAddrConfig::FromInterface { name, ip_version } => {
@@ -184,10 +169,10 @@ pub async fn resolve_global_ip(log: &Log, config: GlobalAddrConfig) -> Result<Ip
                 if let Some(res) = local_resolve_global_ip(&name, &ip_version).await? {
                     break res;
                 }
-                log.log_with(INFO, "Waiting for public ip address on interface", ea!());
+                log.log_with(loga::INFO, "Waiting for public ip address on interface", ea!());
                 sleep(Duration::seconds(10).to_std().unwrap()).await;
             };
-            log.log_with(INFO, "Identified public ip address via interface", ea!(addr = res));
+            log.log_with(loga::INFO, "Identified public ip address via interface", ea!(addr = res));
             res
         },
         GlobalAddrConfig::Lookup(lookup) => {
@@ -196,14 +181,14 @@ pub async fn resolve_global_ip(log: &Log, config: GlobalAddrConfig) -> Result<Ip
                     Ok(r) => break r,
                     Err(e) => {
                         log.log_err(
-                            INFO,
+                            loga::INFO,
                             e.context("Error looking up public ip through external service, retrying"),
                         );
                     },
                 }
                 sleep(Duration::seconds(10).to_std().unwrap()).await;
             };
-            log.log_with(INFO, "Identified public ip address via external lookup", ea!(addr = res));
+            log.log_with(loga::INFO, "Identified public ip address via external lookup", ea!(addr = res));
             res
         },
     });

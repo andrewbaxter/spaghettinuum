@@ -3,12 +3,14 @@
   "title": "Config",
   "type": "object",
   "required": [
+    "identity",
     "node",
-    "persistent_dir"
+    "persistent_dir",
+    "publisher"
   ],
   "properties": {
     "admin_token": {
-      "description": "HTTP authorization bearer token for accessing publisher admin endpoints. If None, remote admin operations will be disabled (only self-publish will work).",
+      "description": "HTTP authorization bearer token for accessing publisher admin endpoints. If None, remote admin operations will be disabled (only self-publish on this node will work since there will be no way to register publishing identities).",
       "default": null,
       "type": [
         "string",
@@ -23,6 +25,14 @@
         "$ref": "#/definitions/StrSocketAddr"
       }
     },
+    "content": {
+      "description": "Additionally act as a server for http content (static files or reverse proxy) with a `.s` tls cert.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ContentConfig"
+      }
+    },
     "global_addrs": {
       "description": "How to determine the public ip for publisher announcements and self-publishing. Publisher announcements always use the first address.",
       "default": [],
@@ -32,14 +42,10 @@
       }
     },
     "identity": {
-      "description": "An backed identity (by file or card) this server can use as its own.  See the structure fields for more information on what this provides.",
-      "default": null,
-      "anyOf": [
+      "description": "A backed identity (by file or card) this server will use for generating a tls cert for the api, and for self-publication if the publisher is enabled.",
+      "allOf": [
         {
-          "$ref": "#/definitions/SelfIdentityConfig"
-        },
-        {
-          "type": "null"
+          "$ref": "#/definitions/BackedIdentityArg"
         }
       ]
     },
@@ -56,14 +62,10 @@
       "type": "string"
     },
     "publisher": {
-      "description": "Specify to enable publisher functionality.",
-      "default": null,
-      "anyOf": [
+      "description": "Configure publisher - must be enabled because api tls certs refer to the node's address and so the node must self-publish.",
+      "allOf": [
         {
           "$ref": "#/definitions/PublisherConfig"
-        },
-        {
-          "type": "null"
         }
       ]
     },
@@ -119,6 +121,33 @@
           "allOf": [
             {
               "$ref": "#/definitions/NodeIdentity"
+            }
+          ]
+        }
+      }
+    },
+    "ContentConfig": {
+      "type": "object",
+      "required": [
+        "bind_addrs"
+      ],
+      "properties": {
+        "bind_addrs": {
+          "description": "Interface IPs and ports to bind to",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StrSocketAddr"
+          }
+        },
+        "mode": {
+          "description": "What content to serve",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ServeMode"
+            },
+            {
+              "type": "null"
             }
           ]
         }
@@ -324,26 +353,51 @@
         }
       }
     },
-    "SelfIdentityConfig": {
-      "type": "object",
-      "required": [
-        "identity",
-        "self_publish",
-        "self_tls"
-      ],
-      "properties": {
-        "identity": {
-          "$ref": "#/definitions/BackedIdentityArg"
+    "ServeMode": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "static_files"
+          ],
+          "properties": {
+            "static_files": {
+              "type": "object",
+              "required": [
+                "content_dir"
+              ],
+              "properties": {
+                "content_dir": {
+                  "description": "Where files to serve are",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
         },
-        "self_publish": {
-          "description": "Wait for a local interface configured with a public ip and publish it using this server's identity.",
-          "type": "boolean"
-        },
-        "self_tls": {
-          "description": "Retrieve a TLS cert for the identity's domain (`.s`) and configure TLS on the public endpoint (https instead of http) via `certipasta.isandrew.com`.",
-          "type": "boolean"
+        {
+          "type": "object",
+          "required": [
+            "reverse_proxy"
+          ],
+          "properties": {
+            "reverse_proxy": {
+              "type": "object",
+              "required": [
+                "upstream_url"
+              ],
+              "properties": {
+                "upstream_url": {
+                  "description": "Base url of upstream HTTP server. The request path is appended.",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
         }
-      }
+      ]
     },
     "StrSocketAddr": {
       "description": "An ip address or domain (ex: \"localhost\") which resolves to an address",

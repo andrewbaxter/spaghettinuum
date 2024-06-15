@@ -32,10 +32,7 @@ use chrono::{
 };
 use ipnet::IpAdd;
 use itertools::Itertools;
-use loga::{
-    StandardLog,
-    StandardFlag,
-};
+use loga::Log;
 use spaghettinuum::{
     interface::{
         config::{
@@ -61,7 +58,6 @@ use spaghettinuum::{
     },
     utils::{
         blob::Blob,
-        log::Log,
         signed::IdentSignatureMethods,
     },
 };
@@ -84,7 +80,7 @@ async fn main() {
             create_dir_all(&path).await.unwrap();
             let node =
                 Node::new(
-                    &Log::new(),
+                    Log::new(),
                     tm.clone(),
                     StrSocketAddr::from(addr.clone()),
                     &prev_node.take().map(|(addr, id)| NodeInfo {
@@ -157,7 +153,7 @@ async fn main() {
             },
         };
         assert_eq!(found_addr, message_addr);
-        tm.join(&StandardLog::new(), StandardFlag::Info).await?;
+        tm.join(&Log::new_root(loga::INFO)).await?;
         return Ok(());
     }
 

@@ -32,18 +32,10 @@ use {
         },
         ta_res,
         utils::{
-            log::{
-                ALL_FLAGS,
-                NON_DEBUG_FLAGS,
-                DEBUG_OTHER,
-                WARN,
-                Log,
-            },
             backed_identity::{
                 get_identity_signer,
             },
             local_identity::write_identity,
-            htreq,
             publish_util,
         },
     },
@@ -53,6 +45,15 @@ use {
         str::FromStr,
     },
 };
+use htwrap::{
+    htreq::{
+        self,
+        connect,
+    },
+    UriJoin,
+};
+use loga::Log;
+use spaghettinuum::interface::config::DEFAULT_API_PORT;
 #[cfg(feature = "card")]
 use spaghettinuum::{
     utils::{
@@ -88,32 +89,40 @@ fn admin_headers() -> Result<HashMap<String, String>, loga::Error> {
 }
 
 fn api_urls() -> Result<Vec<Uri>, loga::Error> {
-    let default_port = 443;
-    let urls =
-        env::var(
-            ENV_API_ADDR,
-        ).context_with("Missing environment variable to notify node", ea!(env_var = ENV_API_ADDR))?;
     let mut out = vec![];
-    for url in urls.split(',') {
-        let url =
-            Uri::from_str(
-                &url,
-            ).context_with("Couldn't parse environment variable", ea!(env_var = ENV_API_ADDR, value = url))?;
-        if url.scheme_str() == Some("http") && url.port().is_none() {
-            let mut u = url.into_parts();
-            u.authority =
-                Some(
-                    Authority::try_from(
-                        format!(
-                            "{}:{}",
-                            u.authority.map(|a| a.to_string()).unwrap_or(String::new()),
-                            default_port
-                        ).as_bytes(),
-                    ).unwrap(),
-                );
-            out.push(Uri::from_parts(u).unwrap());
-        } else {
-            out.push(url);
+    if let Ok(urls) = env::var(ENV_API_ADDR) {
+        for url in urls.split(',') {
+            let url =
+                Uri::from_str(
+                    &url,
+                ).context_with("Couldn't parse environment variable", ea!(env_var = ENV_API_ADDR, value = url))?;
+            if url.scheme_str() == Some("http") && url.port().is_none() {
+                let mut u = url.into_parts();
+                u.authority =
+                    Some(
+                        Authority::try_from(
+                            format!(
+                                "{}:{}",
+                                u.authority.map(|a| a.to_string()).unwrap_or(String::new()),
+                                DEFAULT_API_PORT
+                            ).as_bytes(),
+                        ).unwrap(),
+                    );
+                out.push(Uri::from_parts(u).unwrap());
+            } else {
+                out.push(url);
+            }
+        }
+    } else {
+        let (conf, _) =
+            hickory_resolver
+            ::system_conf
+            ::read_system_conf().context("Error reading system conf to find configured DNS server to use for API")?;
+        for s in conf.name_servers() {
+            out.push(Uri::from_str(&format!("https://{}:{}", match s.socket_addr.ip() {
+                std::net::IpAddr::V4(i) => i.to_string(),
+                std::net::IpAddr::V6(i) => format!("[{}]", i),
+            }, DEFAULT_API_PORT)).unwrap());
         }
     }
     return Ok(out);
@@ -122,9 +131,10 @@ fn api_urls() -> Result<Vec<Uri>, loga::Error> {
 async fn api_list<
     T: DeserializeOwned,
 >(log: &Log, base_url: &Uri, path: &str, get_key: fn(&T) -> String) -> Result<Vec<T>, loga::Error> {
+    let mut conn = htreq::connect(base_url).await.context("Error connecting to server")?;
     let mut out = vec![];
     let admin_headers = admin_headers()?;
-    let mut res = htreq::get(log, format!("{}{}", base_url, path), &admin_headers, 1024 * 1024).await?;
+    let mut res = htreq::get(log, &mut conn, &base_url.join(path), &admin_headers, 1024 * 1024).await?;
     loop {
         let page: Vec<T> =
             serde_json::from_slice(&res).context("Failed to parse response page from publisher admin")?;
@@ -136,7 +146,14 @@ async fn api_list<
         let Some(after) = after else {
             break;
         };
-        res = htreq::get(log, format!("{}{}?after={}", base_url, path, after), &admin_headers, 1024 * 1024).await?;
+        res =
+            htreq::get(
+                log,
+                &mut conn,
+                &base_url.join(format!("{}?after={}", path, after)),
+                &admin_headers,
+                1024 * 1024,
+            ).await?;
     }
     return Ok(out);
 }
@@ -308,17 +325,17 @@ mod args {
 async fn main() {
     async fn inner() -> Result<(), loga::Error> {
         let args = aargvark::vark::<args::Args>();
-        let log = Log::new().with_flags(match args.debug {
-            Some(_) => ALL_FLAGS,
-            None => NON_DEBUG_FLAGS,
+        let log = Log::new_root(match args.debug {
+            Some(_) => loga::DEBUG,
+            None => loga::INFO,
         });
         let log = &log;
         match args.command {
             args::Command::Ping => {
                 for url in api_urls()? {
-                    let url = format!("{}health", url);
-                    log.log_with(DEBUG_OTHER, "Sending ping request (GET)", ea!(url = url));
-                    htreq::get(log, &url, &admin_headers()?, 100).await?;
+                    let url = url.join("health");
+                    log.log_with(loga::DEBUG, "Sending ping request (GET)", ea!(url = url));
+                    htreq::get(log, &mut connect(&url).await?, &url, &admin_headers()?, 100).await?;
                 }
             },
             args::Command::Get(config) => {
@@ -327,18 +344,25 @@ async fn main() {
                     match async {
                         ta_res!(());
                         let url =
-                            format!(
-                                "{}resolve/v1/{}?{}",
-                                url,
-                                config.identity,
-                                config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
+                            url.join(
+                                format!(
+                                    "resolve/v1/{}?{}",
+                                    config.identity,
+                                    config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
+                                ),
                             );
-                        log.log_with(DEBUG_OTHER, "Sending query request", ea!(url = url));
+                        log.log_with(loga::DEBUG, "Sending query request", ea!(url = url));
                         println!(
                             "{}",
                             serde_json::to_string_pretty(
                                 &serde_json::from_slice::<serde_json::Value>(
-                                    &htreq::get(log, &url, &HashMap::new(), 1024 * 1024).await?,
+                                    &htreq::get(
+                                        log,
+                                        &mut connect(&url).await?,
+                                        &url,
+                                        &HashMap::new(),
+                                        1024 * 1024,
+                                    ).await?,
                                 ).stack_context(log, "Response could not be parsed as JSON")?,
                             ).unwrap()
                         );
@@ -505,7 +529,7 @@ async fn main() {
                             },
                             Err(e) => {
                                 log.log_err(
-                                    WARN,
+                                    loga::WARN,
                                     e.context_with("Error getting identity of card", ea!(card = card_id)),
                                 );
                                 continue;
@@ -522,23 +546,23 @@ async fn main() {
             args::Command::Admin(args) => match args {
                 args::Admin::HealthDetail => {
                     for url in api_urls()? {
-                        let url = format!("{}admin/health", url);
-                        log.log_with(DEBUG_OTHER, "Sending health detail request (GET)", ea!(url = url));
-                        htreq::get(log, &url, &admin_headers()?, 10 * 1024).await?;
+                        let url = url.join("admin/health");
+                        log.log_with(loga::DEBUG, "Sending health detail request (GET)", ea!(url = url));
+                        htreq::get(log, &mut connect(&url).await?, &url, &admin_headers()?, 10 * 1024).await?;
                     }
                 },
                 args::Admin::AllowIdentity(config) => {
                     for url in api_urls()? {
-                        let url = format!("{}publish/admin/allowed_identities/{}", url, config.identity_id);
-                        log.log_with(DEBUG_OTHER, "Sending register request (POST)", ea!(url = url));
-                        htreq::post(log, &url, &admin_headers()?, vec![], 100).await?;
+                        let url = url.join(format!("publish/admin/allowed_identities/{}", config.identity_id));
+                        log.log_with(loga::DEBUG, "Sending register request (POST)", ea!(url = url));
+                        htreq::post(log, &mut connect(&url).await?, &url, &admin_headers()?, vec![], 100).await?;
                     }
                 },
                 args::Admin::DisallowIdentity(config) => {
                     for url in api_urls()? {
-                        let url = format!("{}publish/admin/allowed_identities/{}", url, config.identity_id);
-                        log.log_with(DEBUG_OTHER, "Sending unregister request (POST)", ea!(url = url));
-                        htreq::delete(log, &url, &admin_headers()?, 100).await?;
+                        let url = url.join(format!("publish/admin/allowed_identities/{}", config.identity_id));
+                        log.log_with(loga::DEBUG, "Sending unregister request (POST)", ea!(url = url));
+                        htreq::delete(log, &mut connect(&url).await?, &url, &admin_headers()?, 100).await?;
                     }
                 },
                 args::Admin::ListAllowedIdentities => {
@@ -599,7 +623,8 @@ async fn main() {
                                 "{}",
                                 htreq::get_text(
                                     log,
-                                    &format!("{}publish/admin/keys/{}", url, config.identity),
+                                    &mut connect(&url).await?,
+                                    &url.join(format!("publish/admin/keys/{}", config.identity)),
                                     &admin_headers()?,
                                     1024 * 1024,
                                 ).await?

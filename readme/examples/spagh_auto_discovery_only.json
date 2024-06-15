@@ -20,7 +20,6 @@
         "local": "./my.ident"
     },
     "publishers": [
-        "https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s"
-    ],
-    "serve": null
+        "https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s:12434"
+    ]
 }

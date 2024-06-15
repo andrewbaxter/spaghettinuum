@@ -27,8 +27,6 @@ pub mod db_util;
 pub mod time_util;
 pub mod blob;
 pub mod htserve;
-pub mod htreq;
-pub mod log;
 pub mod signed;
 
 #[derive(Clone)]

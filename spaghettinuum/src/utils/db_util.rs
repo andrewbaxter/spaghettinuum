@@ -1,5 +1,4 @@
 use {
-    super::log::Log,
     async_trait::async_trait,
     deadpool_sqlite::{
         Config,
@@ -10,6 +9,7 @@ use {
     loga::{
         ea,
         ErrContext,
+        Log,
         ResultContext,
     },
     rusqlite::Transaction,
