@@ -12,9 +12,13 @@
     "admin_token": {
       "description": "HTTP authorization bearer token for accessing publisher admin endpoints. If None, remote admin operations will be disabled (only self-publish on this node will work since there will be no way to register publishing identities).",
       "default": null,
-      "type": [
-        "string",
-        "null"
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AdminToken"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "api_bind_addrs": {
@@ -83,6 +87,34 @@
     }
   },
   "definitions": {
+    "AdminToken": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "file"
+          ],
+          "properties": {
+            "file": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "inline"
+          ],
+          "properties": {
+            "inline": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "BackedIdentityArg": {
       "description": "An identity with its associated secret.",
       "oneOf": [
@@ -155,13 +187,10 @@
     },
     "DnsBridgeConfig": {
       "type": "object",
-      "required": [
-        "tcp_bind_addrs",
-        "udp_bind_addrs"
-      ],
       "properties": {
         "tcp_bind_addrs": {
           "description": "TCP for DNS over TLS. Please set up your own TLS reverse proxy.",
+          "default": [],
           "type": "array",
           "items": {
             "$ref": "#/definitions/StrSocketAddr"
@@ -169,6 +198,7 @@
         },
         "udp_bind_addrs": {
           "description": "Normal DNS - typically port 53.",
+          "default": [],
           "type": "array",
           "items": {
             "$ref": "#/definitions/StrSocketAddr"

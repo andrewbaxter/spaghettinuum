@@ -15,6 +15,7 @@ use {
         content::serve_content,
         interface::{
             config::{
+                self,
                 node::Config,
                 DebugFlag,
                 ENV_CONFIG,
@@ -71,7 +72,11 @@ use {
             HashMap,
             HashSet,
         },
-        net::SocketAddr,
+        fs,
+        net::{
+            IpAddr,
+            SocketAddr,
+        },
         sync::{
             Arc,
             RwLock,
@@ -80,6 +85,7 @@ use {
     taskmanager::TaskManager,
     tokio::{
         fs::create_dir_all,
+        select,
         task::spawn_blocking,
         time::sleep,
     },
@@ -135,9 +141,17 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         )?;
 
     // Resolve public ips
-    let mut global_ips = vec![];
-    for a in config.global_addrs {
-        global_ips.push(resolve_global_ip(log, a).await?);
+    let resolve_public_ips = async {
+        ta_res!(Vec < IpAddr >);
+        let mut ips = vec![];
+        for a in config.global_addrs {
+            ips.push(resolve_global_ip(log, a).await?);
+        };
+        return Ok(ips);
+    };
+    let public_ips = select!{
+        x = resolve_public_ips => x ?,
+        _ = tm.until_terminate() => return Ok(()),
     };
 
     // Get identity signer for self-publish and getting ssl certs
@@ -165,7 +179,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         let bind_addr =
             publisher_config.bind_addr.resolve().stack_context(log, "Error resolving publisher bind address")?;
         let advertise_ip =
-            *global_ips
+            *public_ips
                 .get(0)
                 .stack_context(log, "Running a publisher requires at least one configured global IP")?;
         let advertise_port = publisher_config.advertise_port.unwrap_or(bind_addr.port());
@@ -185,7 +199,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             clear_all: true,
             set: {
                 let mut out = HashMap::new();
-                for ip in &global_ips {
+                for ip in &public_ips {
                     let key;
                     let data;
                     match ip {
@@ -235,7 +249,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                     resolver_config.max_cache,
                     &config.persistent_dir,
                     publisher.clone(),
-                    global_ips.clone(),
+                    public_ips.clone(),
                 )
                     .await
                     .stack_context(log, "Error setting up resolver")?;
@@ -342,8 +356,16 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     routes.add("health", htserve::Leaf::new().get(cap_fn!((_r)() {
         return htserve::Response::Ok;
     })));
-    if let Some(admin_token) = &config.admin_token {
-        let admin_token = auth_hash(admin_token);
+    let admin_token = match config.admin_token {
+        Some(t) => Some(auth_hash(&match t {
+            config::node::AdminToken::File(p) => String::from_utf8(
+                fs::read(&p).context_with("Error reading admin token file", ea!(path = p.to_string_lossy()))?,
+            ).map_err(|_| loga::err_with("Admin token isn't valid utf8", ea!(path = p.to_string_lossy())))?,
+            config::node::AdminToken::Inline(p) => p,
+        })),
+        None => None,
+    };
+    if let Some(admin_token) = &admin_token {
         routes.add("admin/health", htserve::Leaf::new().get(cap_fn!((r)(node, admin_token) {
             // Auth
             if !auth(&admin_token, &r.auth_bearer) {
@@ -362,12 +384,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         let log = log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher"));
         routes.nest(
             "publish",
-            publisher::build_api_endpoints(
-                log.clone(),
-                &publisher,
-                config.admin_token.as_ref(),
-                &config.persistent_dir,
-            )
+            publisher::build_api_endpoints(log.clone(), &publisher, admin_token.as_ref(), &config.persistent_dir)
                 .await
                 .stack_context(&log, "Error building publisher endpoints")?,
         );
