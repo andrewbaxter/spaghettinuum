@@ -1,5 +1,7 @@
 {
-    "admin_token": "hunter2",
+    "admin_token": {
+        "inline": "hunter2"
+    },
     "api_bind_addrs": [
         "0:12434",
         "[::]:12434"

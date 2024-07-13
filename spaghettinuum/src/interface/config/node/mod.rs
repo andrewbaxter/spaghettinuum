@@ -21,6 +21,13 @@ pub mod node_config;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub enum AdminToken {
+    File(PathBuf),
+    Inline(String),
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct Config {
     /// Path to a dir for subsystems to store persistent data (mostly sqlite
     /// databases). Will be created if it doesn't exist.
@@ -49,7 +56,7 @@ pub struct Config {
     /// None, remote admin operations will be disabled (only self-publish on this node
     /// will work since there will be no way to register publishing identities).
     #[serde(default)]
-    pub admin_token: Option<String>,
+    pub admin_token: Option<AdminToken>,
     /// Additionally act as a server for http content (static files or reverse proxy)
     /// with a `.s` tls cert.
     #[serde(default)]

@@ -31,7 +31,6 @@ use {
             htserve::{
                 self,
                 auth,
-                auth_hash,
                 Leaf,
                 Response,
                 Routes,
@@ -495,7 +494,7 @@ impl Publisher {
 pub async fn build_api_endpoints(
     log: Log,
     publisher: &Publisher,
-    admin_token: Option<&String>,
+    admin_token: Option<&Blob>,
     persist_dir: &Path,
 ) -> Result<Routes, loga::Error> {
     let db_pool =
@@ -679,7 +678,6 @@ pub async fn build_api_endpoints(
     });
     if let Some(admin_token) = admin_token {
         routes.nest("admin", {
-            let admin_token = auth_hash(admin_token);
             let mut routes = Routes::new();
             routes.add("allowed_identities", Leaf::new().get(cap_fn!((r)(state, admin_token) {
                 match async {
