@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use {
     http::{
         uri::Authority,
@@ -49,11 +50,15 @@ use htwrap::{
     htreq::{
         self,
         connect,
+        Conn,
     },
     UriJoin,
 };
 use loga::Log;
-use spaghettinuum::interface::config::DEFAULT_API_PORT;
+use spaghettinuum::interface::{
+    config::DEFAULT_API_PORT,
+    wire::api::admin::v1::AdminIdentity,
+};
 #[cfg(feature = "card")]
 use spaghettinuum::{
     utils::{
@@ -130,11 +135,16 @@ fn api_urls() -> Result<Vec<Uri>, loga::Error> {
 
 async fn api_list<
     T: DeserializeOwned,
->(log: &Log, base_url: &Uri, path: &str, get_key: fn(&T) -> String) -> Result<Vec<T>, loga::Error> {
-    let mut conn = htreq::connect(base_url).await.context("Error connecting to server")?;
+>(
+    log: &Log,
+    conn: &mut Conn,
+    base_url: &Uri,
+    path: &str,
+    get_key: fn(&T) -> String,
+) -> Result<Vec<T>, loga::Error> {
     let mut out = vec![];
     let admin_headers = admin_headers()?;
-    let mut res = htreq::get(log, &mut conn, &base_url.join(path), &admin_headers, 1024 * 1024).await?;
+    let mut res = htreq::get(log, conn, &base_url.join(path), &admin_headers, 1024 * 1024).await?;
     loop {
         let page: Vec<T> =
             serde_json::from_slice(&res).context("Failed to parse response page from publisher admin")?;
@@ -149,7 +159,7 @@ async fn api_list<
         res =
             htreq::get(
                 log,
-                &mut conn,
+                conn,
                 &base_url.join(format!("{}?after={}", path, after)),
                 &admin_headers,
                 1024 * 1024,
@@ -191,6 +201,8 @@ mod args {
     #[derive(Aargvark)]
     pub struct AllowIdentity {
         pub identity_id: String,
+        /// Associate the identity with a tag for easier management
+        pub group: Option<String>,
     }
 
     #[derive(Aargvark)]
@@ -287,6 +299,14 @@ mod args {
         ListAnnouncements,
         /// List keys published here for an identity
         ListKeys(ListKeys),
+        /// Register and unregister identities.
+        ///
+        /// The JSON is an object with groups as keys, and lists of identity ids as values.
+        ///
+        /// Any groups not in the JSON won't be synced - deleting a group won't remove all
+        /// entries in the group.  In order to clear a group, you must specify an empty
+        /// list for that group in the JSON.
+        SyncAllowedIdentities(AargvarkJson<HashMap<String, HashSet<stored::identity::Identity>>>),
     }
 
     #[derive(Aargvark)]
@@ -571,11 +591,12 @@ async fn main() {
                         match async {
                             ta_res!(());
                             let out =
-                                api_list::<Identity>(
+                                api_list::<AdminIdentity>(
                                     log,
+                                    &mut connect(&url).await.context("Error connecting to server")?,
                                     &url,
                                     "publish/admin/allowed_identities",
-                                    |v| v.to_string(),
+                                    |v| v.identity.to_string(),
                                 )
                                     .await
                                     .stack_context(log, "Error listing allowed identities")?;
@@ -598,7 +619,13 @@ async fn main() {
                         match async {
                             ta_res!(());
                             let out =
-                                api_list::<Identity>(log, &url, "publish/admin/announcements", |v| v.to_string())
+                                api_list::<Identity>(
+                                    log,
+                                    &mut connect(&url).await.context("Error connecting to server")?,
+                                    &url,
+                                    "publish/admin/announcements",
+                                    |v| v.to_string(),
+                                )
                                     .await
                                     .stack_context(log, "Error listing publishing identities")?;
                             println!("{}", serde_json::to_string_pretty(&out).unwrap());
@@ -640,6 +667,52 @@ async fn main() {
                         }
                     }
                     return Err(loga::agg_err("Error making request", errs));
+                },
+                args::Admin::SyncAllowedIdentities(sync) => {
+                    for url in api_urls()? {
+                        let mut conn = connect(&url).await.context("Error connecting to server")?;
+                        let identities =
+                            api_list::<AdminIdentity>(
+                                log,
+                                &mut conn,
+                                &url,
+                                "publish/admin/allowed_identities",
+                                |v| v.identity.to_string(),
+                            )
+                                .await
+                                .stack_context(log, "Error listing allowed identities")?;
+                        let mut have = HashMap::<String, HashSet<Identity>>::new();
+                        for entry in identities {
+                            let group = have.entry(entry.group).or_default();
+                            group.insert(entry.identity);
+                        }
+                        for (group, want) in &sync.value {
+                            let mut have = have.remove(group).unwrap_or_default();
+                            for identity_id in want {
+                                if have.remove(&identity_id) {
+                                    continue;
+                                }
+                                htreq::post(
+                                    log,
+                                    &mut conn,
+                                    &url.join(format!("publish/admin/allowed_identities/{}", identity_id)),
+                                    &admin_headers()?,
+                                    vec![],
+                                    100,
+                                ).await?;
+                            }
+                            for identity_id in have {
+                                htreq::delete(
+                                    log,
+                                    &mut conn,
+                                    &url.join(format!("publish/admin/allowed_identities/{}", identity_id)),
+                                    &admin_headers()?,
+                                    100,
+                                ).await?;
+                            }
+                        }
+                    }
+                    return Ok(());
                 },
             },
         }

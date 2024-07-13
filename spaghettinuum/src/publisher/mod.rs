@@ -8,7 +8,13 @@ use {
                 announcement::Announcement,
                 identity::Identity,
             },
-            wire,
+            wire::{
+                self,
+                api::admin::v1::{
+                    AdminAllowIdentityBody,
+                    AdminIdentity,
+                },
+            },
         },
         node::Node,
         ta_res,
@@ -504,10 +510,10 @@ pub async fn build_api_endpoints(
     }
 
     impl State {
-        async fn allow_identity(&self, identity: &Identity) -> Result<(), loga::Error> {
+        async fn allow_identity(&self, identity: &Identity, group: String) -> Result<(), loga::Error> {
             let identity = identity.clone();
             self.db_pool.get().await?.interact(move |db| {
-                admin_db::allow_identity(db, &identity)?;
+                admin_db::allow_identity(db, &identity, &group)?;
                 return Ok(()) as Result<(), GoodError>;
             }).await??;
             return Ok(());
@@ -529,7 +535,10 @@ pub async fn build_api_endpoints(
             }).await??);
         }
 
-        async fn list_allowed_identities(&self, after: Option<&Identity>) -> Result<Vec<Identity>, loga::Error> {
+        async fn list_allowed_identities(
+            &self,
+            after: Option<&Identity>,
+        ) -> Result<Vec<AdminIdentity>, loga::Error> {
             let after = after.cloned();
             return Ok(match after {
                 None => {
@@ -543,7 +552,10 @@ pub async fn build_api_endpoints(
                         .interact(move |db| admin_db::list_allowed_identities_after(db, &a))
                         .await??
                 },
-            });
+            }.into_iter().map(|r| AdminIdentity {
+                identity: r.identity,
+                group: r.group,
+            }).collect());
         }
     }
 
@@ -723,9 +735,11 @@ pub async fn build_api_endpoints(
                         return Ok(Response::user_err("Missing identity in path"));
                     };
                     let identity = Identity::from_str(&identity)?;
+                    let body =
+                        serde_json::from_slice::<AdminAllowIdentityBody>(&r.body).context("Bad request body")?;
 
                     // Respond
-                    return Ok(Response::json(state.allow_identity(&identity).await?));
+                    return Ok(Response::json(state.allow_identity(&identity, body.group).await?));
                 }.await {
                     Ok(d) => {
                         return d;

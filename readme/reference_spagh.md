@@ -10,6 +10,8 @@ This is a command line tool for working with the various servers. You can use it
 
 - Administer the node (ex: allow an identity to publish)
 
+By default this looks up the system configured DNS resolver and connects to it on the default API port, assuming it's a Spaghettinuum node. To use a different node or port, see the `SPAGH` environment variable.
+
 ## Installation
 
 Install with `cargo install spaghettinuum` or use the [Docker image](https://github.com/andrewbaxter/spaghettinuum/pkgs/container/spaghettinuum).
