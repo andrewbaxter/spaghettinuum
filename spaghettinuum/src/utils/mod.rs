@@ -1,16 +1,19 @@
-use std::sync::{
-    Arc,
-    Mutex,
-};
-use futures::{
-    stream,
-    FutureExt,
-    Stream,
-};
-use itertools::Itertools;
-use manual_future::{
-    ManualFuture,
-    ManualFutureCompleter,
+//! Other assorted methods and tools.
+use {
+    std::sync::{
+        Arc,
+        Mutex,
+    },
+    futures::{
+        stream,
+        FutureExt,
+        Stream,
+    },
+    itertools::Itertools,
+    manual_future::{
+        ManualFuture,
+        ManualFutureCompleter,
+    },
 };
 
 #[cfg(feature = "card")]
@@ -20,7 +23,7 @@ pub mod misc_tests;
 pub mod ip_util;
 pub mod unstable_ip;
 pub mod local_identity;
-pub mod backed_identity;
+pub mod identity_secret;
 pub mod tls_util;
 pub mod publish_util;
 pub mod db_util;
@@ -28,6 +31,7 @@ pub mod time_util;
 pub mod blob;
 pub mod htserve;
 pub mod signed;
+pub mod fs_util;
 
 #[derive(Clone)]
 pub struct AsyncBus<T: Clone + Unpin>(Arc<Mutex<Vec<ManualFutureCompleter<T>>>>);

@@ -48,23 +48,31 @@ pub fn main() {
     validate(&auto_schema, &examples.join("spagh_auto_static_files.json"));
     fs::write(
         out.join("record_dns_cname.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(stored::dns_record::DnsCname)).unwrap(),
+        &serde_json::to_string_pretty(&schema_for!(stored::record::dns_record::DnsCname)).unwrap(),
     ).unwrap();
     fs::write(
         out.join("record_dns_a.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(stored::dns_record::DnsA)).unwrap(),
+        &serde_json::to_string_pretty(&schema_for!(stored::record::dns_record::DnsA)).unwrap(),
     ).unwrap();
     fs::write(
         out.join("record_dns_aaaa.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(stored::dns_record::DnsAaaa)).unwrap(),
+        &serde_json::to_string_pretty(&schema_for!(stored::record::dns_record::DnsAaaa)).unwrap(),
     ).unwrap();
     fs::write(
         out.join("record_dns_txt.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(stored::dns_record::DnsTxt)).unwrap(),
+        &serde_json::to_string_pretty(&schema_for!(stored::record::dns_record::DnsTxt)).unwrap(),
     ).unwrap();
     fs::write(
         out.join("record_dns_mx.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(stored::dns_record::DnsMx)).unwrap(),
+        &serde_json::to_string_pretty(&schema_for!(stored::record::dns_record::DnsMx)).unwrap(),
+    ).unwrap();
+    fs::write(
+        out.join("record_tls_certs.schema.json"),
+        &serde_json::to_string_pretty(&schema_for!(stored::record::tls_record::TlsCerts)).unwrap(),
+    ).unwrap();
+    fs::write(
+        out.join("record_ssh_host_keys.schema.json"),
+        &serde_json::to_string_pretty(&schema_for!(stored::record::ssh_record::SshHostKeys)).unwrap(),
     ).unwrap();
     fs::write(
         out.join("resolve.schema.json"),

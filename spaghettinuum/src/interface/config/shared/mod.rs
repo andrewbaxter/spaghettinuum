@@ -116,7 +116,7 @@ impl JsonSchema for StrSocketAddr {
 /// An identity with its associated secret.
 #[derive(Clone, Aargvark, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum BackedIdentityArg {
+pub enum IdentitySecretArg {
     /// A file containing a generated key
     Local(PathBuf),
     /// PC/SC card with ED25519 key

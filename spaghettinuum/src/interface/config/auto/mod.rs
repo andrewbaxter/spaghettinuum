@@ -2,7 +2,7 @@ use {
     super::{
         content::ContentConfig,
         shared::{
-            BackedIdentityArg,
+            IdentitySecretArg,
             GlobalAddrConfig,
         },
     },
@@ -32,7 +32,12 @@ pub struct Config {
     /// How to identify and select globally routable IP addresses for this host
     pub global_addrs: Vec<GlobalAddrConfig>,
     /// Identity to use for publishing
-    pub identity: BackedIdentityArg,
+    pub identity: IdentitySecretArg,
+    /// A list of paths to host keys to publish for this host. If not specified, a
+    /// default SSH host key location will be used, otherwise no SSH host keys will be
+    /// published.
+    #[serde(default)]
+    pub ssh_host_keys: Vec<PathBuf>,
     /// Url of publisher where this identity is authorized to publish
     pub publishers: Vec<String>,
     /// Configure HTTPS serving using certipasta certs

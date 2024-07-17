@@ -36,7 +36,7 @@ use loga::Log;
 use spaghettinuum::{
     interface::{
         config::{
-            identity::BackedIdentityLocal,
+            identity::IdentitySecretLocal,
             shared::StrSocketAddr,
         },
         stored::{
@@ -53,8 +53,10 @@ use spaghettinuum::{
             },
         },
     },
-    node::{
-        Node,
+    service::{
+        node::{
+            Node,
+        },
     },
     utils::{
         blob::Blob,
@@ -101,7 +103,7 @@ async fn main() {
             }
         }
 
-        let (ident, mut ident_secret) = BackedIdentityLocal::new();
+        let (ident, mut ident_secret) = IdentitySecretLocal::new();
         let message_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(169, 168, 167, 165), 1111));
         let (_, message_signature) =
             stored::announcement::latest::Announcement::sign(&mut ident_secret, AnnouncementContent {

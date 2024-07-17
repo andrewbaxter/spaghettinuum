@@ -9,7 +9,7 @@ use {
     http_body_util::Full,
     htwrap::htreq::{
         uri_parts,
-        HostPart,
+        Host,
     },
     hyper::{
         Request,
@@ -110,8 +110,8 @@ pub async fn remote_resolve_global_ip(
     let lookup = hyper::Uri::from_str(&lookup).stack_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
     let (lookup_scheme, lookup_host, lookup_port) = uri_parts(&lookup).stack_context(log, "Incomplete URL")?;
     let (lookup_ip, lookup_host) = match lookup_host {
-        HostPart::Ip(i) => (i, i.to_string()),
-        HostPart::Name(lookup_host) => {
+        Host::Ip(i) => (i, i.to_string()),
+        Host::Name(lookup_host) => {
             let ip =
                 hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
                     let mut opts = hickory_resolver::config::ResolverOpts::default();

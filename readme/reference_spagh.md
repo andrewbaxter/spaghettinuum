@@ -2,7 +2,9 @@
 
 This is a command line tool for working with the various servers. You can use it to:
 
-- Look up records
+- Look up records, make HTTP requests, use SSH
+
+  HTTP and SSH requests use out of band (distributed via spaghettinuum records) server certificate validation.
 
 - Publish records
 
@@ -20,7 +22,7 @@ Install with `cargo install spaghettinuum` or use the [Docker image](https://git
 
 - `SPAGH` - List of API URLs of nodes to access. For querying this would be resolver URLs, for publishing this would be publisher URLs (depending on your hosting they may be different nodes).
 
-  When publishing, all listed publisher URLs will be announced. This can be used for simple load balancing and redundancy. You should probably limit this to a reasonable number (3) to avoid announcement packets going over the UDP MTU.
+  When publishing, all listed publisher URLs will be announced. This can be used for simple load balancing and redundancy. You should probably limit this to a reasonable number (like 3) to avoid announcement packets going over the UDP MTU.
 
   Examples: `SPAGH=https://203.0.113.111,https://203.0.113.112` or `SPAGH=https://yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s`
 

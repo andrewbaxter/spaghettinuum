@@ -1,44 +1,36 @@
 # Guide: Identities
 
-Spaghettinuum distinguishes "identity" from "id" (as in "identifier"). The former is complex data (a private key), where the latter is a simple string (like `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r`) which identifies the former, like a name.
+Spaghettinuum identities are like `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r`.
 
-There are two types of identities:
+Identities serve as an address for looking up information published by the identity, and can be used as a DNS name when suffixed with `.s` (ex: `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s`) if the identity published DNS-wrapper records.
 
-- Identity
+Each identity has a secret, required to use the identity. There are two types of secrets supported at the moment: local (file-based) and smartcard (ex: Yubikey) identities.
 
-  This is what you as a user create and safeguard, use for publishing records, and the ids of which are used for lookups.
+(Note: there are also "node identities" that are used within the DHT and is not exposed anywhere else. You should never have to deal with these directly and they will not be mentioned anywhere else in the documentation (except maybe the architecture reference). You can identify these identities because they start with `n_`)
 
-- Node identity
+## Local identity secrets
 
-  This is used within the DHT and is not exposed anywhere else. You should never have to deal with this directly and they will not be mentioned anywhere else in the documentation (except maybe the architecture reference). You can identify these identities because they start with `n_`.
+A local identity secret is a file containing cryptographic information on the identity. If you have the file, you can publish and unpublish data for that identity.
 
-At this time, identity has two subtypes: local and card.
-
-## Local identities
-
-These are identities that are a file on your computer. If you have the file, you can publish and unpublish data for that identity.
-
-This is less secure, mostly intended for use on servers or for people just trying things out, or people with use cases not requiring more security.
+Since this is easy to lose/expose, it's mostly intended for use on servers or for people just trying things out.
 
 Using [`spagh`](./reference_spagh.md) you can:
 
-- Create a local identity
+- Create a local identity secret
 
   Run `spagh identity new-local my.ident`
 
   This will create a new identity at `my.ident` and print out the id of the identity.
 
-  The id of the identity (like `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r`) is used for lookups and can be used as a DNS name when suffixed with `.s` (ex: `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s`).
-
-- Get the id of a local identity
+- Get the id of a local identity secret
 
   Run `spagh identity show-local my.ident`
 
   This will print the id of the identity again
 
-## Card identities
+## Card identity secrets
 
-Card is a misnomer today, this typicaly refers to hardware security devices like a Yubikey. Card identities store the private data on the card itself, rather than locally in a file.
+Card is a misnomer today - this typicaly refers to hardware security devices like a Yubikey. Card identities store the private data on the card itself, rather than locally in a file.
 
 Because card identities have the private data stored in secure hardware they can't be stolen by viruses or unauthorized computer access. Furthermore they typically have a password or PIN so even if the hardware is stolen they can't be used to impersonate you or delete your published data.
 
@@ -60,7 +52,7 @@ Any card that supports OpenPGP PC/SC and Ed25519 keys should work. The Yubikey 5
 
   Run `spagh identity list-cards`
 
-  This will list the card identites, their ids, and the PC/SC id (like `0006:12341234`) used for command line arguments and configs.
+  This will list the card identites and the PC/SC id (like `0006:12341234`) used for command line arguments and configs.
 
 ### Troubleshooting
 

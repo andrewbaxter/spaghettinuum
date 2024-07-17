@@ -2,19 +2,22 @@
 
 The spaghettinuum is an alternative to DNS based around a distributed hash table (DHT). Replacing the web with a plate of pasta. A little less centralized and a little more noodly.
 
+---
+
+Create an identity secret:
+
 ```
 # spagh identity new-local ./my.ident
+{ "id": "yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r" }
 ```
 
-```json
-{
-  "id": "yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r"
-}
-```
+Announce the publisher associated with the identity:
 
 ```
 # spagh announce local ./my.ident
 ```
+
+Publish two keys for the identity.
 
 ```
 # spagh set local ./my.ident - << BODY
@@ -34,21 +37,19 @@ The spaghettinuum is an alternative to DNS based around a distributed hash table
 BODY
 ```
 
-```
-# dig yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s
-```
+Query the identity `dns/./a` key via DNS.
 
 ```
+# dig yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s
 ...
 203.0.113.111
 ...
 ```
 
+Query the identity `serial_number` key via the resolver API.
+
 ```
 # spagh get yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r serial_number
-```
-
-```json
 {
   "long": "1234123412341234-1234",
   "short": "1234"
@@ -57,9 +58,9 @@ BODY
 
 Why it's cool:
 
-- Own your identity - even if you quit, nobody else can use your identity
+- Own your identity - no monthly payments, nobody else can ever use your identity or restrict you from using it
 - No hoops to jump through to get an ID, no WHOIS requirements
-- Simple
+- Get TLS certificates in a single request, no challenges. Or generate your own self-signed certificate validated via DHT
 - DNS bridge for compatibility with existing software
 - Smartcard/PCSC/GPG-card backed identities, optionally, as an excuse to buy a Yubikey 5 Nano
 

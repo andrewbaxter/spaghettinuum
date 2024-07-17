@@ -1,64 +1,97 @@
-use std::{
-    collections::HashMap,
-    str::FromStr,
-    sync::{
-        Arc,
-        Mutex,
-        RwLock,
-    },
-};
-use chrono::{
-    Utc,
-    Duration,
-    DateTime,
-};
-use der::{
-    Encode,
-};
-use http::Uri;
-use htwrap::htreq;
-use loga::{
-    ea,
-    Log,
-    ResultContext,
-};
-use p256::pkcs8::EncodePrivateKey;
-use rustls::server::ResolvesServerCert;
-use taskmanager::TaskManager;
-use tokio::{
-    select,
-    sync::watch::{
-        self,
-        channel,
-    },
-    time::{
-        sleep,
-        sleep_until,
-    },
-};
-use x509_cert::{
-    spki::{
-        SubjectPublicKeyInfoOwned,
-    },
-};
-use crate::{
-    bb,
-    interface::wire,
-    ta_res,
-    utils::{
-        backed_identity::IdentitySigner,
-        tls_util::{
-            encode_priv_pem,
-            extract_expiry,
+//! Methods for obtaining a `.s` TLS cert
+use {
+    std::{
+        collections::HashMap,
+        path::Path,
+        str::FromStr,
+        sync::{
+            Arc,
+            Mutex,
+            RwLock,
         },
-        blob::ToBlob,
-        time_util::ToInstant,
+    },
+    chrono::{
+        Utc,
+        Duration,
+        DateTime,
+    },
+    der::{
+        Encode,
+    },
+    http::Uri,
+    htwrap::htreq,
+    loga::{
+        ea,
+        Log,
+        ResultContext,
+    },
+    p256::pkcs8::EncodePrivateKey,
+    rustls::{
+        server::ResolvesServerCert,
+    },
+    taskmanager::TaskManager,
+    tokio::{
+        select,
+        sync::watch::{
+            self,
+            channel,
+        },
+        task::spawn_blocking,
+        time::{
+            sleep,
+            sleep_until,
+        },
+    },
+    tokio_stream::{
+        wrappers::WatchStream,
+        StreamExt,
+    },
+    x509_cert::{
+        spki::{
+            SubjectPublicKeyInfoOwned,
+        },
+    },
+    crate::{
+        bb,
+        interface::{
+            stored::{
+                self,
+                self_tls::{
+                    latest::CertPair,
+                },
+            },
+            wire::{
+                self,
+                api::publish::v1::PublishRequestContent,
+            },
+        },
+        publishing::Publisher,
+        ta_res,
+        utils::{
+            identity_secret::IdentitySigner,
+            blob::ToBlob,
+            db_util::{
+                self,
+                DbTx,
+            },
+            fs_util::write,
+            time_util::ToInstant,
+            tls_util::{
+                encode_priv_pem,
+                extract_expiry,
+                load_certified_key,
+            },
+        },
     },
 };
 
 pub mod db;
 
 pub const CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";
+
+pub fn publish_ssl_ttl() -> Duration {
+    return Duration::minutes(60);
+}
 
 /// Requests a TLS public cert from the certifier for the `.s` domain associated
 /// with the provided identity and returns the result as PEM. This function
@@ -121,14 +154,8 @@ pub async fn request_cert_with_key(
     return Ok(serde_json::from_slice(&body).context("Error parsing cert request response body as json")?);
 }
 
-#[derive(Clone)]
-pub struct CertPair {
-    /// X509 public cert, signed by certipasta CA key
-    pub pub_pem: String,
-    /// PKCS8 private key
-    pub priv_pem: String,
-}
-
+/// Produces a stream of TLS cert pairs, with a new pair some time before the
+/// previous pair expires.
 pub async fn request_cert_stream(
     log: &Log,
     tm: &TaskManager,
@@ -139,7 +166,7 @@ pub async fn request_cert_stream(
 
     fn decide_refresh_at(pub_pem: &str) -> Result<DateTime<Utc>, loga::Error> {
         let not_after = extract_expiry(pub_pem.as_bytes())?;
-        return Ok(not_after - Duration::hours(24 * 7));
+        return Ok(not_after - Duration::hours(24 * 7) - (publish_ssl_ttl() * 2));
     }
 
     let refresh_at =
@@ -205,4 +232,185 @@ impl ResolvesServerCert for SimpleResolvesServerCert {
     ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
         return Some(self.0.read().unwrap().clone());
     }
+}
+
+/// Produce a rustls-compatible server cert resolver with an automatically updated
+/// cert.  This is a managed task that maintains state using a database at the
+/// provided location.
+pub async fn htserve_tls_resolves(
+    log: &Log,
+    persistent_dir: &Path,
+    write_certs: bool,
+    tm: &TaskManager,
+    publisher: &Arc<dyn Publisher>,
+    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
+) -> Result<Option<Arc<dyn ResolvesServerCert>>, loga::Error> {
+    async fn publish_tls_certs(
+        log: &Log,
+        publisher: &Arc<dyn Publisher>,
+        identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
+        state: &stored::self_tls::latest::SelfTlsState,
+    ) -> Result<(), loga::Error> {
+        publisher.publish(log, identity_signer.clone(), PublishRequestContent {
+            set: {
+                let mut m = HashMap::new();
+                let mut certs = vec![state.current.pub_pem.clone()];
+                if let Some((_, new)) = &state.pending {
+                    certs.push(new.pub_pem.clone());
+                }
+                m.insert(
+                    stored::record::tls_record::KEY.to_string(),
+                    stored::record::RecordValue::V1(stored::record::latest::RecordValue {
+                        ttl: publish_ssl_ttl().num_minutes() as i32,
+                        data: Some(
+                            serde_json::to_value(
+                                &stored::record::tls_record::TlsCerts::V1(
+                                    stored::record::tls_record::latest::TlsCerts(certs),
+                                ),
+                            ).unwrap(),
+                        ),
+                    }),
+                );
+                m
+            },
+            ..Default::default()
+        }).await?;
+        return Ok(());
+    }
+
+    let db_pool = db_util::setup_db(&persistent_dir.join("self_tls.sqlite3"), db::migrate).await?;
+    db_pool.tx(|conn| Ok(db::api_certs_setup(conn)?)).await?;
+
+    // Prepare initial state, either restoring or getting from scratch
+    let mut state = match db_pool.tx(|conn| Ok(db::api_certs_get(conn)?)).await? {
+        Some(s) => match s {
+            stored::self_tls::SelfTlsState::V1(mut s) => {
+                bb!({
+                    let Some((after, _)) =& s.pending else {
+                        break;
+                    };
+                    if Utc::now() < *after {
+                        break;
+                    }
+                    let (_, new) = s.pending.take().unwrap();
+                    s.current = new;
+                });
+                s
+            },
+        },
+        None => {
+            let pair = loop {
+                match select!{
+                    c = request_cert(&log, identity_signer.clone()) => c,
+                    _ = tm.until_terminate() => {
+                        return Ok(None);
+                    }
+                } {
+                    Ok(p) => break p,
+                    Err(e) => {
+                        log.log_err(
+                            loga::WARN,
+                            e.context_with("Error fetching initial certificates, retrying", ea!(subsys = "self_tls")),
+                        );
+                        sleep(Duration::seconds(60).to_std().unwrap()).await;
+                    },
+                }
+            };
+            let state = stored::self_tls::latest::SelfTlsState {
+                pending: None,
+                current: pair,
+            };
+            db_pool.tx({
+                let state = state.clone();
+                move |conn| Ok(db::api_certs_set(conn, Some(&stored::self_tls::SelfTlsState::V1(state)))?)
+            }).await.context("Error storing fresh initial state")?;
+            state
+        },
+    };
+
+    // Set initial certs
+    let latest_certs =
+        Arc::new(
+            RwLock::new(
+                load_certified_key(
+                    &state.current.pub_pem,
+                    &state.current.priv_pem,
+                ).context("Initial certs are invalid")?,
+            ),
+        );
+    publish_tls_certs(&log, publisher, &identity_signer, &state).await?;
+    if write_certs {
+        write(persistent_dir.join("pub.pem"), state.current.pub_pem.as_bytes())
+            .await
+            .context("Error writing new pub.pem")?;
+        write(persistent_dir.join("priv.pem"), state.current.priv_pem.as_bytes())
+            .await
+            .context("Error writing new priv.pem")?;
+    }
+
+    // Start refresh loop
+    tm.critical_task("API - process new certs", {
+        let persistent_dir = persistent_dir.to_path_buf();
+        let tm = tm.clone();
+        let log = log.clone();
+        let publisher = publisher.clone();
+        let identity_signer = identity_signer.clone();
+        let latest_certs = latest_certs.clone();
+        async move {
+            let mut cert_stream =
+                WatchStream::new(
+                    request_cert_stream(&log, &tm, identity_signer.clone(), state.current.clone()).await?,
+                );
+            loop {
+                // Wait for pending certs and swap
+                if let Some((after, pair)) = state.pending.take() {
+                    select!{
+                        _ = sleep_until(after.to_instant()) => {
+                        },
+                        _ = tm.until_terminate() => {
+                            return Ok(());
+                        }
+                    }
+
+                    match load_certified_key(&pair.pub_pem, &pair.priv_pem) {
+                        Ok(p) => {
+                            spawn_blocking({
+                                let latest_certs = latest_certs.clone();
+                                move || {
+                                    *latest_certs.write().unwrap() = p;
+                                }
+                            }).await.unwrap();
+                        },
+                        Err(e) => {
+                            log.log_err(loga::WARN, e.context("New certs are invalid"));
+                            return Ok(());
+                        },
+                    };
+                    publish_tls_certs(&log, &publisher, &identity_signer, &state).await?;
+                    state.current = pair;
+                    write(persistent_dir.join("pub.pem"), state.current.pub_pem.as_bytes())
+                        .await
+                        .context("Error writing new pub.pem")?;
+                    write(persistent_dir.join("priv.pem"), state.current.priv_pem.as_bytes())
+                        .await
+                        .context("Error writing new priv.pem")?;
+                }
+
+                // Wait for next refresh
+                let new_pair = match cert_stream.next().await {
+                    Some(c) => c,
+                    None => {
+                        return Ok(());
+                    },
+                };
+                db_pool.tx({
+                    let state = state.clone();
+                    move |conn| Ok(db::api_certs_set(conn, Some(&stored::self_tls::SelfTlsState::V1(state)))?)
+                }).await.context("Error storing updated state")?;
+                state.pending = Some((Utc::now() + publish_ssl_ttl(), new_pair));
+                publish_tls_certs(&log, &publisher, &identity_signer, &state).await?;
+            }
+        }
+    });
+    return Ok(Some(Arc::new(SimpleResolvesServerCert(latest_certs))));
 }

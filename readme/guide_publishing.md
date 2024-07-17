@@ -34,8 +34,8 @@ and you want to publish it under your identity `my.ident` with ID `yryyyyyyyyei1
 Set the environment variable `SPAGH` to the URL of your publisher and run
 
 ```
-$ spagh announce local my.ident
-$ spagh set local my.ident ./data.json
+$ spagh publish announce local my.ident
+$ spagh publish set local my.ident ./data.json
 ```
 
 (in any order). The first advertises the publisher you're connecting to as authoritative for the identity, the second puts the data in the database.
@@ -59,7 +59,7 @@ Spaghettinuum key/value pairs that match the format expected by the DNS bridge w
 The easy way to publish DNS equivalent records is using the command line like:
 
 ```
-$ spagh set-dns local my.ident --a 203.0.113.111 --aaaa 2001:db8::8a2e:370:7334
+$ spagh publish set-dns local my.ident --a 203.0.113.111 --aaaa 2001:db8::8a2e:370:7334
 ```
 
 You can also do it using the normal `set` command.

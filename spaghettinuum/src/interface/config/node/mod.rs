@@ -9,7 +9,7 @@ use serde::{
 use super::{
     content::ContentConfig,
     shared::{
-        BackedIdentityArg,
+        IdentitySecretArg,
         GlobalAddrConfig,
         StrSocketAddr,
     },
@@ -34,7 +34,12 @@ pub struct Config {
     pub persistent_dir: PathBuf,
     /// A backed identity (by file or card) this server will use for generating a tls
     /// cert for the api, and for self-publication if the publisher is enabled.
-    pub identity: BackedIdentityArg,
+    pub identity: IdentitySecretArg,
+    /// A list of paths to host keys to publish for this host. If not specified, a
+    /// default SSH host key location will be used, otherwise no SSH host keys will be
+    /// published.
+    #[serde(default)]
+    pub ssh_host_keys: Vec<PathBuf>,
     /// How to determine the public ip for publisher announcements and self-publishing.
     /// Publisher announcements always use the first address.
     #[serde(default)]

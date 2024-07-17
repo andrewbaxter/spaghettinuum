@@ -1,10 +1,15 @@
-use good_ormning_runtime::sqlite::GoodOrmningCustomString;
-use schemars::JsonSchema;
-use serde::{
-    Deserialize,
-    Serialize,
+use {
+    good_ormning_runtime::sqlite::GoodOrmningCustomString,
+    schemars::JsonSchema,
+    serde::{
+        Deserialize,
+        Serialize,
+    },
 };
 
+pub mod dns_record;
+pub mod tls_record;
+pub mod ssh_record;
 pub mod v1;
 
 pub use v1 as latest;

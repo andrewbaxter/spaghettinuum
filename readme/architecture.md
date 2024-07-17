@@ -39,3 +39,25 @@ The publisher exposes an HTTPS endpoint for the resolver. This endpoint is a sim
 ## DNS bridge
 
 DNS records are converted to JSON structures and stored with keys corresponding to the record type. The bridge performs lookup as it would for any other spahgettinuum data, and converts the JSON back to a DNS response.
+
+## Typical request flow
+
+In a normal environment, a client that wishes to make an HTTP connection to a server would make these requests:
+
+1. Request `CNAME`, `AAAA`, `A`, and out of band TLS keys from the spghettinuum resolver.
+
+   It assumes that the locally configured DNS resolvers (ex: in `resolv.conf`) are spaghettinuum resolvers. The requests are made using the spaghettinuum HTTPS request API rather than DNS.
+
+   Resolver TLS certificates aren't validated because there's no available associated DNS name (and consequently, identity) for the resolver. Support may be added for manually providing a name/identity.
+
+2. The resolver queries the DHT for an announcement for the request identity
+3. The resolver requests the keys from the identity's publisher identified in the announcement.
+
+   The announcement contains the publisher ips and TLS certificate, which the resolver uses to connect.
+
+4. The resolver responds to the client with the requested values if they were present
+
+5. As long as `CNAME` records are returned, the client repeats from 1. with the new name
+6. The client connects to the server via the `AAAA` or `A` values.
+
+   The server certificate is validated via the returned TLS keys, an identity-based signature of the SPKI, or using typical centralized certificate validation methods (locally installed CA certs).

@@ -7,7 +7,6 @@ use serde::{
 };
 use core::fmt::Debug;
 use std::marker::PhantomData;
-use sha2::Digest;
 use crate::interface::stored::announcement::Announcement;
 use crate::interface::stored::identity::Identity;
 use crate::interface::stored::node_identity::NodeIdentity;
@@ -65,15 +64,6 @@ impl<'a> Deserialize<'a> for DhtCoord {
                 ).ok_or_else(|| serde::de::Error::custom("DhtCoord has the wrong number of bytes"))?,
             ),
         );
-    }
-}
-
-// Ed25519
-pub struct Hash(Blob);
-
-impl Hash {
-    pub fn new(data: &[u8]) -> Self {
-        return Self(<sha2::Sha256 as Digest>::digest(data).blob());
     }
 }
 

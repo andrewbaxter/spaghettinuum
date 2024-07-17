@@ -3,7 +3,6 @@ use {
         Aargvark,
         AargvarkJson,
     },
-    chrono::Duration,
     loga::{
         ea,
         ErrContext,
@@ -12,7 +11,6 @@ use {
     },
     spaghettinuum::{
         cap_fn,
-        content::serve_content,
         interface::{
             config::{
                 self,
@@ -22,7 +20,7 @@ use {
             },
             stored::{
                 self,
-                dns_record::{
+                record::dns_record::{
                     format_dns_key,
                     RecordType,
                 },
@@ -34,36 +32,33 @@ use {
                 node::latest::NodeInfo,
             },
         },
-        node::Node,
-        publisher::{
-            self,
-            Publisher,
-        },
-        resolver::{
-            self,
-            Resolver,
-        },
-        self_tls::{
-            self,
-            request_cert,
-            request_cert_stream,
-            CertPair,
+        self_tls,
+        service::{
+            content::serve_content,
+            node::Node,
+            publisher::{
+                self,
+                Publisher,
+            },
+            resolver::{
+                self,
+                Resolver,
+            },
         },
         ta_res,
         utils::{
-            backed_identity::get_identity_signer,
-            db_util,
+            fs_util,
             htserve::{
                 self,
                 auth,
                 auth_hash,
                 Routes,
             },
+            identity_secret::get_identity_signer,
             ip_util::resolve_global_ip,
-            publish_util::generate_publish_announce,
-            tls_util::{
-                load_certified_key,
-                SingleCertResolver,
+            publish_util::{
+                add_ssh_host_key_records,
+                generate_publish_announce,
             },
         },
     },
@@ -77,19 +72,14 @@ use {
             IpAddr,
             SocketAddr,
         },
-        sync::{
-            Arc,
-            RwLock,
-        },
+        path::PathBuf,
+        sync::Arc,
     },
     taskmanager::TaskManager,
     tokio::{
         fs::create_dir_all,
         select,
-        task::spawn_blocking,
-        time::sleep,
     },
-    tokio_stream::wrappers::WatchStream,
 };
 
 #[derive(Aargvark)]
@@ -155,7 +145,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     };
 
     // Get identity signer for self-publish and getting ssl certs
-    let identity = get_identity_signer(config.identity.clone()).stack_context(log, "Error loading identity")?;
+    let identity = get_identity_signer(config.identity.clone()).await.stack_context(log, "Error loading identity")?;
 
     // Start node
     let node = {
@@ -195,43 +185,42 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             cert_pub_hash: publisher.pub_cert_hash(),
         }]).map_err(|e| log.err_with("Failed to generate announcement for self publication", ea!(err = e)))?;
         publisher.announce(&identity, announcement).await?;
+        let mut publish_data = HashMap::new();
+        for ip in &public_ips {
+            let key;
+            let data;
+            match ip {
+                std::net::IpAddr::V4(ip) => {
+                    key = RecordType::A;
+                    data =
+                        serde_json::to_value(
+                            &stored::record::dns_record::DnsA::V1(
+                                stored::record::dns_record::latest::DnsA(vec![*ip]),
+                            ),
+                        ).unwrap();
+                },
+                std::net::IpAddr::V6(ip) => {
+                    key = RecordType::Aaaa;
+                    data =
+                        serde_json::to_value(
+                            &stored::record::dns_record::DnsAaaa::V1(
+                                stored::record::dns_record::latest::DnsAaaa(vec![*ip]),
+                            ),
+                        ).unwrap();
+                },
+            }
+            let key = format_dns_key(".", key);
+            if !publish_data.contains_key(&key) {
+                publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
+                    ttl: 60,
+                    data: Some(data),
+                }));
+            }
+        }
+        add_ssh_host_key_records(&mut publish_data, config.ssh_host_keys).await?;
         publisher.modify_values(&identity, wire::api::publish::v1::PublishRequestContent {
             clear_all: true,
-            set: {
-                let mut out = HashMap::new();
-                for ip in &public_ips {
-                    let key;
-                    let data;
-                    match ip {
-                        std::net::IpAddr::V4(ip) => {
-                            key = RecordType::A;
-                            data =
-                                serde_json::to_value(
-                                    &stored::dns_record::DnsA::V1(
-                                        stored::dns_record::latest::DnsA(vec![ip.to_string()]),
-                                    ),
-                                ).unwrap();
-                        },
-                        std::net::IpAddr::V6(ip) => {
-                            key = RecordType::Aaaa;
-                            data =
-                                serde_json::to_value(
-                                    &stored::dns_record::DnsAaaa::V1(
-                                        stored::dns_record::latest::DnsAaaa(vec![ip.to_string()]),
-                                    ),
-                                ).unwrap();
-                        },
-                    }
-                    let key = format_dns_key(".", key);
-                    if !out.contains_key(&key) {
-                        out.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
-                            ttl: 60,
-                            data: Some(data),
-                        }));
-                    }
-                }
-                out
-            },
+            set: publish_data,
             ..Default::default()
         }).await?;
         publisher
@@ -264,85 +253,17 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     };
 
     // Get own tls cert
-    let latest_certs = {
-        let db_pool =
-            db_util::setup_db(&config.persistent_dir.join("self_tls.sqlite3"), self_tls::db::migrate).await?;
-        db_pool.get().await?.interact(|conn| self_tls::db::api_certs_setup(conn)).await??;
-        let initial_pair = db_pool.get().await?.interact(|conn| self_tls::db::api_certs_get(conn)).await??;
-        let initial_pair = match (initial_pair.pub_pem, initial_pair.priv_pem) {
-            (Some(pub_pem), Some(priv_pem)) => CertPair {
-                pub_pem: pub_pem,
-                priv_pem: priv_pem,
-            },
-            _ => {
-                loop {
-                    match request_cert(&log, identity.clone()).await {
-                        Ok(p) => break p,
-                        Err(e) => {
-                            log.log_err(
-                                loga::WARN,
-                                e.context_with(
-                                    "Error fetching initial certificates, retrying",
-                                    ea!(subsys = "self_tls"),
-                                ),
-                            );
-                            sleep(Duration::seconds(60).to_std().unwrap()).await;
-                        },
-                    }
-                }
-            },
-        };
-        let latest_certs =
-            Arc::new(
-                RwLock::new(
-                    load_certified_key(
-                        &initial_pair.pub_pem,
-                        &initial_pair.priv_pem,
-                    ).context("Initial certs are invalid")?,
-                ),
-            );
-        let certs_stream = request_cert_stream(&log, &tm, identity, initial_pair).await?;
-        tm.stream(
-            "API - process new certs",
-            WatchStream::new(certs_stream.clone()),
-            cap_fn!((pair)(db_pool, log, latest_certs) {
-                match async {
-                    ta_res!(());
-                    match load_certified_key(&pair.pub_pem, &pair.priv_pem) {
-                        Ok(p) => {
-                            spawn_blocking({
-                                let latest_certs = latest_certs.clone();
-                                move || {
-                                    *latest_certs.write().unwrap() = p;
-                                }
-                            }).await.unwrap();
-                        },
-                        Err(e) => {
-                            log.log_err(loga::WARN, e.context("New certs are invalid"));
-                            return Ok(());
-                        },
-                    };
-                    db_pool
-                        .get()
-                        .await?
-                        .interact(
-                            move |conn| self_tls::db::api_certs_set(
-                                conn,
-                                Some(&pair.pub_pem),
-                                Some(&pair.priv_pem),
-                            ),
-                        )
-                        .await??;
-                    return Ok(());
-                }.await {
-                    Ok(_) => (),
-                    Err(e) => {
-                        log.log_err(loga::DEBUG, e.context("Error persisting new certs"));
-                    },
-                }
-            }),
-        );
+    let Some(
         latest_certs
+    ) = self_tls:: htserve_tls_resolves(
+        log,
+        &config.persistent_dir,
+        false,
+        tm,
+        &(publisher.clone() as Arc<dyn spaghettinuum::publishing::Publisher>),
+        &identity
+    ).await ? else {
+        return Ok(());
     };
 
     // Start http api
@@ -396,9 +317,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         let routes = routes.clone();
         let tls_acceptor = {
             let mut server_config =
-                rustls::ServerConfig::builder()
-                    .with_no_client_auth()
-                    .with_cert_resolver(Arc::new(SingleCertResolver(latest_certs.clone())));
+                rustls::ServerConfig::builder().with_no_client_auth().with_cert_resolver(latest_certs.clone());
             server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
             tokio_rustls::TlsAcceptor::from(Arc::new(server_config))
         };
@@ -463,7 +382,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     // Start additional content serving
     for content in config.content {
         let log = log.fork_with_log_from(debug_level(DebugFlag::Htserve), ea!(sys = "content"));
-        serve_content(&log, tm, &latest_certs, content).await?;
+        serve_content(&log, tm, latest_certs.clone(), content).await?;
     }
 
     // Done

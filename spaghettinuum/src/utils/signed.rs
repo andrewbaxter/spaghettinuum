@@ -16,7 +16,7 @@ use crate::interface::{
     wire,
 };
 use super::{
-    backed_identity::IdentitySigner,
+    identity_secret::IdentitySigner,
     blob::ToBlob,
 };
 

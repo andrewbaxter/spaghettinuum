@@ -12,11 +12,11 @@ Gnu Name System (GNS) is very similar to Spaghettinuum: globally unique names, D
 
 I think the fundamental differences are:
 
-- Spaghettinuum is small and focused. GNS is part of GNUNet and has many modes of operation, commands and command line flags, subsystems and components.
-
 - Spaghettinuum has a light-client + server model, where local usage can be done with just a standard DNS or HTTP client (ex: curl). GNS is a heavy-client model, where you're expected to have a full installation on each device you use it on, which will then be a member of the network.
 
 - Spaghettinuum is an HTTP JSON key-value store, with support for bridging to DNS. GNS is primarily a DNS replacement, storing DNS(-like) records internally.
+
+- Spaghettinuum is small and focused. GNS is part of GNUNet and has many modes of operation, commands and command line flags, subsystems and components.
 
 Some more subtle differences:
 
@@ -26,10 +26,10 @@ Some more subtle differences:
 
 - GNS stores all records in the DHT. Spaghettinuum only stores pointers to the authoritative publisher in the DHT, everything else is stored on the publisher.
 
-- GNS uses a local MITM HTTPS proxy (with local CA cert) to handle TLS certificates, Spaghettinuum uses a new root CA cert and public issuer (Certipasta). For both, these are expected to be temporary measures until browsers support other channles for distributing TLS certificates.
+- GNS uses a local MITM HTTPS proxy (with local CA cert) to handle TLS certificates for compatibility with existing software. Spaghettinuum uses a new root CA cert and public issuer (Certipasta). For both, these are expected to be temporary measures until browsers support other channels for distributing TLS certificates.
 
 ## IPNS
 
-IPNS development was specific to IPFS use cases last I checked: [no arbitrary data, publishing tied tightly to nodes](https://github.com/ipfs/notes/issues/439).
+IPNS development was specific to IPFS use cases last I checked: [no arbitrary data, and publishing is tied tightly to nodes](https://github.com/ipfs/notes/issues/439).
 
 There have been complaints that IPFS is slow, possibly relating to using TCP for the DHT.

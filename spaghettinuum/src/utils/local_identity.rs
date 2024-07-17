@@ -1,14 +1,15 @@
-use std::path::Path;
-use loga::{
-    ea,
-    ResultContext,
+use {
+    super::fs_util::{
+        write,
+    },
+    crate::interface::config::identity::IdentitySecretLocal,
+    loga::ResultContext,
+    std::path::Path,
 };
-use tokio::fs;
-use crate::interface::config::identity::BackedIdentityLocal;
 
-pub async fn write_identity(path: &Path, identity: &BackedIdentityLocal) -> Result<(), loga::Error> {
-    fs::write(path, &serde_json::to_string_pretty(identity).unwrap())
+pub async fn write_identity_secret(path: &Path, identity: &IdentitySecretLocal) -> Result<(), loga::Error> {
+    write(path, serde_json::to_string_pretty(identity).unwrap().as_bytes())
         .await
-        .context_with("Failed to write identity secret to file", ea!(path = path.to_string_lossy()))?;
+        .context("Failed to write identity secret to file")?;
     return Ok(());
 }

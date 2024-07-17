@@ -1,7 +1,8 @@
 use {
     super::{
-        backed_identity::IdentitySigner,
         blob::ToBlob,
+        fs_util,
+        identity_secret::IdentitySigner,
         signed::IdentSignatureMethods,
     },
     crate::interface::{
@@ -29,6 +30,7 @@ use {
     },
     std::{
         collections::HashMap,
+        path::PathBuf,
         str::FromStr,
         sync::{
             Arc,
@@ -147,6 +149,47 @@ pub async fn publish(
         )
             .await
             .context("Error making publish request")?;
+    }
+    return Ok(());
+}
+
+/// Scan system for ssh host keys and add them to a record set to publish.
+///
+/// * `paths` - if empty, search the system for default host key paths
+pub async fn add_ssh_host_key_records(
+    publish_data: &mut HashMap<String, stored::record::RecordValue>,
+    mut paths: Vec<PathBuf>,
+) -> Result<(), loga::Error> {
+    if paths.is_empty() {
+        for algo in ["rsa", "ed25519", "dsa", "ecdsa"] {
+            paths.push(PathBuf::from(format!("/etc/ssh/ssh_host_{}_key.pub", algo)));
+        }
+    }
+    let mut host_keys = vec![];
+    for key_path in paths {
+        let Some(key) = fs_util:: maybe_read(&key_path).await ? else {
+            break;
+        };
+        let key =
+            String::from_utf8(
+                key,
+            ).context_with("Host key isn't valid utf-8", ea!(path = key_path.to_string_lossy()))?;
+        host_keys.push(key);
+    }
+    if !host_keys.is_empty() {
+        publish_data.insert(
+            stored::record::tls_record::KEY.to_string(),
+            stored::record::RecordValue::latest(stored::record::latest::RecordValue {
+                ttl: 60,
+                data: Some(
+                    serde_json::to_value(
+                        &stored::record::tls_record::TlsCerts::latest(
+                            stored::record::tls_record::latest::TlsCerts(host_keys),
+                        ),
+                    ).unwrap(),
+                ),
+            }),
+        );
     }
     return Ok(());
 }
