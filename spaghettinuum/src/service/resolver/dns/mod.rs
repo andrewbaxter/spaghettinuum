@@ -595,7 +595,7 @@ pub async fn start_dns_bridge(
             TcpListener::bind(&bind_addr)
                 .await
                 .stack_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
-            Duration::seconds(10).to_std().unwrap(),
+            Duration::try_seconds(10).unwrap().to_std().unwrap(),
         );
     }
     tm.critical_task("DNS bridge - server", {

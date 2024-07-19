@@ -3,14 +3,24 @@ use {
         Aargvark,
         AargvarkJson,
     },
+    htwrap::htserve::{
+        self,
+        check_auth_token_hash,
+        get_auth_token,
+        hash_auth_token,
+        response_200,
+        response_200_json,
+        response_400,
+        response_401,
+        response_503,
+        AuthTokenHash,
+    },
     loga::{
         ea,
-        ErrContext,
         Log,
         ResultContext,
     },
     spaghettinuum::{
-        cap_fn,
         interface::{
             config::{
                 self,
@@ -46,20 +56,16 @@ use {
             },
         },
         ta_res,
+        ta_vis_res,
         utils::{
-            fs_util,
-            htserve::{
-                self,
-                auth,
-                auth_hash,
-                Routes,
-            },
             identity_secret::get_identity_signer,
             ip_util::resolve_global_ip,
             publish_util::{
                 add_ssh_host_key_records,
                 generate_publish_announce,
             },
+            ResultVisErr,
+            VisErr,
         },
     },
     std::{
@@ -72,7 +78,6 @@ use {
             IpAddr,
             SocketAddr,
         },
-        path::PathBuf,
         sync::Arc,
     },
     taskmanager::TaskManager,
@@ -104,6 +109,9 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             return loga::INFO;
         }
     };
+    let data_dir = fs_util::data_dir();
+    let cache_dir = fs_util::cache_dir();
+    let config_path = fs_util::config_path();
     let config = if let Some(p) = args.config {
         p.value
     } else if let Some(c) = match std::env::var(ENV_CONFIG) {
@@ -122,13 +130,9 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             log.err_with("No config passed on command line, and no config set in env var", ea!(env = ENV_CONFIG)),
         );
     };
-    create_dir_all(&config.persistent_dir)
+    create_dir_all(&data_dir)
         .await
-        .stack_context_with(
-            log,
-            "Error creating persistent dir",
-            ea!(path = config.persistent_dir.to_string_lossy()),
-        )?;
+        .stack_context_with(log, "Error creating persistent data dir", ea!(path = data_dir.to_string_lossy()))?;
 
     // Resolve public ips
     let resolve_public_ips = async {
@@ -159,7 +163,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 ),
             });
         }
-        Node::new(log, tm.clone(), config.node.bind_addr, &bootstrap, &config.persistent_dir).await?
+        Node::new(&log, &tm, config.node.bind_addr, &bootstrap, &config.persistent_dir).await?
     };
 
     // Start publisher
@@ -273,48 +277,61 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             log.err("Configuration enables resolver or publisher but no api http bind address present in config"),
         );
     }
-    let mut routes = Routes::new();
-    routes.add("health", htserve::Leaf::new().get(cap_fn!((_r)() {
-        return htserve::Response::Ok;
+    let mut router = htserve::PathRouter::default();
+    router.insert("/health", Box::new(htwrap::handler!(()(_r -> htserve:: Body) {
+        return response_200();
     })));
-    let admin_token = match config.admin_token {
-        Some(t) => Some(auth_hash(&match t {
+    if let Some(admin_token) = config.admin_token {
+        let admin_token = hash_auth_token(&match admin_token {
             config::node::AdminToken::File(p) => String::from_utf8(
                 fs::read(&p).context_with("Error reading admin token file", ea!(path = p.to_string_lossy()))?,
             ).map_err(|_| loga::err_with("Admin token isn't valid utf8", ea!(path = p.to_string_lossy())))?,
             config::node::AdminToken::Inline(p) => p,
-        })),
-        None => None,
-    };
-    if let Some(admin_token) = &admin_token {
-        routes.add("admin/health", htserve::Leaf::new().get(cap_fn!((r)(node, admin_token) {
-            // Auth
-            if !auth(&admin_token, &r.auth_bearer) {
-                return htserve::Response::AuthErr;
-            }
-
-            // Process + respond
-            return htserve::Response::json(node.health_detail());
-        })));
+        });
+        router.insert(
+            "/admin/health",
+            Box::new(htwrap::handler!((log: Log, node: Node, admin_token: AuthTokenHash)(r -> htserve:: Body) {
+                match async {
+                    ta_vis_res!(http:: Response < htserve:: Body >);
+                    if !check_auth_token_hash(&admin_token, &get_auth_token(&r.head.headers).err_external()?) {
+                        return Ok(response_401());
+                    }
+                    return Ok(response_200_json(node.health_detail()));
+                }.await {
+                    Ok(r) => return r,
+                    Err(VisErr::External(e)) => {
+                        return response_400(e);
+                    },
+                    Err(VisErr::Internal(e)) => {
+                        log.log_err(loga::DEBUG, e.context("Error serving admin health endpoint"));
+                        return response_503();
+                    },
+                }
+            })),
+        );
+        router.insert(
+            "/publish",
+            Box::new(
+                publisher::build_api_endpoints(
+                    &log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher")),
+                    &publisher,
+                    &admin_token,
+                    &config.persistent_dir,
+                )
+                    .await
+                    .stack_context(&log, "Error building publisher endpoints")?,
+            ),
+        );
     }
     if let Some(resolver) = &resolver {
         let log = log.fork_with_log_from(debug_level(DebugFlag::Resolve), ea!(sys = "resolver"));
-        routes.nest("resolve", resolver::build_api_endpoints(log, resolver));
+        router.insert("/resolve", Box::new(resolver::build_api_endpoints(log, resolver)));
     }
-    {
-        let log = log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher"));
-        routes.nest(
-            "publish",
-            publisher::build_api_endpoints(log.clone(), &publisher, admin_token.as_ref(), &config.persistent_dir)
-                .await
-                .stack_context(&log, "Error building publisher endpoints")?,
-        );
-    }
-    let routes = routes.build(log.fork(ea!(subsys = "router")));
+    let router = Arc::new(router);
     for bind_addr in config.api_bind_addrs {
         let bind_addr = bind_addr.resolve().stack_context(&log, "Error resolving api bind address")?;
         let log = log.clone();
-        let routes = routes.clone();
+        let routes = router.clone();
         let tls_acceptor = {
             let mut server_config =
                 rustls::ServerConfig::builder().with_no_client_auth().with_cert_resolver(latest_certs.clone());
@@ -331,49 +348,17 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 let tls_acceptor = tls_acceptor.clone();
                 let routes = routes.clone();
                 async move {
-                    let stream = match stream {
-                        Ok(s) => s,
+                    match async {
+                        ta_res!(());
+                        htserve::root_handle_https(&log, tls_acceptor, routes, stream?).await?;
+                        return Ok(());
+                    }.await {
+                        Ok(_) => (),
                         Err(e) => {
-                            log.log_err(loga::DEBUG, e.context("Error opening peer stream"));
+                            log.log_err(loga::DEBUG, e.context("Error serving request"));
                             return;
                         },
-                    };
-                    let peer_addr = match stream.peer_addr() {
-                        Ok(a) => a,
-                        Err(e) => {
-                            log.log_err(loga::DEBUG, e.context("Error getting connection peer address"));
-                            return;
-                        },
-                    };
-                    let stream = match tls_acceptor.accept(stream).await {
-                        Ok(a) => a,
-                        Err(e) => {
-                            log.log_err(loga::DEBUG, e.context("Error setting up tls stream"));
-                            return;
-                        },
-                    };
-                    tokio::task::spawn(async move {
-                        match async move {
-                            hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-                                .serve_connection(
-                                    hyper_util::rt::TokioIo::new(stream),
-                                    hyper::service::service_fn(move |req| htserve::handle(routes.clone(), req)),
-                                )
-                                .await
-                                .map_err(
-                                    |e| loga::err_with("Error serving HTTP on connection", ea!(err = e.to_string())),
-                                )?;
-                            return Ok(()) as Result<(), loga::Error>;
-                        }.await {
-                            Ok(_) => (),
-                            Err(e) => {
-                                log.log_err(
-                                    loga::DEBUG,
-                                    e.context_with("Error serving connection", ea!(peer = peer_addr)),
-                                );
-                            },
-                        }
-                    });
+                    }
                 }
             },
         );

@@ -1899,11 +1899,12 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "htwrap"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faf921c5df7a321b4eae0c4a768b70609846f4a82f83d40872246521381ed422"
+checksum = "0e8ed1b3f028dddc511c9ab9688201637fc3eac024b551461b7089943bcd1be7"
 dependencies = [
  "async-stream",
+ "async-trait",
  "chrono",
  "futures",
  "hickory-resolver",
@@ -1918,7 +1919,9 @@ dependencies = [
  "rustls 0.22.4",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
+ "tokio-rustls 0.25.0",
  "tokio-stream",
  "tokio-util",
  "tower-service",

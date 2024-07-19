@@ -40,6 +40,17 @@ use {
     },
 };
 
+/// For TLS (cert-based identity verification) a connection may need to be made to
+/// a domain name whose address can't be resolved, and must instead be provided
+/// over a separate channel (ex: DoT via manual configuration or RA/DHCP ADN).
+///
+/// This is kind of a super-URI that may carry with it associated address
+/// information to be used instead of looking up the address.
+pub struct UrlPair {
+    pub url: Uri,
+    pub address: Option<IpAddr>,
+}
+
 pub async fn local_resolve_global_ip(
     restrict_name: &Option<String>,
     restrict_ip_version: &Option<IpVer>,
@@ -144,7 +155,7 @@ pub async fn remote_resolve_global_ip(
             log,
             &mut conn,
             1024,
-            Duration::seconds(10),
+            Duration::try_seconds(10).unwrap(),
             Request::builder()
                 .uri(lookup)
                 .header(hyper::header::HOST, lookup_host)
@@ -170,7 +181,7 @@ pub async fn resolve_global_ip(log: &Log, config: GlobalAddrConfig) -> Result<Ip
                     break res;
                 }
                 log.log_with(loga::INFO, "Waiting for public ip address on interface", ea!());
-                sleep(Duration::seconds(10).to_std().unwrap()).await;
+                sleep(Duration::try_seconds(10).unwrap().to_std().unwrap()).await;
             };
             log.log_with(loga::INFO, "Identified public ip address via interface", ea!(addr = res));
             res
@@ -186,7 +197,7 @@ pub async fn resolve_global_ip(log: &Log, config: GlobalAddrConfig) -> Result<Ip
                         );
                     },
                 }
-                sleep(Duration::seconds(10).to_std().unwrap()).await;
+                sleep(Duration::try_seconds(10).unwrap().to_std().unwrap()).await;
             };
             log.log_with(loga::INFO, "Identified public ip address via external lookup", ea!(addr = res));
             res

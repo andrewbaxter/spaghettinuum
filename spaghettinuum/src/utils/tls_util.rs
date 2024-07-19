@@ -41,7 +41,7 @@ pub fn encode_priv_pem(der: &[u8]) -> String {
 pub fn extract_expiry(pub_pem: &[u8]) -> Result<DateTime<Utc>, loga::Error> {
     return Ok(
         DateTime::<Utc>::UNIX_EPOCH +
-            Duration::seconds(
+            Duration::try_seconds(
                 Certificate::load_pem_chain(pub_pem)
                     .context("Received invalid pub cert pem from certifier")?
                     .first()
@@ -54,7 +54,7 @@ pub fn extract_expiry(pub_pem: &[u8]) -> Result<DateTime<Utc>, loga::Error> {
                     .unwrap()
                     .as_secs() as
                     i64,
-            ),
+            ).context("Expiry out of range")?,
     );
 }
 

@@ -8,7 +8,7 @@ use {
         ResultContext,
     },
     spaghettinuum::interface::config::{
-        DEFAULT_API_PORT,
+        node::api_config::DEFAULT_API_PORT,
         ENV_API_ADDR,
     },
     std::{
@@ -31,9 +31,8 @@ pub fn api_urls() -> Result<Vec<Uri>, loga::Error> {
                     Some(
                         Authority::try_from(
                             format!(
-                                "{}:{}",
-                                u.authority.map(|a| a.to_string()).unwrap_or(String::new()),
-                                DEFAULT_API_PORT
+                                "{}:443",
+                                u.authority.map(|a| a.to_string()).unwrap_or(String::new())
                             ).as_bytes(),
                         ).unwrap(),
                     );

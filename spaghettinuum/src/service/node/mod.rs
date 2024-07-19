@@ -80,17 +80,17 @@ const BUCKET_COUNT: usize = HASH_BITS - NEIGHBORHOOD_BITS + 1;
 const PARALLEL: usize = 3;
 
 fn req_timeout() -> Duration {
-    return Duration::seconds(2);
+    return Duration::try_seconds(2).unwrap();
 }
 
 // Republish stored values once an hour
 fn store_fresh_duration() -> Duration {
-    return Duration::hours(1);
+    return Duration::try_hours(1).unwrap();
 }
 
 // All stored values expire after 24h
 fn store_expire_duration() -> Duration {
-    return Duration::hours(24);
+    return Duration::try_hours(24).unwrap();
 }
 
 fn dist_<N: ArrayLength<u8>>(a: &GenericArray<u8, N>, b: &GenericArray<u8, N>) -> (usize, GenericArray<u8, N>) {
@@ -309,8 +309,8 @@ impl Node {
     /// * `persist_path`: Save state to this file before shutting down to make next startup
     ///   faster
     pub async fn new(
-        log: Log,
-        tm: TaskManager,
+        log: &Log,
+        tm: &TaskManager,
         bind_addr: StrSocketAddr,
         bootstrap: &[wire::node::latest::NodeInfo],
         persistent_path: &Path,
@@ -325,13 +325,13 @@ impl Node {
         let db_pool =
             setup_db(&persistent_path.join("node.sqlite3"), db::migrate)
                 .await
-                .stack_context(&log, "Error initializing database")?;
-        let db = db_pool.get().await.stack_context(&log, "Error getting database connection")?;
+                .stack_context(log, "Error initializing database")?;
+        let db = db_pool.get().await.stack_context(log, "Error getting database connection")?;
         match db
             .interact(|conn| db::secret_get(&conn))
             .await
-            .stack_context(&log, "Error interacting with database")?
-            .stack_context(&log, "Error retrieving secret")? {
+            .stack_context(log, "Error interacting with database")?
+            .stack_context(log, "Error retrieving secret")? {
             Some(s) => {
                 own_ident = s.get_identity();
                 own_secret = s;
@@ -346,8 +346,8 @@ impl Node {
             for e in db
                 .interact(|conn| db::neighbors_get(&conn))
                 .await
-                .stack_context(&log, "Error interacting with database")?
-                .stack_context(&log, "Error retrieving old neighbors")? {
+                .stack_context(log, "Error interacting with database")?
+                .stack_context(log, "Error retrieving old neighbors")? {
                 let state = match e {
                     wire::node::NodeState::V1(s) => s,
                 };
@@ -418,28 +418,32 @@ impl Node {
         }
 
         // Periodically save
-        tm.periodic("Node - persist state", Duration::minutes(10).to_std().unwrap(), cap_fn!(()(log, dir, db_pool) {
-            if !dir.0.dirty.swap(false, Ordering::Relaxed) {
-                return;
-            }
-            let db_pool = db_pool.clone();
-            match async {
-                db_pool.get().await.context("Error getting db connection")?.interact(move |conn| {
-                    db::secret_ensure(conn, &dir.0.own_secret)?;
-                    db::neighbors_clear(conn)?;
-                    for bucket in dir.0.buckets.lock().unwrap().buckets.clone().into_iter() {
-                        for n in bucket {
-                            db::neighbors_insert(conn, &wire::node::NodeState::V1(n))?;
+        tm.periodic(
+            "Node - persist state",
+            Duration::try_minutes(10).unwrap().to_std().unwrap(),
+            cap_fn!(()(log, dir, db_pool) {
+                if !dir.0.dirty.swap(false, Ordering::Relaxed) {
+                    return;
+                }
+                let db_pool = db_pool.clone();
+                match async {
+                    db_pool.get().await.context("Error getting db connection")?.interact(move |conn| {
+                        db::secret_ensure(conn, &dir.0.own_secret)?;
+                        db::neighbors_clear(conn)?;
+                        for bucket in dir.0.buckets.lock().unwrap().buckets.clone().into_iter() {
+                            for n in bucket {
+                                db::neighbors_insert(conn, &wire::node::NodeState::V1(n))?;
+                            }
                         }
-                    }
+                        return Ok(()) as Result<_, loga::Error>;
+                    }).await??;
                     return Ok(()) as Result<_, loga::Error>;
-                }).await??;
-                return Ok(()) as Result<_, loga::Error>;
-            }.await {
-                Ok(_) => { },
-                Err(e) => log.log_err(loga::WARN, e.context("Failed to persist state")),
-            }
-        }));
+                }.await {
+                    Ok(_) => { },
+                    Err(e) => log.log_err(loga::WARN, e.context("Failed to persist state")),
+                }
+            }),
+        );
 
         // Find timeouts
         tm.stream("Node - finish timed requests", find_timeout_recv, cap_fn!((e)(dir) {
@@ -470,50 +474,58 @@ impl Node {
         }));
 
         // Stored data expiry or maybe re-propagation
-        tm.periodic("Node - re-propagate/expire stored data", Duration::hours(1).to_std().unwrap(), cap_fn!(()(dir) {
-            let mut unfresh = vec![];
-            let now = Utc::now();
-            dir.0.store.lock().unwrap().retain(|k, v| {
-                if v.received + store_expire_duration() < now {
-                    return false;
+        tm.periodic(
+            "Node - re-propagate/expire stored data",
+            Duration::try_hours(1).unwrap().to_std().unwrap(),
+            cap_fn!(()(dir) {
+                let mut unfresh = vec![];
+                let now = Utc::now();
+                dir.0.store.lock().unwrap().retain(|k, v| {
+                    if v.received + store_expire_duration() < now {
+                        return false;
+                    }
+                    if v.updated + store_fresh_duration() < now {
+                        v.updated = now;
+                        unfresh.push((k.clone(), v.value.clone()));
+                    }
+                    return true;
+                });
+                for (k, v) in unfresh {
+                    dir.put(k, v).await;
                 }
-                if v.updated + store_fresh_duration() < now {
-                    v.updated = now;
-                    unfresh.push((k.clone(), v.value.clone()));
-                }
-                return true;
-            });
-            for (k, v) in unfresh {
-                dir.put(k, v).await;
-            }
-        }));
+            }),
+        );
 
         // Pings
-        tm.periodic("Node - neighbor aliveness", Duration::minutes(10).to_std().unwrap(), cap_fn!(()(dir, ping_timeout_write) {
-            for i in 0 .. NEIGHBORHOOD {
-                for leading_zeros in 0 .. BUCKET_COUNT {
-                    let (id, addr) =
-                        if let Some(node) = dir.0.buckets.lock().unwrap().buckets[leading_zeros].get(i) {
-                            (node.node.ident.clone(), node.node.address.clone())
-                        } else {
-                            continue;
+        tm.periodic(
+            "Node - neighbor aliveness",
+            Duration::try_minutes(10).unwrap().to_std().unwrap(),
+            cap_fn!(()(dir, ping_timeout_write) {
+                for i in 0 .. NEIGHBORHOOD {
+                    for leading_zeros in 0 .. BUCKET_COUNT {
+                        let (id, addr) =
+                            if let Some(node) = dir.0.buckets.lock().unwrap().buckets[leading_zeros].get(i) {
+                                (node.node.ident.clone(), node.node.address.clone())
+                            } else {
+                                continue;
+                            };
+                        let req_id = dir.0.next_req_id.fetch_add(1, Ordering::Relaxed);
+                        match dir.0.ping_states.lock().unwrap().entry(id.clone()) {
+                            Entry::Occupied(_) => continue,
+                            Entry::Vacant(e) => e.insert(PingState {
+                                req_id: req_id,
+                                bucket_i: leading_zeros,
+                            }),
                         };
-                    let req_id = dir.0.next_req_id.fetch_add(1, Ordering::Relaxed);
-                    match dir.0.ping_states.lock().unwrap().entry(id.clone()) {
-                        Entry::Occupied(_) => continue,
-                        Entry::Vacant(e) => e.insert(PingState {
-                            req_id: req_id,
-                            bucket_i: leading_zeros,
-                        }),
-                    };
-                    dir.send(&addr.0, wire::node::Protocol::V1(wire::node::latest::Message::Ping)).await;
-                    ping_timeout_write.unbounded_send(NextPingTimeout {
-                        end: Utc::now() + req_timeout(),
-                        key: (id, req_id),
-                    }).unwrap();
+                        dir.send(&addr.0, wire::node::Protocol::V1(wire::node::latest::Message::Ping)).await;
+                        ping_timeout_write.unbounded_send(NextPingTimeout {
+                            end: Utc::now() + req_timeout(),
+                            key: (id, req_id),
+                        }).unwrap();
+                    }
                 }
-            }
-        }));
+            }),
+        );
 
         // Ping timeouts
         tm.stream("Node - ping timeouts", ping_timeout_recv, cap_fn!((e)(dir) {
@@ -596,7 +608,7 @@ impl Node {
         tm.task("Node - retry startup find once", {
             let dir = dir.clone();
             async move {
-                sleep(Duration::seconds(60).to_std().unwrap()).await;
+                sleep(Duration::try_seconds(60).unwrap().to_std().unwrap()).await;
                 dir.start_find(FindGoal::Coord(node_ident_coord(&dir.0.own_ident)), None).await;
             }
         });
@@ -1272,7 +1284,7 @@ impl Node {
                             new_announced = new_content.announced;
                         },
                     }
-                    if new_announced > Utc::now() + Duration::minutes(1) {
+                    if new_announced > Utc::now() + Duration::try_minutes(1).unwrap() {
                         return Err(log.err("Store request published date too far in the future"));
                     }
                     match self.0.store.lock().unwrap().entry(m.key) {

@@ -90,7 +90,7 @@ pub mod db;
 pub const CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";
 
 pub fn publish_ssl_ttl() -> Duration {
-    return Duration::minutes(60);
+    return Duration::try_minutes(60).unwrap();
 }
 
 /// Requests a TLS public cert from the certifier for the `.s` domain associated
@@ -166,7 +166,7 @@ pub async fn request_cert_stream(
 
     fn decide_refresh_at(pub_pem: &str) -> Result<DateTime<Utc>, loga::Error> {
         let not_after = extract_expiry(pub_pem.as_bytes())?;
-        return Ok(not_after - Duration::hours(24 * 7) - (publish_ssl_ttl() * 2));
+        return Ok(not_after - Duration::try_hours(24 * 7).unwrap() - (publish_ssl_ttl() * 2));
     }
 
     let refresh_at =
@@ -237,6 +237,8 @@ impl ResolvesServerCert for SimpleResolvesServerCert {
 /// Produce a rustls-compatible server cert resolver with an automatically updated
 /// cert.  This is a managed task that maintains state using a database at the
 /// provided location.
+///
+/// Returns `None` if the task manager is shut down before initial setup completes.
 pub async fn htserve_tls_resolves(
     log: &Log,
     persistent_dir: &Path,
@@ -312,7 +314,7 @@ pub async fn htserve_tls_resolves(
                             loga::WARN,
                             e.context_with("Error fetching initial certificates, retrying", ea!(subsys = "self_tls")),
                         );
-                        sleep(Duration::seconds(60).to_std().unwrap()).await;
+                        sleep(Duration::try_seconds(60).unwrap().to_std().unwrap()).await;
                     },
                 }
             };

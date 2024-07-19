@@ -82,8 +82,8 @@ async fn main() {
             create_dir_all(&path).await.unwrap();
             let node =
                 Node::new(
-                    Log::new(),
-                    tm.clone(),
+                    &Log::new(),
+                    &tm,
                     StrSocketAddr::from(addr.clone()),
                     &prev_node.take().map(|(addr, id)| NodeInfo {
                         address: addr,

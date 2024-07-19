@@ -29,7 +29,6 @@ pub mod publish_util;
 pub mod db_util;
 pub mod time_util;
 pub mod blob;
-pub mod htserve;
 pub mod signed;
 pub mod fs_util;
 
@@ -176,7 +175,7 @@ macro_rules! ta_vis_res{
                 panic!();
             }
             return std:: result:: Result::< $t,
-            crate::utils::VisErr > ::Ok(unreachable_value());
+            $crate:: utils:: VisErr >:: Ok(unreachable_value());
         }
     }
 }

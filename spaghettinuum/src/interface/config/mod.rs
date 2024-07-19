@@ -1,6 +1,5 @@
-use aargvark::Aargvark;
+use {aargvark::Aargvark};
 
-pub const DEFAULT_API_PORT: u32 = 12434;
 
 /// URLs of resolver/publishers, for `spagh` CLI. Comma separated if providing
 /// multiple.

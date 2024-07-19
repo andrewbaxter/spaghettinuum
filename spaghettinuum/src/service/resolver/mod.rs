@@ -1,7 +1,6 @@
 use {
     crate::{
         bb,
-        cap_fn,
         interface::{
             stored::{
                 self,
@@ -21,11 +20,6 @@ use {
         utils::{
             blob::Blob,
             db_util::setup_db,
-            htserve::{
-                self,
-                Response,
-                Routes,
-            },
             signed::IdentSignatureMethods,
             tls_util::cert_der_hash,
             ResultVisErr,
@@ -38,9 +32,17 @@ use {
         Utc,
     },
     http_body_util::Empty,
-    htwrap::htreq::{
-        self,
-        Conn,
+    htwrap::{
+        htreq::{
+            self,
+            Conn,
+        },
+        htserve::{
+            self,
+            response_200_json,
+            response_400,
+            response_503,
+        },
     },
     hyper::{
         body::Bytes,
@@ -268,7 +270,7 @@ impl Resolver {
             for k in request_keys {
                 if let Some(found) = self.0.cache.get(&(ident.clone(), k.to_string())) {
                     let (expiry, v) = found;
-                    if expiry + Duration::minutes(5) < now {
+                    if expiry + Duration::try_minutes(5).unwrap() < now {
                         break 'missing;
                     }
                     let v = match v {
@@ -364,7 +366,7 @@ impl Resolver {
                             log,
                             &mut conn,
                             128 * 1024 * request_keys.len(),
-                            Duration::seconds(10),
+                            Duration::try_seconds(10).unwrap(),
                             Request::builder()
                                 .method("GET")
                                 .uri(url)
@@ -427,7 +429,7 @@ impl Resolver {
 
 /// Launch a publisher into the task manager and return the API endpoints for
 /// attaching to the user-facing HTTP servers.
-pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> Routes {
+pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter<htserve::Body> {
     struct Inner {
         resolver: Resolver,
         log: Log,
@@ -437,12 +439,13 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> Routes {
         resolver: resolver.clone(),
         log: log,
     });
-    let mut r = Routes::new();
-    r.add("v1", htserve::Leaf::new().get(cap_fn!((mut req)(state) {
+    let mut r = htserve::PathRouter::default();
+    r.insert("/v1", Box::new(htwrap::handler!((state: Arc<Inner>)(args -> htserve:: Body) {
         match async {
             ta_vis_res!(wire::api::resolve::v1::ResolveValues);
-            let ident_src = req.path.pop().context("Missing identity final path element").err_external()?;
-            let keys = req.query.split(",").map(|x| match urlencoding::decode(&x) {
+            let ident_src =
+                args.subpath.strip_prefix("/").context("Missing identity final path element").err_external()?;
+            let keys = args.query.split(",").map(|x| match urlencoding::decode(&x) {
                 Ok(x) => x.to_string(),
                 Err(_) => x.to_string(),
             }).collect_vec();
@@ -461,15 +464,13 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> Routes {
                 wire::resolve::ResolveKeyValues::V1(kvs) => kvs,
             }));
         }.await {
-            Ok(r) => Response::json(r),
-            Err(e) => match e {
-                VisErr::External(e) => {
-                    return Response::ExternalErr(e.to_string());
-                },
-                VisErr::Internal(e) => {
-                    state.log.log_err(loga::WARN, e.context("Error responding to query"));
-                    return Response::InternalErr;
-                },
+            Ok(r) => response_200_json(r),
+            Err(VisErr::External(e)) => {
+                return response_400(e);
+            },
+            Err(VisErr::Internal(e)) => {
+                state.log.log_err(loga::WARN, e.context("Error responding to query"));
+                return response_503();
             },
         }
     })));
