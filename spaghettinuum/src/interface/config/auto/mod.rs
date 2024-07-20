@@ -16,20 +16,9 @@ use {
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub struct ServeConfig {
-    /// Where to store TLS certs.  This directory and its parents will be created if
-    /// they don't already exist.  The certs will be named `pub.pem` and `priv.pem`.
-    pub cert_dir: PathBuf,
-    /// How to serve content.  If not specified, just keeps certificates in the cert
-    /// dir up to date.
-    #[serde(default)]
-    pub content: Vec<ContentConfig>,
-}
-
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
 pub struct Config {
     /// How to identify and select globally routable IP addresses for this host
+    #[serde(default)]
     pub global_addrs: Vec<GlobalAddrConfig>,
     /// Identity to use for publishing
     pub identity: IdentitySecretArg,
@@ -38,9 +27,11 @@ pub struct Config {
     /// published.
     #[serde(default)]
     pub ssh_host_keys: Vec<PathBuf>,
-    /// Url of publisher where this identity is authorized to publish
-    pub publishers: Vec<String>,
-    /// Configure HTTPS serving using certipasta certs
+    /// Where to store TLS certs.  This directory and its parents will be created if
+    /// they don't already exist.  The certs will be named `pub.pem` and `priv.pem`.
     #[serde(default)]
-    pub serve: Option<ServeConfig>,
+    pub cert_dir: Option<PathBuf>,
+    /// Content to serve, in addition to keeping certs up to date.
+    #[serde(default)]
+    pub content: Vec<ContentConfig>,
 }

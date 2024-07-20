@@ -251,7 +251,7 @@ async fn serve<
     return Ok(());
 }
 
-pub async fn serve_content(
+pub async fn start_serving_content(
     log: &Log,
     tm: &TaskManager,
     resolves_cert: Arc<dyn ResolvesServerCert>,

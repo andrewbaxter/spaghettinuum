@@ -1,10 +1,7 @@
 use {
-    super::utils::api_urls,
-    http::Uri,
     htwrap::{
         htreq::{
             self,
-            connect,
             Conn,
         },
         UriJoin,
@@ -23,6 +20,12 @@ use {
                 AdminAllowIdentityBody,
                 AdminIdentity,
             },
+        },
+        publishing::system_publisher_url_pairs,
+        resolving::{
+            connect_publisher_node,
+            system_resolver_url_pairs,
+            UrlPair,
         },
         ta_res,
     },
@@ -123,13 +126,13 @@ async fn api_list<
 >(
     log: &Log,
     conn: &mut Conn,
-    base_url: &Uri,
+    base_url: &UrlPair,
     path: &str,
     get_key: fn(&T) -> String,
 ) -> Result<Vec<T>, loga::Error> {
     let mut out = vec![];
     let admin_headers = admin_headers()?;
-    let mut res = htreq::get(log, conn, &base_url.join(path), &admin_headers, 1024 * 1024).await?;
+    let mut res = htreq::get(log, conn, &base_url.url.join(path), &admin_headers, 1024 * 1024).await?;
     loop {
         let page: Vec<T> =
             serde_json::from_slice(&res).context("Failed to parse response page from publisher admin")?;
@@ -145,7 +148,7 @@ async fn api_list<
             htreq::get(
                 log,
                 conn,
-                &base_url.join(format!("{}?after={}", path, after)),
+                &base_url.url.join(format!("{}?after={}", path, after)),
                 &admin_headers,
                 1024 * 1024,
             ).await?;
@@ -154,22 +157,30 @@ async fn api_list<
 }
 
 pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
+    let resolvers = system_resolver_url_pairs(log)?;
+    let publishers = system_publisher_url_pairs(log)?;
     match config {
         args::Admin::HealthDetail => {
-            for url in api_urls()? {
-                let url = url.join("admin/health");
-                log.log_with(loga::DEBUG, "Sending health detail request (GET)", ea!(url = url));
-                htreq::get(log, &mut connect(&url).await?, &url, &admin_headers()?, 10 * 1024).await?;
+            for pair in publishers {
+                let pair = pair.join("admin/health");
+                log.log_with(loga::DEBUG, "Sending health detail request (GET)", ea!(url = pair));
+                htreq::get(
+                    log,
+                    &mut connect_publisher_node(log, &resolvers, &pair).await?,
+                    &pair.url,
+                    &admin_headers()?,
+                    10 * 1024,
+                ).await?;
             }
         },
         args::Admin::AllowIdentity(config) => {
-            for url in api_urls()? {
-                let url = url.join(format!("publish/admin/allowed_identities/{}", config.identity_id));
-                log.log_with(loga::DEBUG, "Sending register request (POST)", ea!(url = url));
+            for pair in publishers {
+                let pair = pair.join(format!("publish/admin/allowed_identities/{}", config.identity_id));
+                log.log_with(loga::DEBUG, "Sending register request (POST)", ea!(url = pair));
                 htreq::post_json::<()>(
                     log,
-                    &mut connect(&url).await?,
-                    &url,
+                    &mut connect_publisher_node(log, &resolvers, &pair).await?,
+                    &pair.url,
                     &admin_headers()?,
                     AdminAllowIdentityBody { group: config.group.clone().unwrap_or_default() },
                     100,
@@ -177,22 +188,30 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
             }
         },
         args::Admin::DisallowIdentity(config) => {
-            for url in api_urls()? {
-                let url = url.join(format!("publish/admin/allowed_identities/{}", config.identity_id));
-                log.log_with(loga::DEBUG, "Sending unregister request (POST)", ea!(url = url));
-                htreq::delete(log, &mut connect(&url).await?, &url, &admin_headers()?, 100).await?;
+            for pair in publishers {
+                let pair = pair.join(format!("publish/admin/allowed_identities/{}", config.identity_id));
+                log.log_with(loga::DEBUG, "Sending unregister request (POST)", ea!(url = pair));
+                htreq::delete(
+                    log,
+                    &mut connect_publisher_node(log, &resolvers, &pair).await?,
+                    &pair.url,
+                    &admin_headers()?,
+                    100,
+                ).await?;
             }
         },
         args::Admin::ListAllowedIdentities => {
             let mut errs = vec![];
-            for url in api_urls()? {
+            for pair in publishers {
                 match async {
                     ta_res!(());
                     let out =
                         api_list::<AdminIdentity>(
                             log,
-                            &mut connect(&url).await.context("Error connecting to server")?,
-                            &url,
+                            &mut connect_publisher_node(log, &resolvers, &pair)
+                                .await
+                                .context("Error connecting to server")?,
+                            &pair,
                             "publish/admin/allowed_identities",
                             |v| v.identity.to_string(),
                         )
@@ -205,7 +224,7 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
                         return Ok(());
                     },
                     Err(e) => {
-                        errs.push(e.context_with("Error reaching publisher", ea!(url = url)));
+                        errs.push(e.context_with("Error reaching publisher", ea!(url = pair)));
                     },
                 }
             }
@@ -213,14 +232,16 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
         },
         args::Admin::ListAnnouncements => {
             let mut errs = vec![];
-            for url in api_urls()? {
+            for pair in publishers {
                 match async {
                     ta_res!(());
                     let out =
                         api_list::<Identity>(
                             log,
-                            &mut connect(&url).await.context("Error connecting to server")?,
-                            &url,
+                            &mut connect_publisher_node(log, &resolvers, &pair)
+                                .await
+                                .context("Error connecting to server")?,
+                            &pair,
                             "publish/admin/announcements",
                             |v| v.to_string(),
                         )
@@ -233,7 +254,7 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
                         return Ok(());
                     },
                     Err(e) => {
-                        errs.push(e.context_with("Error reaching publisher", ea!(url = url)));
+                        errs.push(e.context_with("Error reaching publisher", ea!(url = pair)));
                     },
                 }
             }
@@ -241,15 +262,16 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
         },
         args::Admin::ListKeys(config) => {
             let mut errs = vec![];
-            for url in api_urls()? {
+            for pair in publishers {
+                let pair = pair.join(format!("publish/admin/keys/{}", config.identity));
                 match async {
                     ta_res!(());
                     println!(
                         "{}",
                         htreq::get_text(
                             log,
-                            &mut connect(&url).await?,
-                            &url.join(format!("publish/admin/keys/{}", config.identity)),
+                            &mut connect_publisher_node(log, &resolvers, &pair).await?,
+                            &pair.url,
                             &admin_headers()?,
                             1024 * 1024,
                         ).await?
@@ -260,20 +282,21 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
                         return Ok(());
                     },
                     Err(e) => {
-                        errs.push(e.context_with("Error reaching publisher", ea!(url = url)));
+                        errs.push(e.context_with("Error reaching publisher", ea!(url = pair)));
                     },
                 }
             }
             return Err(loga::agg_err("Error making request", errs));
         },
         args::Admin::SyncAllowedIdentities(sync) => {
-            for url in api_urls()? {
-                let mut conn = connect(&url).await.context("Error connecting to server")?;
+            for pair in publishers {
+                let mut conn =
+                    connect_publisher_node(log, &resolvers, &pair).await.context("Error connecting to server")?;
                 let identities =
                     api_list::<AdminIdentity>(
                         log,
                         &mut conn,
-                        &url,
+                        &pair,
                         "publish/admin/allowed_identities",
                         |v| v.identity.to_string(),
                     )
@@ -293,7 +316,7 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
                         htreq::post(
                             log,
                             &mut conn,
-                            &url.join(format!("publish/admin/allowed_identities/{}", identity_id)),
+                            &pair.url.join(format!("publish/admin/allowed_identities/{}", identity_id)),
                             &admin_headers()?,
                             vec![],
                             100,
@@ -303,7 +326,7 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
                         htreq::delete(
                             log,
                             &mut conn,
-                            &url.join(format!("publish/admin/allowed_identities/{}", identity_id)),
+                            &pair.url.join(format!("publish/admin/allowed_identities/{}", identity_id)),
                             &admin_headers()?,
                             100,
                         ).await?;

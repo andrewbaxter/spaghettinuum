@@ -7,32 +7,50 @@ use {
         bb,
         interface::stored::{
             self,
+            cert::X509_EXT_SPAGH_OID,
             identity::Identity,
         },
     },
     chrono::{
         DateTime,
+        Datelike,
         Duration,
         Utc,
     },
     der::{
+        oid::AssociatedOid,
         Decode,
         DecodePem,
         Encode,
     },
+    futures::Future,
     loga::ResultContext,
+    p256::{
+        ecdsa::DerSignature,
+    },
     pem::Pem,
+    rand::RngCore,
     rustls::client::WebPkiServerVerifier,
     sha2::{
         Digest,
         Sha256,
     },
+    signature::SignerMut,
     std::{
         collections::HashSet,
+        str::FromStr,
         sync::Arc,
     },
-    x509_cert::Certificate,
+    x509_cert::{
+        builder::Builder,
+        ext::AsExtension,
+        Certificate,
+    },
 };
+
+pub fn encode_pub_pem(der: &[u8]) -> String {
+    return Pem::new("CERTIFICATE", der).to_string();
+}
 
 pub fn encode_priv_pem(der: &[u8]) -> String {
     return Pem::new("PRIVATE KEY", der).to_string();
@@ -201,17 +219,12 @@ impl rustls::client::danger::ServerCertVerifier for UnverifyingVerifier {
 pub struct SpaghTlsClientVerifier {
     /// Any cert whose DER (SHA256) hash matches one of these is considered verified.
     pub hashes: HashSet<Blob>,
-    /// Any cert with extension data containing a signature of the public key via this
-    /// identity is considered verified.
-    // TODO
-    pub identity: Option<Identity>,
-    pub inner: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+    pub inner: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
 }
 
 impl SpaghTlsClientVerifier {
-    pub fn new(
+    pub fn with_root_cas(
         hashes: HashSet<Blob>,
-        identity: Option<Identity>,
     ) -> Result<Arc<dyn rustls::client::danger::ServerCertVerifier>, loga::Error> {
         let mut roots = rustls::RootCertStore::empty();
         for cert in rustls_native_certs::load_native_certs().expect("could not load platform certs") {
@@ -220,8 +233,7 @@ impl SpaghTlsClientVerifier {
         let inner = WebPkiServerVerifier::builder(Arc::new(roots)).build()?;
         return Ok(Arc::new(Self {
             hashes: hashes,
-            identity: identity,
-            inner: inner,
+            inner: Some(inner),
         }));
     }
 }
@@ -254,8 +266,7 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
             };
             let Some(
                 ext
-            ) = cert.tbs_certificate.extensions.iter(
-            ).flatten().find(|x| x.extn_id == stored::cert::x509_ext_pagh_oid()) else {
+            ) = cert.tbs_certificate.extensions.iter().flatten().find(|x| x.extn_id == X509_EXT_SPAGH_OID) else {
                 break;
             };
             let Ok(ext) = stored:: cert:: X509ExtSpagh:: from_bytes(&ext.extn_value.as_bytes()) else {
@@ -291,7 +302,12 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
         }
 
         // Fall back to centralized methods
-        return self.inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now);
+        if let Some(inner) = &self.inner {
+            return inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now);
+        }
+
+        // Default reject
+        return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::ApplicationVerificationFailure));
     }
 
     fn verify_tls12_signature(
@@ -315,4 +331,129 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         return default_verify_schemes();
     }
+}
+
+/// Produce a random serial number for a certificate
+pub fn rand_serial() -> x509_cert::serial_number::SerialNumber {
+    let mut data = [0u8; 20];
+    rand::thread_rng().fill_bytes(&mut data);
+
+    // Big-endian positive, for whatever meaning the spec has remaining
+    data[0] &= 0x7F;
+    return x509_cert::serial_number::SerialNumber::new(&data).unwrap();
+}
+
+/// Convert time from chrono into x509 time format (day granularity)
+pub fn to_x509_time(t: DateTime<Utc>) -> x509_cert::time::Time {
+    return x509_cert::time::Time::GeneralTime(
+        der::asn1::GeneralizedTime::from_date_time(
+            der::DateTime::new(t.year() as u16, t.month() as u8, t.day() as u8, 0, 0, 0).unwrap(),
+        ),
+    );
+}
+
+pub async fn create_leaf_cert_der<
+    S,
+    S2,
+    S2F,
+>(
+    requester_key_info: x509_cert::spki::SubjectPublicKeyInfoOwned,
+    fqdn: &str,
+    signature_ext: Option<Blob>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    issuer_signer: S,
+    issuer_signer2: S2,
+    issuer_fqdn: &str,
+) -> Result<Blob, loga::Error>
+where
+    S: signature::Keypair + x509_cert::spki::DynSignatureAlgorithmIdentifier,
+    S::VerifyingKey: p256::pkcs8::EncodePublicKey,
+    S2F: Future<Output = Result<Blob, loga::Error>>,
+    S2: FnOnce(Blob) -> S2F {
+    let mut cert_builder =
+        x509_cert::builder::CertificateBuilder::new(
+            x509_cert::builder::Profile::Leaf {
+                issuer: x509_cert::name::RdnSequence::from_str(&format!("CN={}", issuer_fqdn)).unwrap(),
+                enable_key_agreement: true,
+                enable_key_encipherment: true,
+            },
+            rand_serial(),
+            x509_cert::time::Validity {
+                not_before: to_x509_time(start),
+                not_after: to_x509_time(end),
+            },
+            x509_cert::name::RdnSequence::from_str(&format!("CN={}", fqdn)).unwrap(),
+            requester_key_info,
+            &issuer_signer,
+        ).unwrap();
+    cert_builder
+        .add_extension(
+            &x509_cert::ext::pkix::SubjectAltName(
+                vec![x509_cert::ext::pkix::name::GeneralName::DnsName(der::asn1::Ia5String::new(&fqdn).unwrap())],
+            ),
+        )
+        .unwrap();
+    if let Some(signature_ext) = signature_ext {
+        struct SigExt(Blob);
+
+        impl AssociatedOid for SigExt {
+            const OID: der::oid::ObjectIdentifier = X509_EXT_SPAGH_OID;
+        }
+
+        impl der::Encode for SigExt {
+            fn encoded_len(&self) -> der::Result<der::Length> {
+                return Ok(der::Length::new(self.0.len() as u16));
+            }
+
+            fn encode(&self, encoder: &mut impl der::Writer) -> der::Result<()> {
+                return Ok(encoder.write(&self.0)?);
+            }
+        }
+
+        impl AsExtension for SigExt {
+            fn critical(&self, _subject: &x509_cert::name::Name, _extensions: &[x509_cert::ext::Extension]) -> bool {
+                return false;
+            }
+        }
+
+        cert_builder.add_extension(&SigExt(signature_ext)).unwrap();
+    }
+    let csr_der = cert_builder.finalize().unwrap();
+    let signature = issuer_signer2(Blob::from(csr_der)).await?;
+    return Ok(
+        cert_builder
+            .assemble(der::asn1::BitString::from_bytes(&signature).context("Error building signature bitstring")?)
+            .context("Error assembling cert")?
+            .to_der()
+            .context("Error building PEM for cert")?
+            .blob(),
+    );
+}
+
+pub async fn create_leaf_cert_der_local(
+    key: p256::ecdsa::SigningKey,
+    fqdn: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    signature_ext: Option<Blob>,
+    issuer_fqdn: &str,
+) -> Result<Blob, loga::Error> {
+    return Ok(
+        create_leaf_cert_der(
+            x509_cert::spki::SubjectPublicKeyInfoOwned::from_key(*key.verifying_key()).unwrap(),
+            fqdn,
+            signature_ext,
+            start,
+            end,
+            key.clone(),
+            {
+                let mut key = key;
+                move |csr| async move {
+                    return Ok(SignerMut::<DerSignature>::try_sign(&mut key, &csr)?.to_bytes().blob());
+                }
+            },
+            issuer_fqdn,
+        ).await?.blob(),
+    );
 }

@@ -5,20 +5,17 @@ use {
             config::node::resolver_config::DnsBridgeConfig,
             stored::{
                 self,
-                record::{
-                    dns_record::{
-                        format_dns_key,
-                        COMMON_HTTP_RECORD_TYPES,
-                    },
-                },
                 identity::Identity,
+                record::dns_record::{
+                    format_dns_key,
+                    COMMON_HTTP_RECORD_TYPES,
+                },
             },
             wire,
         },
         ta_res,
         ta_vis_res,
         utils::{
-            db_util::setup_db,
             ResultVisErr,
             VisErr,
         },
@@ -80,12 +77,7 @@ use {
         Log,
         ResultContext,
     },
-    std::{
-        path::Path,
-        sync::{
-            Arc,
-        },
-    },
+    std::sync::Arc,
     taskmanager::TaskManager,
     tokio::{
         net::{
@@ -96,23 +88,13 @@ use {
     },
 };
 
-pub mod db;
-
 pub async fn start_dns_bridge(
     log: &Log,
     tm: &TaskManager,
     resolver: &Resolver,
+    certs: Arc<dyn rustls_21::server::ResolvesServerCert>,
     dns_config: DnsBridgeConfig,
-    persistent_dir: &Path,
 ) -> Result<(), loga::Error> {
-    let log = log.fork(ea!(sys = "dns"));
-    let log = &log;
-    let db_pool =
-        setup_db(&persistent_dir.join("resolver_dns_bridge.sqlite3"), db::migrate)
-            .await
-            .stack_context(log, "Error initializing database")?;
-    db_pool.get().await?.interact(|conn| db::dot_certs_setup(conn)).await??;
-
     struct HandlerInner {
         log: Log,
         resolver: Resolver,
@@ -591,12 +573,20 @@ pub async fn start_dns_bridge(
     }
     for bind_addr in &dns_config.tcp_bind_addrs {
         let bind_addr = bind_addr.resolve()?;
-        server.register_listener(
-            TcpListener::bind(&bind_addr)
-                .await
-                .stack_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
-            Duration::try_seconds(10).unwrap().to_std().unwrap(),
-        );
+        server
+            .register_tls_listener_with_tls_config(
+                TcpListener::bind(&bind_addr)
+                    .await
+                    .stack_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
+                Duration::try_seconds(10).unwrap().to_std().unwrap(),
+                Arc::new(
+                    rustls_21::ServerConfig::builder()
+                        .with_safe_defaults()
+                        .with_no_client_auth()
+                        .with_cert_resolver(certs.clone()),
+                ),
+            )
+            .context_with("Error starting DoT server", ea!(socket = bind_addr))?;
     }
     tm.critical_task("DNS bridge - server", {
         let log = log.clone();

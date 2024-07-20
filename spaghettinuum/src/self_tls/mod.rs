@@ -1,19 +1,67 @@
-//! Methods for obtaining a `.s` TLS cert
+//! Methods for obtaining a `.s` TLS cert. Certs can be authenticated in three ways:
+//!
+//! * Out of band, in a separate spaghettinuum record published alongside address
+//!   records
+//!
+//!   This is most flexible, and can be revoked within the time of the TTL of the
+//!   record by publishing a new record, but requires a secured connection to a
+//!   resolver (i.e. can't be done for the resolver API itself). This requires client
+//!   support.
+//!
+//!   Any cert, with any signature (self signed, etc) can be used since any cert
+//!   published in a record is treated as valid.
+//!
+//! * Signed by the `certipasta` `.s` CA, with the CA cert installed on the local system
+//!
+//!   This is centralized but doesn't require client support as long as the CA cert is
+//!   installed (which is a common procedure).
+//!
+//! * With a spaghettinuum extension signing the cert SPKI with the identity
+//!
+//!   This is also decentralized, and validation can be done without resolver access,
+//!   but revocation is more difficult. This is used for resolvers, whose own
+//!   identities are not important and can be discarded/replaced if compromised. This
+//!   requires client support.
 use {
-    std::{
-        collections::HashMap,
-        path::Path,
-        str::FromStr,
-        sync::{
-            Arc,
-            Mutex,
-            RwLock,
+    crate::{
+        bb,
+        interface::{
+            stored::{
+                self,
+                self_tls::latest::CertPair,
+            },
+            wire::{
+                self,
+                api::publish::v1::PublishRequestContent,
+            },
+        },
+        publishing::Publisher,
+        ta_res,
+        utils::{
+            blob::{
+                ToBlob,
+            },
+            db_util::{
+                self,
+                DbTx,
+            },
+            fs_util::write,
+            identity_secret::IdentitySigner,
+            time_util::ToInstant,
+            tls_util::{
+                create_leaf_cert_der_local,
+                encode_priv_pem,
+                encode_pub_pem,
+                extract_expiry,
+                load_certified_key,
+                rustls21_load_certified_key,
+            },
         },
     },
     chrono::{
-        Utc,
-        Duration,
         DateTime,
+        Duration,
+        Utc,
     },
     der::{
         Encode,
@@ -26,8 +74,16 @@ use {
         ResultContext,
     },
     p256::pkcs8::EncodePrivateKey,
-    rustls::{
-        server::ResolvesServerCert,
+    rustls::server::ResolvesServerCert,
+    std::{
+        collections::HashMap,
+        path::Path,
+        str::FromStr,
+        sync::{
+            Arc,
+            Mutex,
+            RwLock,
+        },
     },
     taskmanager::TaskManager,
     tokio::{
@@ -47,41 +103,7 @@ use {
         StreamExt,
     },
     x509_cert::{
-        spki::{
-            SubjectPublicKeyInfoOwned,
-        },
-    },
-    crate::{
-        bb,
-        interface::{
-            stored::{
-                self,
-                self_tls::{
-                    latest::CertPair,
-                },
-            },
-            wire::{
-                self,
-                api::publish::v1::PublishRequestContent,
-            },
-        },
-        publishing::Publisher,
-        ta_res,
-        utils::{
-            identity_secret::IdentitySigner,
-            blob::ToBlob,
-            db_util::{
-                self,
-                DbTx,
-            },
-            fs_util::write,
-            time_util::ToInstant,
-            tls_util::{
-                encode_priv_pem,
-                extract_expiry,
-                load_certified_key,
-            },
-        },
+        spki::SubjectPublicKeyInfoOwned,
     },
 };
 
@@ -93,65 +115,85 @@ pub fn publish_ssl_ttl() -> Duration {
     return Duration::try_minutes(60).unwrap();
 }
 
+#[derive(Clone, Copy)]
+pub struct RequestCertOptions {
+    /// Get a certificate signed by the `certipasta` CA cert.
+    pub certifier: bool,
+    /// Add the spaghettinuum identity signature extension to the cert.
+    pub signature: bool,
+}
+
 /// Requests a TLS public cert from the certifier for the `.s` domain associated
 /// with the provided identity and returns the result as PEM. This function
 /// generates a new private/public key pair for the cert.
 pub async fn request_cert(
     log: &Log,
     message_signer: Arc<Mutex<dyn IdentitySigner>>,
+    options: RequestCertOptions,
 ) -> Result<CertPair, loga::Error> {
-    let priv_key = p256::SecretKey::random(&mut rand::thread_rng());
-    let pub_pem =
-        request_cert_with_key(
-            log,
-            &SubjectPublicKeyInfoOwned::from_key(priv_key.public_key()).unwrap(),
-            message_signer,
+    let priv_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+    let requester_spki_der =
+        SubjectPublicKeyInfoOwned::from_key(priv_key.verifying_key().clone()).unwrap().to_der().unwrap().blob();
+    let sig_ext = if options.signature {
+        Some(
+            message_signer
+                .lock()
+                .unwrap()
+                .sign(&requester_spki_der)
+                .context("Error signing SPKI der for spaghettinuum extension")?
+                .1,
         )
-            .await
-            .context("Error requesting api server tls cert from certifier")?
-            .pub_pem;
+    } else {
+        None
+    };
     let priv_pem = encode_priv_pem(priv_key.to_pkcs8_der().unwrap().as_bytes());
-    log.log_with(loga::DEBUG, "Received cert", ea!(pub_pem = pub_pem));
+    let pub_pem;
+    if options.certifier {
+        let text = serde_json::to_vec(&wire::certify::latest::CertRequestParams {
+            stamp: Utc::now(),
+            sig_ext: sig_ext,
+            spki_der: requester_spki_der,
+        }).unwrap().blob();
+        log.log_with(loga::DEBUG, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
+        let (ident, signature) =
+            message_signer.lock().unwrap().sign(&text).context("Error signing cert request params")?;
+        let body = serde_json::to_vec(&wire::certify::CertRequest::V1(wire::certify::latest::CertRequest {
+            identity: ident,
+            params: wire::certify::latest::SignedCertRequestParams {
+                sig: signature,
+                text: text,
+            },
+        })).unwrap();
+        let url = Uri::from_str(CERTIFIER_URL).unwrap();
+        let log = log.fork(ea!(url = url));
+        log.log_with(loga::DEBUG, "Sending cert request body", ea!(body = String::from_utf8_lossy(&body)));
+        let body =
+            htreq::post(
+                &log,
+                &mut htreq::connect(&url).await.stack_context(&log, "Error connecting to certifier url")?,
+                &url,
+                &HashMap::new(),
+                body,
+                100 * 1024,
+            ).await?;
+        let resp =
+            serde_json::from_slice::<wire::certify::latest::CertResponse>(
+                &body,
+            ).context("Error parsing cert request response body as json")?;
+        pub_pem = resp.pub_pem;
+        log.log_with(loga::DEBUG, "Received cert", ea!(pub_pem = pub_pem));
+    } else {
+        let identity = message_signer.lock().unwrap().identity()?;
+        let now = Utc::now();
+        let fqdn = format!("{}.s", identity);
+        let pub_der =
+            create_leaf_cert_der_local(priv_key, &fqdn, now, now + Duration::days(90), sig_ext, &fqdn).await?;
+        pub_pem = encode_pub_pem(&pub_der);
+    }
     return Ok(CertPair {
         priv_pem: priv_pem,
         pub_pem: pub_pem,
     });
-}
-
-/// Requests a TLS public cert from the certifier for the `.s` domain associated
-/// with the provided identity and private key and returns the result as PEM.
-pub async fn request_cert_with_key(
-    log: &Log,
-    requester_spki: &SubjectPublicKeyInfoOwned,
-    message_signer: Arc<Mutex<dyn IdentitySigner>>,
-) -> Result<wire::certify::latest::CertResponse, loga::Error> {
-    let text = serde_json::to_vec(&wire::certify::latest::CertRequestParams {
-        stamp: Utc::now(),
-        spki_der: requester_spki.to_der().unwrap().blob(),
-    }).unwrap().blob();
-    log.log_with(loga::DEBUG, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
-    let (ident, signature) =
-        message_signer.lock().unwrap().sign(&text).context("Error signing cert request params")?;
-    let body = serde_json::to_vec(&wire::certify::CertRequest::V1(wire::certify::latest::CertRequest {
-        identity: ident,
-        params: wire::certify::latest::SignedCertRequestParams {
-            sig: signature,
-            text: text,
-        },
-    })).unwrap();
-    let url = Uri::from_str(CERTIFIER_URL).unwrap();
-    let log = log.fork(ea!(url = url));
-    log.log_with(loga::DEBUG, "Sending cert request body", ea!(body = String::from_utf8_lossy(&body)));
-    let body =
-        htreq::post(
-            &log,
-            &mut htreq::connect(&url).await.stack_context(&log, "Error connecting to certifier url")?,
-            &url,
-            &HashMap::new(),
-            body,
-            100 * 1024,
-        ).await?;
-    return Ok(serde_json::from_slice(&body).context("Error parsing cert request response body as json")?);
 }
 
 /// Produces a stream of TLS cert pairs, with a new pair some time before the
@@ -160,6 +202,7 @@ pub async fn request_cert_stream(
     log: &Log,
     tm: &TaskManager,
     signer: Arc<Mutex<dyn IdentitySigner>>,
+    options: RequestCertOptions,
     initial_pair: CertPair,
 ) -> Result<watch::Receiver<CertPair>, loga::Error> {
     let log = &log.fork(ea!(sys = "self_tls"));
@@ -194,7 +237,7 @@ pub async fn request_cert_stream(
                 let certs = bb!{
                     'ok _;
                     for _ in 0 .. max_tries {
-                        match request_cert(log, signer.clone()).await {
+                        match request_cert(log, signer.clone(), options).await {
                             Ok(certs) => {
                                 break 'ok Some(certs);
                             },
@@ -217,7 +260,7 @@ pub async fn request_cert_stream(
     return Ok(certs_stream_rx);
 }
 
-pub struct SimpleResolvesServerCert(pub Arc<RwLock<Arc<rustls::sign::CertifiedKey>>>);
+pub struct SimpleResolvesServerCert(RwLock<Arc<rustls::sign::CertifiedKey>>);
 
 impl std::fmt::Debug for SimpleResolvesServerCert {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -234,19 +277,34 @@ impl ResolvesServerCert for SimpleResolvesServerCert {
     }
 }
 
+pub struct Rustls21SimpleResolvesServerCert(RwLock<Arc<rustls_21::sign::CertifiedKey>>);
+
+impl std::fmt::Debug for Rustls21SimpleResolvesServerCert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return self.0.read().unwrap().cert.fmt(f);
+    }
+}
+
+impl rustls_21::server::ResolvesServerCert for Rustls21SimpleResolvesServerCert {
+    fn resolve(&self, _client_hello: rustls_21::server::ClientHello) -> Option<Arc<rustls_21::sign::CertifiedKey>> {
+        return Some(self.0.read().unwrap().clone());
+    }
+}
+
 /// Produce a rustls-compatible server cert resolver with an automatically updated
 /// cert.  This is a managed task that maintains state using a database at the
 /// provided location.
 ///
 /// Returns `None` if the task manager is shut down before initial setup completes.
-pub async fn htserve_tls_resolves(
+pub async fn htserve_certs(
     log: &Log,
-    persistent_dir: &Path,
+    cache_dir: &Path,
     write_certs: bool,
     tm: &TaskManager,
     publisher: &Arc<dyn Publisher>,
     identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-) -> Result<Option<Arc<dyn ResolvesServerCert>>, loga::Error> {
+    options: RequestCertOptions,
+) -> Result<Option<(Arc<dyn ResolvesServerCert>, Arc<dyn rustls_21::server::ResolvesServerCert>)>, loga::Error> {
     async fn publish_tls_certs(
         log: &Log,
         publisher: &Arc<dyn Publisher>,
@@ -280,7 +338,7 @@ pub async fn htserve_tls_resolves(
         return Ok(());
     }
 
-    let db_pool = db_util::setup_db(&persistent_dir.join("self_tls.sqlite3"), db::migrate).await?;
+    let db_pool = db_util::setup_db(&cache_dir.join("self_tls.sqlite3"), db::migrate).await?;
     db_pool.tx(|conn| Ok(db::api_certs_setup(conn)?)).await?;
 
     // Prepare initial state, either restoring or getting from scratch
@@ -303,7 +361,7 @@ pub async fn htserve_tls_resolves(
         None => {
             let pair = loop {
                 match select!{
-                    c = request_cert(&log, identity_signer.clone()) => c,
+                    c = request_cert(&log, identity_signer.clone(), options) => c,
                     _ = tm.until_terminate() => {
                         return Ok(None);
                     }
@@ -333,35 +391,49 @@ pub async fn htserve_tls_resolves(
     // Set initial certs
     let latest_certs =
         Arc::new(
-            RwLock::new(
-                load_certified_key(
-                    &state.current.pub_pem,
-                    &state.current.priv_pem,
-                ).context("Initial certs are invalid")?,
+            SimpleResolvesServerCert(
+                RwLock::new(
+                    load_certified_key(
+                        &state.current.pub_pem,
+                        &state.current.priv_pem,
+                    ).context("Initial certs are invalid")?,
+                ),
+            ),
+        );
+    let r21_latest_certs =
+        Arc::new(
+            Rustls21SimpleResolvesServerCert(
+                RwLock::new(
+                    rustls21_load_certified_key(
+                        &state.current.pub_pem,
+                        &state.current.priv_pem,
+                    ).context("Initial certs are invalid")?,
+                ),
             ),
         );
     publish_tls_certs(&log, publisher, &identity_signer, &state).await?;
     if write_certs {
-        write(persistent_dir.join("pub.pem"), state.current.pub_pem.as_bytes())
+        write(cache_dir.join("pub.pem"), state.current.pub_pem.as_bytes())
             .await
             .context("Error writing new pub.pem")?;
-        write(persistent_dir.join("priv.pem"), state.current.priv_pem.as_bytes())
+        write(cache_dir.join("priv.pem"), state.current.priv_pem.as_bytes())
             .await
             .context("Error writing new priv.pem")?;
     }
 
     // Start refresh loop
     tm.critical_task("API - process new certs", {
-        let persistent_dir = persistent_dir.to_path_buf();
+        let persistent_dir = cache_dir.to_path_buf();
         let tm = tm.clone();
         let log = log.clone();
         let publisher = publisher.clone();
         let identity_signer = identity_signer.clone();
         let latest_certs = latest_certs.clone();
+        let r21_latest_certs = r21_latest_certs.clone();
         async move {
             let mut cert_stream =
                 WatchStream::new(
-                    request_cert_stream(&log, &tm, identity_signer.clone(), state.current.clone()).await?,
+                    request_cert_stream(&log, &tm, identity_signer.clone(), options, state.current.clone()).await?,
                 );
             loop {
                 // Wait for pending certs and swap
@@ -379,7 +451,21 @@ pub async fn htserve_tls_resolves(
                             spawn_blocking({
                                 let latest_certs = latest_certs.clone();
                                 move || {
-                                    *latest_certs.write().unwrap() = p;
+                                    *latest_certs.0.write().unwrap() = p;
+                                }
+                            }).await.unwrap();
+                        },
+                        Err(e) => {
+                            log.log_err(loga::WARN, e.context("New certs are invalid"));
+                            return Ok(());
+                        },
+                    };
+                    match rustls21_load_certified_key(&pair.pub_pem, &pair.priv_pem) {
+                        Ok(p) => {
+                            spawn_blocking({
+                                let latest_certs = r21_latest_certs.clone();
+                                move || {
+                                    *latest_certs.0.write().unwrap() = p;
                                 }
                             }).await.unwrap();
                         },
@@ -414,5 +500,5 @@ pub async fn htserve_tls_resolves(
             }
         }
     });
-    return Ok(Some(Arc::new(SimpleResolvesServerCert(latest_certs))));
+    return Ok(Some((latest_certs, r21_latest_certs as Arc<dyn rustls_21::server::ResolvesServerCert>)));
 }

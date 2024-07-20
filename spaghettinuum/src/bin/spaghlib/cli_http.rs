@@ -1,7 +1,4 @@
 use {
-    crate::spaghlib::utils::{
-        api_urls,
-    },
     chrono::Duration,
     http::Method,
     http_body_util::Full,
@@ -16,7 +13,8 @@ use {
     serde_json::json,
     spaghettinuum::{
         resolving::{
-            resolve_tls,
+            resolve_for_tls,
+            system_resolver_url_pairs,
             ResolveTlsRes,
         },
         utils::tls_util::{
@@ -127,7 +125,7 @@ pub async fn run(log: &Log, config: args::Http) -> Result<(), loga::Error> {
     }
 
     // Resolve destination
-    let ResolveTlsRes { ips, identity, certs: certs0 } = resolve_tls(log, api_urls()?, &host).await?;
+    let ResolveTlsRes { ips, certs: certs0 } = resolve_for_tls(log, &system_resolver_url_pairs(log)?, &host).await?;
     let mut certs = HashSet::new();
     for c in certs0 {
         match cert_pem_hash(&c) {
@@ -149,7 +147,7 @@ pub async fn run(log: &Log, config: args::Http) -> Result<(), loga::Error> {
             ips,
             rustls::ClientConfig::builder()
                 .dangerous()
-                .with_custom_certificate_verifier(SpaghTlsClientVerifier::new(certs, identity)?)
+                .with_custom_certificate_verifier(SpaghTlsClientVerifier::with_root_cas(certs)?)
                 .with_no_client_auth(),
             scheme,
             host,

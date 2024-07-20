@@ -6,7 +6,9 @@ use {
     },
     serde_json::json,
     spaghettinuum::{
-        interface::config::identity::IdentitySecretLocal,
+        interface::config::identity::{
+            LocalIdentitySecret,
+        },
         utils::local_identity::write_identity_secret,
     },
 };
@@ -32,7 +34,7 @@ pub mod args {
             Aargvark,
             AargvarkJson,
         },
-        spaghettinuum::interface::config::identity::IdentitySecretLocal,
+        spaghettinuum::interface::config::identity::LocalIdentitySecret,
         std::path::PathBuf,
     };
 
@@ -47,7 +49,7 @@ pub mod args {
         /// Create a new local (file) identity
         NewLocal(NewLocalIdentity),
         /// Show the id for a local identity
-        ShowLocal(AargvarkJson<IdentitySecretLocal>),
+        ShowLocal(AargvarkJson<LocalIdentitySecret>),
         /// List ids for usable pcsc cards (configured with curve25519/ed25519 signing keys)
         #[cfg(feature = "card")]
         ListCards,
@@ -57,7 +59,7 @@ pub mod args {
 pub async fn run(log: &Log, config: args::Identity) -> Result<(), loga::Error> {
     match config {
         args::Identity::NewLocal(args) => {
-            let (ident, secret) = IdentitySecretLocal::new();
+            let (ident, secret) = LocalIdentitySecret::new();
             write_identity_secret(&args.path, &secret).await.stack_context(&log, "Error creating local identity")?;
             println!("{}", serde_json::to_string_pretty(&json!({
                 "id": ident.to_string()

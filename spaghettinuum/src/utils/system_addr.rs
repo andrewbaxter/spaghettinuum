@@ -1,20 +1,24 @@
 use {
-    std::{
-        net::{
-            IpAddr,
-        },
-        str::FromStr,
+    super::unstable_ip::{
+        UnstableIpv4,
+        UnstableIpv6,
+    },
+    crate::interface::config::shared::{
+        GlobalAddrConfig,
+        IpVer,
     },
     chrono::Duration,
     http_body_util::Full,
-    htwrap::htreq::{
-        uri_parts,
-        Host,
+    htwrap::{
+        htreq::{
+            uri_parts,
+            Host,
+        },
     },
     hyper::{
+        body::Bytes,
         Request,
         Uri,
-        body::Bytes,
     },
     loga::{
         ea,
@@ -25,31 +29,12 @@ use {
         NetworkInterface,
         NetworkInterfaceConfig,
     },
+    std::{
+        net::IpAddr,
+        str::FromStr,
+    },
     tokio::time::sleep,
-    crate::{
-        interface::config::shared::{
-            GlobalAddrConfig,
-            IpVer,
-        },
-    },
-    super::{
-        unstable_ip::{
-            UnstableIpv4,
-            UnstableIpv6,
-        },
-    },
 };
-
-/// For TLS (cert-based identity verification) a connection may need to be made to
-/// a domain name whose address can't be resolved, and must instead be provided
-/// over a separate channel (ex: DoT via manual configuration or RA/DHCP ADN).
-///
-/// This is kind of a super-URI that may carry with it associated address
-/// information to be used instead of looking up the address.
-pub struct UrlPair {
-    pub url: Uri,
-    pub address: Option<IpAddr>,
-}
 
 pub async fn local_resolve_global_ip(
     restrict_name: &Option<String>,

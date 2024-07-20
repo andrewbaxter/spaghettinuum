@@ -1,9 +1,14 @@
-use {aargvark::Aargvark};
+use {
+    aargvark::Aargvark,
+};
 
-
-/// URLs of resolver/publishers, for `spagh` CLI. Comma separated if providing
-/// multiple.
-pub const ENV_API_ADDR: &'static str = "SPAGH";
+/// URLs of resolver for `spagh` CLI, if not getting them from system resolver
+/// information. In the form `IP=URL`. Comma separated if providing multiple.
+///
+/// Both the IP and the URL with the `.s` domain name must be specified in order to
+/// use the server identity to validate the TLS certificate.
+pub const ENV_RESOLVER_PAIRS: &'static str = "SPAGH_RESOLVERS";
+pub const ENV_PUBLISHER_URLS: &'static str = "SPAGH_PUBLISHERS";
 
 /// The token for making admin requests, for `spagh` CLI.
 pub const ENV_API_ADMIN_TOKEN: &'static str = "SPAGH_TOKEN";

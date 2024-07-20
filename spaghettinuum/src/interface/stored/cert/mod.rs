@@ -7,10 +7,7 @@ pub mod v1;
 
 pub use v1 as latest;
 
-pub fn x509_ext_pagh_oid() -> ObjectIdentifier {
-    // Andrew Baxter, LLC. expressly for the spaghettinuum x509 extension section
-    return ObjectIdentifier::new("1.3.6.1.4.1.62178").unwrap();
-}
+pub const X509_EXT_SPAGH_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.62178");
 
 versioned!(
     X509ExtSpagh,

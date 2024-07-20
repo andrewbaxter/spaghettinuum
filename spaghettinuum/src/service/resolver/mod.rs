@@ -175,12 +175,12 @@ impl Resolver {
         tm: &TaskManager,
         node: Node,
         max_cache: Option<u64>,
-        persistent_dir: &Path,
+        cache_dir: &Path,
         publisher: Arc<Publisher>,
         global_addrs: Vec<IpAddr>,
     ) -> Result<Resolver, loga::Error> {
         let db_pool =
-            setup_db(&persistent_dir.join("resolver.sqlite3"), db::migrate)
+            setup_db(&cache_dir.join("resolver.sqlite3"), db::migrate)
                 .await
                 .stack_context(log, "Error initializing database")?;
         let cache = Cache::builder().weigher(|_key, pair: &(DateTime<Utc>, Option<String>)| -> u32 {

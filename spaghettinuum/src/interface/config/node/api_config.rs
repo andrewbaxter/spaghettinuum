@@ -7,6 +7,7 @@ use {
     },
     std::path::PathBuf,
 };
+
 pub const DEFAULT_API_PORT: u16 = 12434;
 
 #[derive(Serialize, Deserialize, JsonSchema)]

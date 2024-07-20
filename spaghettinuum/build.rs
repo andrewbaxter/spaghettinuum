@@ -15,6 +15,5 @@ fn main() {
         buildlib::publisher::build(&root);
         buildlib::publisher_admin::build(&root);
         buildlib::resolver::build(&root);
-        buildlib::resolver_dns::build(&root);
     }
 }

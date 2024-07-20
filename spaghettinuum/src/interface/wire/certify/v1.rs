@@ -41,6 +41,7 @@ impl SignedCertRequestParams {
 pub struct CertRequestParams {
     pub stamp: DateTime<Utc>,
     pub spki_der: Blob,
+    pub sig_ext: Option<Blob>,
 }
 
 #[derive(Serialize, Deserialize)]

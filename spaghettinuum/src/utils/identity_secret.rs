@@ -13,7 +13,7 @@ use {
     crate::{
         interface::{
             config::{
-                identity::IdentitySecretLocal,
+                identity::LocalIdentitySecret,
                 shared::IdentitySecretArg,
             },
             stored::identity::{
@@ -32,13 +32,13 @@ pub trait IdentitySigner: Send {
     fn sign(&mut self, data: &[u8]) -> Result<(Identity, Blob), loga::Error>;
 }
 
-impl IdentitySigner for IdentitySecretLocal {
+impl IdentitySigner for LocalIdentitySecret {
     fn sign(&mut self, data: &[u8]) -> Result<(Identity, Blob), loga::Error> {
-        return Ok((IdentitySecretLocal::identity(self), IdentitySecretLocal::sign(&self, data)));
+        return Ok((LocalIdentitySecret::identity(self), LocalIdentitySecret::sign(&self, data)));
     }
 
     fn identity(&mut self) -> Result<Identity, loga::Error> {
-        return Ok(IdentitySecretLocal::identity(self));
+        return Ok(LocalIdentitySecret::identity(self));
     }
 }
 
@@ -152,7 +152,7 @@ pub async fn get_identity_signer(ident: IdentitySecretArg) -> Result<Arc<Mutex<d
         IdentitySecretArg::Local(ident_config) => {
             let log = &Log::new().fork(ea!(path = ident_config.to_string_lossy()));
             let ident_data =
-                serde_json::from_slice::<IdentitySecretLocal>(
+                serde_json::from_slice::<LocalIdentitySecret>(
                     &read(&ident_config).await.stack_context(log, "Error reading identity file")?,
                 ).stack_context(log, "Error parsing json in identity file")?;
             return Ok(Arc::new(Mutex::new(ident_data)));

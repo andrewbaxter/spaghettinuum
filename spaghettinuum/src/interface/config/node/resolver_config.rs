@@ -5,7 +5,7 @@ use serde::{
 };
 use crate::interface::config::shared::StrSocketAddr;
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct DnsBridgeConfig {
     /// DNS is on by default, specify this to disable.
@@ -31,5 +31,5 @@ pub struct ResolverConfig {
     pub max_cache: Option<u64>,
     /// The DNS bridge exposes specific spaghettinuum `dns/` records over DNS.
     #[serde(default)]
-    pub dns_bridge: Option<DnsBridgeConfig>,
+    pub dns_bridge: DnsBridgeConfig,
 }

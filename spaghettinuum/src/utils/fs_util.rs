@@ -3,6 +3,7 @@ use {
         ea,
         ResultContext,
     },
+    serde::de::DeserializeOwned,
     std::{
         env,
         path::{
@@ -27,6 +28,15 @@ pub async fn read(path: impl AsRef<Path>) -> Result<Vec<u8>, loga::Error> {
     );
 }
 
+pub async fn read_json<D: DeserializeOwned>(path: impl AsRef<Path>) -> Result<Option<D>, loga::Error> {
+    let bytes = read(path.as_ref()).await?;
+    return Ok(
+        serde_json::from_slice(
+            &bytes,
+        ).context_with("Error parsing JSON in file", ea!(path = path.as_ref().to_string_lossy()))?,
+    );
+}
+
 pub async fn maybe_read(path: impl AsRef<Path>) -> Result<Option<Vec<u8>>, loga::Error> {
     match tokio::fs::read(path.as_ref()).await {
         Ok(r) => return Ok(Some(r)),
@@ -39,6 +49,20 @@ pub async fn maybe_read(path: impl AsRef<Path>) -> Result<Option<Vec<u8>>, loga:
             },
         },
     }
+}
+
+pub async fn maybe_read_json<D: DeserializeOwned>(path: impl AsRef<Path>) -> Result<Option<D>, loga::Error> {
+    let bytes = match maybe_read(path.as_ref()).await? {
+        Some(b) => b,
+        None => return Ok(None),
+    };
+    return Ok(
+        Some(
+            serde_json::from_slice(
+                &bytes,
+            ).context_with("Error parsing JSON in file", ea!(path = path.as_ref().to_string_lossy()))?,
+        ),
+    );
 }
 
 const APP_DIRNAME: &'static str = "spaghettinuum";

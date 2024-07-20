@@ -2,7 +2,6 @@ use {
     crate::{
         cap_fn,
         interface::{
-            config::shared::StrSocketAddr,
             stored::{
                 self,
                 announcement::Announcement,
@@ -30,21 +29,23 @@ use {
             },
             identity_secret::IdentitySigner,
             signed::IdentSignatureMethods,
-            tls_util::cert_der_hash,
+            tls_util::{
+                cert_der_hash,
+                create_leaf_cert_der_local,
+            },
             ResultVisErr,
             VisErr,
         },
     },
     async_trait::async_trait,
     chrono::{
+        DateTime,
         Duration,
+        NaiveDate,
+        NaiveDateTime,
         Utc,
     },
     deadpool_sqlite::Pool,
-    der::{
-        asn1::GeneralizedTime,
-        Encode,
-    },
     good_ormning_runtime::GoodError,
     http::{
         Method,
@@ -68,7 +69,6 @@ use {
         ResultContext,
     },
     p256::{
-        ecdsa::DerSignature,
         pkcs8::EncodePrivateKey,
     },
     rustls::pki_types::{
@@ -81,7 +81,6 @@ use {
         collections::HashMap,
         net::SocketAddr,
         path::Path,
-        str::FromStr,
         sync::{
             Arc,
             Mutex,
@@ -89,17 +88,6 @@ use {
         },
     },
     taskmanager::TaskManager,
-    x509_cert::{
-        builder::{
-            Builder,
-            CertificateBuilder,
-            Profile,
-        },
-        name::RdnSequence,
-        serial_number::SerialNumber,
-        spki::SubjectPublicKeyInfoOwned,
-        time::Time,
-    },
 };
 
 pub mod db;
@@ -139,7 +127,7 @@ impl Publisher {
         log: &Log,
         tm: &TaskManager,
         node: Node,
-        bind_addr: StrSocketAddr,
+        bind_addr: SocketAddr,
         advertise_addr: SocketAddr,
         persistent_dir: &Path,
     ) -> Result<Arc<Publisher>, loga::Error> {
@@ -161,28 +149,17 @@ impl Publisher {
                 },
                 None => {
                     let priv_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
-                    let self_spki = SubjectPublicKeyInfoOwned::from_key(*priv_key.verifying_key()).unwrap();
-                    let pub_key_der = CertificateBuilder::new(
-                        Profile::Leaf {
-                            issuer: RdnSequence::from_str(&"CN=unused").unwrap(),
-                            enable_key_agreement: true,
-                            enable_key_encipherment: true,
-                        },
-                        // Timestamp, 1h granularity (don't publish two issued within an hour/don't issue
-                        // two within an hour)
-                        SerialNumber::new(&[1u8]).unwrap(),
-                        x509_cert::time::Validity {
-                            not_before: Time::GeneralTime(
-                                GeneralizedTime::from_date_time(der::DateTime::new(1970, 1, 1, 0, 0, 0).unwrap()),
-                            ),
-                            not_after: Time::GeneralTime(GeneralizedTime::from_date_time(der::DateTime::INFINITY)),
-                        },
-                        RdnSequence::from_str(&"CN=unused").unwrap(),
-                        self_spki.clone(),
-                        &priv_key,
-                    ).unwrap().build::<DerSignature>().unwrap().to_der().unwrap().blob();
+                    let pub_cert_der =
+                        create_leaf_cert_der_local(
+                            priv_key.clone(),
+                            "unused",
+                            DateTime::UNIX_EPOCH,
+                            NaiveDateTime::from(NaiveDate::from_ymd_opt(9999, 12, 31).unwrap()).and_utc(),
+                            None,
+                            "unused",
+                        ).await?;
                     let certs = stored::publisher::latest::Certs {
-                        pub_der: pub_key_der,
+                        pub_der: pub_cert_der,
                         priv_der: priv_key.to_pkcs8_der().unwrap().as_bytes().blob(),
                     };
                     db_pool.tx({
@@ -203,9 +180,7 @@ impl Publisher {
         tm.stream(
             "Publisher - network server",
             tokio_stream::wrappers::TcpListenerStream::new(
-                tokio::net::TcpListener::bind(&bind_addr.resolve()?)
-                    .await
-                    .stack_context(&log, "Error binding to address")?,
+                tokio::net::TcpListener::bind(bind_addr).await.stack_context(&log, "Error binding to address")?,
             ),
             {
                 let log = log.fork(ea!(subsys = "protocol"));

@@ -313,7 +313,7 @@ impl Node {
         tm: &TaskManager,
         bind_addr: StrSocketAddr,
         bootstrap: &[wire::node::latest::NodeInfo],
-        persistent_path: &Path,
+        cache_dir: &Path,
     ) -> Result<Node, loga::Error> {
         let mut do_bootstrap = false;
         let own_ident;
@@ -323,7 +323,7 @@ impl Node {
             addrs: HashMap::new(),
         };
         let db_pool =
-            setup_db(&persistent_path.join("node.sqlite3"), db::migrate)
+            setup_db(&cache_dir.join("node.sqlite3"), db::migrate)
                 .await
                 .stack_context(log, "Error initializing database")?;
         let db = db_pool.get().await.stack_context(log, "Error getting database connection")?;

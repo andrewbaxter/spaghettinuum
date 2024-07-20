@@ -20,7 +20,7 @@ use {
 pub mod pgp;
 pub mod versioned;
 pub mod misc_tests;
-pub mod ip_util;
+pub mod system_addr;
 pub mod unstable_ip;
 pub mod local_identity;
 pub mod identity_secret;

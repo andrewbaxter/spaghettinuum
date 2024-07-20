@@ -46,6 +46,8 @@ impl StrSocketAddr {
         match *resolved {
             Some(v) => return Ok(v),
             None => {
+                // This should only be resolving local names, like `localhost`... some way to make
+                // it more specific (and not potentially blocking/internet accessing?)
                 let v =
                     self
                         .0

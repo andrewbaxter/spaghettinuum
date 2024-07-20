@@ -1,16 +1,14 @@
-use std::{
-    path::PathBuf,
-};
-use schemars::JsonSchema;
-use serde::{
-    Deserialize,
-    Serialize,
-};
-use super::{
-    content::ContentConfig,
-    shared::{
-        IdentitySecretArg,
-        GlobalAddrConfig,
+use {
+    schemars::JsonSchema,
+    serde::{
+        Deserialize,
+        Serialize,
+    },
+    super::{
+        shared::{
+            IdentitySecretArg,
+            GlobalAddrConfig,
+        },
     },
 };
 
@@ -50,8 +48,4 @@ pub struct Config {
     /// administration.
     #[serde(default)]
     pub api: api_config::ApiConfig,
-    /// Additionally act as a server for HTTP content (static files or reverse proxy).
-    /// Uses the same certificate as the API server.
-    #[serde(default)]
-    pub content: Vec<ContentConfig>,
 }

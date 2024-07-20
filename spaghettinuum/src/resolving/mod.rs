@@ -2,22 +2,29 @@ use {
     crate::{
         bb,
         interface::{
-            stored::{
-                identity::Identity,
-                record::{
-                    self,
-                    dns_record::format_dns_key,
-                },
+            config::{
+                node::api_config::DEFAULT_API_PORT,
+                ENV_RESOLVER_PAIRS,
+            },
+            stored::record::{
+                self,
+                dns_record::format_dns_key,
             },
             wire,
         },
-        utils::tls_util::UnverifyingVerifier,
+        utils::tls_util::{
+            cert_pem_hash,
+            SpaghTlsClientVerifier,
+        },
     },
     http::Uri,
     htwrap::{
         htreq::{
             self,
-            connect_with_tls,
+            connect_ips,
+            uri_parts,
+            Conn,
+            Ips,
         },
         UriJoin,
     },
@@ -29,23 +36,175 @@ use {
         ResultContext,
     },
     std::{
-        collections::HashMap,
+        collections::{
+            HashMap,
+            HashSet,
+        },
+        env,
         net::IpAddr,
         str::FromStr,
         sync::Arc,
     },
 };
 
+/// For TLS (cert-based identity verification) a connection may need to be made to
+/// a domain name whose address can't be resolved, and must instead be provided
+/// over a separate channel (ex: DoT via manual configuration or RA/DHCP ADN).
+///
+/// This is kind of a super-URL that may carry with it associated address
+/// information to be used instead of looking up the address.
+#[derive(Clone)]
+pub struct UrlPair {
+    pub address: Option<IpAddr>,
+    pub url: Uri,
+}
+
+impl UrlPair {
+    pub fn join(&self, other: impl TryInto<Uri, Error = http::uri::InvalidUri>) -> Self {
+        return Self {
+            address: self.address,
+            url: self.url.join(other),
+        };
+    }
+}
+
+impl From<Uri> for UrlPair {
+    fn from(value: Uri) -> Self {
+        return Self {
+            address: None,
+            url: value,
+        };
+    }
+}
+
+impl std::fmt::Display for UrlPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(addr) = &self.address {
+            return format_args!("{}={}", addr, self.url).fmt(f);
+        } else {
+            return self.url.fmt(f);
+        }
+    }
+}
+
+/// This returns a list of ip address/url pairs of resolvers on the system.
+pub fn system_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error> {
+    let mut out = vec![];
+    if let Ok(pairs) = env::var(ENV_RESOLVER_PAIRS) {
+        for pair in pairs.split(',') {
+            let (ip, url) =
+                pair
+                    .split_once("=")
+                    .context_with(
+                        "URL pair in env has wrong format",
+                        ea!(env_var = ENV_RESOLVER_PAIRS, pair = pair),
+                    )?;
+            let ip =
+                IpAddr::from_str(
+                    ip,
+                ).context_with("Couldn't parse IP addr in URL pair", ea!(env_var = ENV_RESOLVER_PAIRS, ip = ip))?;
+            let url =
+                Uri::from_str(
+                    &url,
+                ).context_with("Couldn't parse URL in URL pair", ea!(env_var = ENV_RESOLVER_PAIRS, url = url))?;
+            out.push(UrlPair {
+                address: Some(ip),
+                url: url,
+            });
+        }
+    } else {
+        let (conf, _) =
+            hickory_resolver
+            ::system_conf
+            ::read_system_conf().context("Error reading system conf to find configured DNS server to use for API")?;
+        for s in conf.name_servers() {
+            let Some(name) =& s.tls_dns_name else {
+                log.log_with(
+                    loga::DEBUG,
+                    "System name server doesn't have ADN, skipping",
+                    ea!(resolver = s.socket_addr.ip()),
+                );
+                continue;
+            };
+            let raw_url = format!("https://{}:{}", name, DEFAULT_API_PORT);
+            out.push(UrlPair {
+                url: Uri::from_str(
+                    &raw_url,
+                ).context_with("Invalid ADN for URL in system resolver configuration", ea!(url = raw_url))?,
+                address: Some(s.socket_addr.ip()),
+            });
+        }
+    }
+    return Ok(out);
+}
+
+/// Connect to a publisher node which either might be colocated with the resolver
+/// (full url pair) or standalone, resolved via a separate resolver (just a url).
+pub async fn connect_publisher_node(log: &Log, resolvers: &[UrlPair], pair: &UrlPair) -> Result<Conn, loga::Error> {
+    let log = log.fork(ea!(url = pair));
+    let (scheme, host, port) = htreq::uri_parts(&pair.url).stack_context(&log, "Invalid url")?;
+    if pair.address.is_some() {
+        return Ok(connect_resolver_node(pair).await?);
+    } else {
+        let ResolveTlsRes { ips, certs } =
+            resolve_for_tls(&log, resolvers, &host).await.stack_context(&log, "Error resolving host")?;
+        let mut cert_hashes = HashSet::new();
+        for cert in certs {
+            cert_hashes.insert(cert_pem_hash(&cert).stack_context(&log, "Invalid cert for host")?);
+        }
+        return Ok(
+            connect_ips(
+                ips,
+                rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(SpaghTlsClientVerifier {
+                        hashes: cert_hashes,
+                        inner: None,
+                    }))
+                    .with_no_client_auth(),
+                scheme,
+                host,
+                port,
+            )
+                .await
+                .stack_context(&log, "Failed to establish connection")?,
+        );
+    }
+}
+
+/// Connect to a resolver node. A full UrlPair (with both ip address and domain
+/// name) is expected, since this doesn't do name resolution and those are expected
+/// via other channels.
+pub async fn connect_resolver_node(pair: &UrlPair) -> Result<Conn, loga::Error> {
+    let (scheme, host, port) = uri_parts(&pair.url).context("API URL incomplete")?;
+    return Ok(
+        connect_ips(
+            Ips::from(pair.address.unwrap()),
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(SpaghTlsClientVerifier {
+                    hashes: Default::default(),
+                    inner: None,
+                }))
+                .with_no_client_auth(),
+            scheme,
+            host,
+            port,
+        ).await.context("Failed to establish connection")?,
+    );
+}
+
 /// Resolve ip addresses for a host plus any additional keys. DNS CNAME records are
 /// followed, with all returned results being from the final hop.
 ///
-/// `name` is a DNS name like `a.b.identity.s`
+/// `name` is a DNS name like `a.b.identity.s` - can handle both spaghettinuum and
+/// non- names.
 pub async fn resolve(
     log: &Log,
-    resolvers: Vec<Uri>,
+    resolvers: &[UrlPair],
     name: &str,
     additional_keys: &[&str],
-) -> Result<(htreq::Ips, Option<Identity>, HashMap<String, wire::resolve::v1::ResolveValue>), loga::Error> {
+) -> Result<(htreq::Ips, HashMap<String, wire::resolve::v1::ResolveValue>), loga::Error> {
     // Resolve, repeatedly following CNAMEs
     let mut at = Some(name.to_string());
     loop {
@@ -62,7 +221,7 @@ pub async fn resolve(
                     ips = htreq::resolve(&htreq::Host::Name(host.to_string())).await?;
                 },
             };
-            return Ok((ips, None, HashMap::new()));
+            return Ok((ips, HashMap::new()));
         };
         let (subdomain, ident_str) = host.rsplit_once(".").unwrap_or(("", host));
         let subdomain = format!("{}.", subdomain);
@@ -85,17 +244,11 @@ pub async fn resolve(
         let resolved = bb!{
             'done _;
             let mut errs = vec![];
-            for resolver_url in &resolvers {
+            for resolver_url in resolvers {
                 match htreq::get_json::<wire::resolve::ResolveKeyValues>(
                     log,
-                    &mut connect_with_tls(
-                        &resolver_url,
-                        rustls::ClientConfig::builder()
-                            .dangerous()
-                            .with_custom_certificate_verifier(Arc::new(UnverifyingVerifier))
-                            .with_no_client_auth(),
-                    ).await?,
-                    &resolver_url.join(&query_path),
+                    &mut connect_resolver_node(&resolver_url).await?,
+                    &resolver_url.url.join(&query_path),
                     &HashMap::new(),
                     1024 * 1024,
                 ).await {
@@ -120,7 +273,6 @@ pub async fn resolve(
         }
 
         // No cname, handle what we have at this final hop
-        let identity = Some(Identity::from_str(ident_str).context("Invalid identity in .s domain")?);
         let ips = htreq::Ips {
             ipv4s: bb!{
                 let Some(r) = resolved.remove(&key_a) else {
@@ -177,23 +329,25 @@ pub async fn resolve(
                 }
             },
         };
-        return Ok((ips, identity, resolved));
+        return Ok((ips, resolved));
     }
 }
 
 pub struct ResolveTlsRes {
     /// IP addresses of host (from A and AAAA records)
     pub ips: htreq::Ips,
-    /// The identity of the host, if it's a spaghettinuum name
-    pub identity: Option<Identity>,
     /// TLS public keys (PEM) for the host
     pub certs: Vec<String>,
 }
 
 /// Like `resolve` but also requests TLS certs for the host. This should be
 /// sufficient for making http requests.
-pub async fn resolve_tls(log: &Log, resolvers: Vec<Uri>, host: &htreq::Host) -> Result<ResolveTlsRes, loga::Error> {
-    let (ips, identity, mut additional_records) =
+pub async fn resolve_for_tls(
+    log: &Log,
+    resolvers: &[UrlPair],
+    host: &htreq::Host,
+) -> Result<ResolveTlsRes, loga::Error> {
+    let (ips, mut additional_records) =
         resolve(log, resolvers, &host.to_string(), &[record::tls_record::KEY]).await?;
     let mut certs = vec![];
 
@@ -226,7 +380,6 @@ pub async fn resolve_tls(log: &Log, resolvers: Vec<Uri>, host: &htreq::Host) -> 
 
     return Ok(ResolveTlsRes {
         ips: ips,
-        identity: identity,
         certs: certs,
     });
 }

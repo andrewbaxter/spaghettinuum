@@ -1,5 +1,4 @@
 use {
-    super::utils::api_urls,
     itertools::Itertools,
     loga::{
         ea,
@@ -22,7 +21,10 @@ use {
     spaghettinuum::{
         bb,
         interface::stored::record,
-        resolving::resolve,
+        resolving::{
+            resolve,
+            system_resolver_url_pairs,
+        },
         ta_res,
     },
     std::{
@@ -184,8 +186,8 @@ async fn connect(
     key: Option<PathBuf>,
     inner: impl SshInner,
 ) -> Result<(), loga::Error> {
-    let (ips, _, mut additional_records) =
-        resolve(log, api_urls()?, &host.host, &[record::ssh_record::KEY_HOST_KEYS]).await?;
+    let (ips, mut additional_records) =
+        resolve(log, &system_resolver_url_pairs(log)?, &host.host, &[record::ssh_record::KEY_HOST_KEYS]).await?;
     let mut host_keys = vec![];
 
     bb!{

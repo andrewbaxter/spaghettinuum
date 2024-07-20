@@ -5,22 +5,27 @@ use {
         identity_secret::IdentitySigner,
         signed::IdentSignatureMethods,
     },
-    crate::interface::{
-        stored::{
-            self,
-            announcement::latest::AnnouncementPublisher,
-            identity::Identity,
-            shared::SerialAddr,
+    crate::{
+        interface::{
+            stored::{
+                self,
+                announcement::latest::AnnouncementPublisher,
+                identity::Identity,
+                shared::SerialAddr,
+            },
+            wire::{
+                self,
+                api::publish::v1::InfoResponse,
+            },
         },
-        wire::{
-            self,
-            api::publish::v1::InfoResponse,
+        resolving::{
+            connect_publisher_node,
+            UrlPair,
         },
     },
     chrono::Utc,
     htwrap::{
         htreq,
-        UriJoin,
     },
     hyper::Uri,
     loga::{
@@ -62,7 +67,8 @@ pub fn generate_publish_announce(
 pub async fn announce(
     log: &Log,
     identity_signer: Arc<Mutex<dyn IdentitySigner>>,
-    publishers: &[Uri],
+    resolvers: &[UrlPair],
+    publishers: &[UrlPair],
 ) -> Result<(), loga::Error> {
     let mut publishers_info = vec![];
     for s in publishers {
@@ -70,8 +76,8 @@ pub async fn announce(
         let info_body =
             htreq::get(
                 &log,
-                &mut htreq::connect(&url).await.context("Error connecting to publisher")?,
-                &url,
+                &mut connect_publisher_node(&log, resolvers, &url).await.context("Error connecting to publisher")?,
+                &url.url,
                 &HashMap::new(),
                 100 * 1024,
             )
@@ -119,7 +125,8 @@ pub async fn announce(
 
 pub async fn publish(
     log: &Log,
-    publishers: &[Uri],
+    resolvers: &[UrlPair],
+    publishers: &[UrlPair],
     identity_signer: Arc<Mutex<dyn IdentitySigner>>,
     args: wire::api::publish::latest::PublishRequestContent,
 ) -> Result<(), loga::Error> {
@@ -141,8 +148,8 @@ pub async fn publish(
         );
         htreq::post(
             log,
-            &mut htreq::connect(&url).await.context("Error connecting to publisher")?,
-            &url,
+            &mut connect_publisher_node(&log, resolvers, &url).await.context("Error connecting to publisher")?,
+            &url.url,
             &HashMap::new(),
             serde_json::to_vec(&request).unwrap(),
             100,

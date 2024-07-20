@@ -1,5 +1,4 @@
 use {
-    super::utils::api_urls,
     loga::{
         Log,
         ResultContext,
@@ -16,6 +15,8 @@ use {
             },
             wire,
         },
+        publishing::system_publisher_url_pairs,
+        resolving::system_resolver_url_pairs,
         utils::{
             identity_secret::get_identity_signer,
             publish_util,
@@ -39,7 +40,6 @@ pub mod args {
         },
         spaghettinuum::interface::{
             config::{
-                identity::IdentitySecretLocal,
                 shared::IdentitySecretArg,
             },
             stored,
@@ -115,17 +115,6 @@ pub mod args {
     }
 
     #[derive(Aargvark)]
-    pub enum Identity {
-        /// Create a new local (file) identity
-        NewLocal(NewLocalIdentity),
-        /// Show the id for a local identity
-        ShowLocal(AargvarkJson<IdentitySecretLocal>),
-        /// List ids for usable pcsc cards (configured with curve25519/ed25519 signing keys)
-        #[cfg(feature = "card")]
-        ListCards,
-    }
-
-    #[derive(Aargvark)]
     #[vark(break)]
     pub enum Publish {
         /// Announce the publisher server as the authority for this identity. This must be
@@ -144,23 +133,36 @@ pub mod args {
 }
 
 pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
+    let resolvers = system_resolver_url_pairs(log)?;
+    let publishers = system_publisher_url_pairs(log)?;
     match config {
         args::Publish::Announce(config) => {
             let signer =
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::announce(log, signer.clone(), &api_urls()?).await?;
+            publish_util::announce(log, signer.clone(), &resolvers, &publishers).await?;
         },
         args::Publish::Set(config) => {
             let signer =
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(log, &api_urls()?, signer, wire::api::publish::latest::PublishRequestContent {
-                set: config.data.value.into_iter().map(|(k, v)| (k, stored::record::RecordValue::V1(v))).collect(),
-                ..Default::default()
-            }).await?;
+            publish_util::publish(
+                log,
+                &resolvers,
+                &publishers,
+                signer,
+                wire::api::publish::latest::PublishRequestContent {
+                    set: config
+                        .data
+                        .value
+                        .into_iter()
+                        .map(|(k, v)| (k, stored::record::RecordValue::V1(v)))
+                        .collect(),
+                    ..Default::default()
+                },
+            ).await?;
         },
         args::Publish::SetDns(config) => {
             let subdomain = match &config.subdomain {
@@ -244,30 +246,48 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(log, &api_urls()?, signer, wire::api::publish::latest::PublishRequestContent {
-                set: kvs,
-                ..Default::default()
-            }).await?;
+            publish_util::publish(
+                log,
+                &resolvers,
+                &publishers,
+                signer,
+                wire::api::publish::latest::PublishRequestContent {
+                    set: kvs,
+                    ..Default::default()
+                },
+            ).await?;
         },
         args::Publish::Unset(config) => {
             let signer =
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(log, &api_urls()?, signer, wire::api::publish::latest::PublishRequestContent {
-                clear: config.keys,
-                ..Default::default()
-            }).await?;
+            publish_util::publish(
+                log,
+                &resolvers,
+                &publishers,
+                signer,
+                wire::api::publish::latest::PublishRequestContent {
+                    clear: config.keys,
+                    ..Default::default()
+                },
+            ).await?;
         },
         args::Publish::UnsetAll(config) => {
             let signer =
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(log, &api_urls()?, signer, wire::api::publish::latest::PublishRequestContent {
-                clear_all: true,
-                ..Default::default()
-            }).await?;
+            publish_util::publish(
+                log,
+                &resolvers,
+                &publishers,
+                signer,
+                wire::api::publish::latest::PublishRequestContent {
+                    clear_all: true,
+                    ..Default::default()
+                },
+            ).await?;
         },
     }
     return Ok(());
