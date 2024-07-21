@@ -4,23 +4,11 @@ version = 3
 
 [[package]]
 name = "aargvark"
-version = "0.0.8"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11851e37d46b9ce2cfeaf65625f68f1d13c9146898d939238447c2ddb117ad17"
+checksum = "ee30f45b6bb8aaa22d58e70a17d727c302383e8a5e8ff4c7ab77569fbc06d883"
 dependencies = [
- "aargvark_proc_macros 0.0.3",
- "comfy-table",
- "console",
- "convert_case 0.6.0",
-]
-
-[[package]]
-name = "aargvark"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4149c671986c5f5658c258d442f0a2db4250ba092e6c439b2dda853604efc89f"
-dependencies = [
- "aargvark_proc_macros 0.0.7",
+ "aargvark_proc_macros",
  "comfy-table",
  "console",
  "convert_case 0.6.0",
@@ -34,27 +22,15 @@ dependencies = [
 
 [[package]]
 name = "aargvark_proc_macros"
-version = "0.0.3"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "938de5f9f9018a81d07b8c54920ce635cfa73c95a2e57d2f6ab66f07210a3832"
+checksum = "f79aa888318c32f962f8bbe7541635fb6c5400d8bc68deeb1becc583b6161c92"
 dependencies = [
  "convert_case 0.6.0",
+ "genemichaels-lib",
  "proc-macro2",
  "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "aargvark_proc_macros"
-version = "0.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da50ea4b77acc4af819c80361e542bb1d294999b061cbbf2d443db0bb0ce6cf3"
-dependencies = [
- "convert_case 0.6.0",
- "genemichaels",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
+ "syn 2.0.71",
 ]
 
 [[package]]
@@ -228,11 +204,12 @@ checksum = "b3d1d046238990b9cf5bcde22a3fb3584ee5cf65fb2765f454ed428c7a0063da"
 
 [[package]]
 name = "archery"
-version = "0.4.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a8da9bc4c4053ee067669762bcaeea6e241841295a2b6c948312dad6ef4cc02"
+checksum = "8967cd1cc9e9e1954f644e14fbd6042fe9a37da96c52a67e44a2ac18261f8561"
 dependencies = [
  "static_assertions",
+ "triomphe",
 ]
 
 [[package]]
@@ -243,9 +220,9 @@ checksum = "3d62b7694a562cdf5a74227903507c56ab2cc8bdd1f781ed5cb4cf9c9f810bfc"
 
 [[package]]
 name = "arrayref"
-version = "0.3.7"
+version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b4930d2cb77ce62f89ee5d5289b4ac049559b1c45539271f5ed4fdc7db34545"
+checksum = "9d151e35f61089500b617991b791fc8bfd237ae50cd5950803758a179b41e67a"
 
 [[package]]
 name = "arrayvec"
@@ -1513,25 +1490,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "genemichaels"
-version = "0.2.4"
+name = "genemichaels-lib"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8bdeb26b9b036a1ba89ffd3d703940b5915f53ae5d14ff57d17417c5bf34e72"
+checksum = "007e541698b48e5ad1e35ff3ef66d72f1555fedb711bb3847d51f15a67c5f07c"
 dependencies = [
- "aargvark 0.0.8",
  "cargo-manifest",
- "console",
  "derive_more",
- "loga 0.1.7",
+ "loga",
  "markdown",
  "proc-macro2",
  "quote",
  "serde",
  "serde_json",
  "structre",
- "syn 1.0.109",
- "threadpool",
- "walkdir",
+ "syn 2.0.71",
 ]
 
 [[package]]
@@ -1602,27 +1575,27 @@ checksum = "d2fabcfbdc87f4758337ca535fb41a6d701b65693ce38287d856d1674551ec9b"
 
 [[package]]
 name = "good-ormning"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ec2f75494f827fdb7cce2b2ff8ee7c34d976448c3887e26f5ad27c5036fb29e"
+checksum = "ee7c0a8339d7ae4e4cb60a58c33f4f68e05c8ea0c9674ad5914bb3c5834fc493"
 dependencies = [
  "chrono",
  "enum_dispatch",
- "genemichaels",
+ "genemichaels-lib",
  "hex",
  "proc-macro2",
  "quote",
  "rpds",
  "samevariant",
  "stable-hash",
- "syn 1.0.109",
+ "syn 2.0.71",
 ]
 
 [[package]]
 name = "good-ormning-runtime"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23ccea4866e94aba3b89f046500d7bfe50b8043573a64bfdcb813addb8d04bd5"
+checksum = "d7515ed19727d475d42bcc3928bae4755444f309f68c9e96732208ee0bb3eab3"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -1914,7 +1887,7 @@ dependencies = [
  "hyper 1.4.1",
  "hyper-rustls",
  "hyper-util",
- "loga 0.5.2",
+ "loga",
  "rand 0.8.5",
  "rustls 0.22.4",
  "serde",
@@ -2270,9 +2243,9 @@ checksum = "97b3888a4aecf77e811145cadf6eef5901f4782c53886191b2f693f24761847c"
 
 [[package]]
 name = "libloading"
-version = "0.8.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e310b3a6b5907f99202fcdb4960ff45b93735d7c7d96b760fcff8db2dc0e103d"
+checksum = "4979f22fdb869068da03c9f7528f8297c6fd2606bc3a4affe42e6a823fdb8da4"
 dependencies = [
  "cfg-if 1.0.0",
  "windows-targets 0.52.6",
@@ -2358,17 +2331,6 @@ name = "log"
 version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
-
-[[package]]
-name = "loga"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc4e8caa542fa702b69ef85dc70c23e50a1ef76ffcd1fa35e802a14bf19074bd"
-dependencies = [
- "chrono",
- "console",
- "textwrap",
-]
 
 [[package]]
 name = "loga"
@@ -3376,9 +3338,9 @@ dependencies = [
 
 [[package]]
 name = "rpds"
-version = "0.12.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66262ea963eff99163e6b741fbc3417a52cc13074728c1047e9911789df9b000"
+checksum = "a0e15515d3ce3313324d842629ea4905c25a13f81953eadb88f85516f59290a4"
 dependencies = [
  "archery",
 ]
@@ -3704,14 +3666,14 @@ dependencies = [
 
 [[package]]
 name = "samevariant"
-version = "0.0.2"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15f39c574893ad26d7bf5a702fc23de87ec287cbeaee89fc34a795ecd8b9251a"
+checksum = "e48a73567f820686716195f46520651fc6b60eab4c77669603fbc967a2050fee"
 dependencies = [
- "genemichaels",
+ "genemichaels-lib",
  "proc-macro2",
  "quote",
- "syn 1.0.109",
+ "syn 2.0.71",
 ]
 
 [[package]]
@@ -4049,7 +4011,7 @@ dependencies = [
 name = "spaghettinuum"
 version = "0.4.1"
 dependencies = [
- "aargvark 0.2.3",
+ "aargvark",
  "array-init",
  "async-trait",
  "bincode",
@@ -4079,7 +4041,7 @@ dependencies = [
  "itertools 0.10.5",
  "jsonschema",
  "libsqlite3-sys",
- "loga 0.5.2",
+ "loga",
  "manual_future",
  "mime_guess",
  "moka",
@@ -4303,7 +4265,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42d928ccb33c1b44d8c2e55037caa91e0cbc5b87242394d3678e99ce8343650c"
 dependencies = [
  "futures",
- "loga 0.5.2",
+ "loga",
  "tokio",
  "tokio-util",
  "waitgroup",
@@ -4384,15 +4346,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.71",
-]
-
-[[package]]
-name = "threadpool"
-version = "1.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d050e60b33d41c19108b32cea32164033a9013fe3b46cbd4457559bfbf77afaa"
-dependencies = [
- "num_cpus",
 ]
 
 [[package]]
@@ -5143,9 +5096,9 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "winnow"
-version = "0.6.13"
+version = "0.6.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59b5e5f6c299a3c7890b876a2a587f3115162487e704907d9b6cd29473052ba1"
+checksum = "374ec40a2d767a3c1b4972d9475ecd557356637be906f2cb3f7fe17a6eb5e22f"
 dependencies = [
  "memchr",
 ]
