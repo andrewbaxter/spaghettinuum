@@ -7,7 +7,9 @@ use {
         bb,
         interface::stored::{
             self,
-            cert::X509_EXT_SPAGH_OID,
+            cert::{
+                X509_EXT_SPAGH_OID,
+            },
             identity::Identity,
         },
     },
@@ -25,9 +27,7 @@ use {
     },
     futures::Future,
     loga::ResultContext,
-    p256::{
-        ecdsa::DerSignature,
-    },
+    p256::ecdsa::DerSignature,
     pem::Pem,
     rand::RngCore,
     rustls::client::WebPkiServerVerifier,
@@ -261,15 +261,14 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
         // Validate based on signature extension
         bb!{
             // Get signature
-            let Ok(cert) = x509_cert:: Certificate:: from_der(&end_entity) else {
+            let Ok(cert) = x509_cert::Certificate::from_der(&end_entity) else {
                 break;
             };
-            let Some(
-                ext
-            ) = cert.tbs_certificate.extensions.iter().flatten().find(|x| x.extn_id == X509_EXT_SPAGH_OID) else {
-                break;
-            };
-            let Ok(ext) = stored:: cert:: X509ExtSpagh:: from_bytes(&ext.extn_value.as_bytes()) else {
+            let Some(ext) =
+                cert.tbs_certificate.extensions.iter().flatten().find(|x| x.extn_id == X509_EXT_SPAGH_OID) else {
+                    break;
+                };
+            let Ok(ext) = stored::cert::X509ExtSpagh::from_bytes(&ext.extn_value.as_bytes()) else {
                 break;
             };
             let signature = match ext {
@@ -279,7 +278,7 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
             };
 
             // Get id
-            let rustls:: pki_types:: ServerName:: DnsName(server_name) = server_name else {
+            let rustls::pki_types::ServerName::DnsName(server_name) = server_name else {
                 break;
             };
             let Some((prefix, suffix)) = server_name.as_ref().trim_matches('.').rsplit_once('.') else {
@@ -291,7 +290,7 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
             let Some((_, raw_id_id)) = prefix.rsplit_once('.') else {
                 break;
             };
-            let Ok(id) = Identity:: from_str(raw_id_id) else {
+            let Ok(id) = Identity::from_str(raw_id_id) else {
                 break;
             };
 
@@ -359,7 +358,7 @@ pub async fn create_leaf_cert_der<
 >(
     requester_key_info: x509_cert::spki::SubjectPublicKeyInfoOwned,
     fqdn: &str,
-    signature_ext: Option<Blob>,
+    signature_ext: Option<stored::cert::v1::X509ExtSpagh>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     issuer_signer: S,
@@ -395,7 +394,7 @@ where
         )
         .unwrap();
     if let Some(signature_ext) = signature_ext {
-        struct SigExt(Blob);
+        struct SigExt(Vec<u8>);
 
         impl AssociatedOid for SigExt {
             const OID: der::oid::ObjectIdentifier = X509_EXT_SPAGH_OID;
@@ -417,7 +416,7 @@ where
             }
         }
 
-        cert_builder.add_extension(&SigExt(signature_ext)).unwrap();
+        cert_builder.add_extension(&SigExt(stored::cert::X509ExtSpagh::V1(signature_ext).to_bytes())).unwrap();
     }
     let csr_der = cert_builder.finalize().unwrap();
     let signature = issuer_signer2(Blob::from(csr_der)).await?;
@@ -436,7 +435,7 @@ pub async fn create_leaf_cert_der_local(
     fqdn: &str,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
-    signature_ext: Option<Blob>,
+    signature_ext: Option<stored::cert::v1::X509ExtSpagh>,
     issuer_fqdn: &str,
 ) -> Result<Blob, loga::Error> {
     return Ok(

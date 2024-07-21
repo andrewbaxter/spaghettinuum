@@ -15,6 +15,7 @@ use {
         utils::tls_util::{
             cert_pem_hash,
             SpaghTlsClientVerifier,
+            UnverifyingVerifier,
         },
     },
     http::Uri,
@@ -35,6 +36,7 @@ use {
         Log,
         ResultContext,
     },
+    rustls::client::danger::ServerCertVerifier,
     std::{
         collections::{
             HashMap,
@@ -118,7 +120,7 @@ pub fn system_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error>
             ::system_conf
             ::read_system_conf().context("Error reading system conf to find configured DNS server to use for API")?;
         for s in conf.name_servers() {
-            let Some(name) =& s.tls_dns_name else {
+            let Some(name) = &s.tls_dns_name else {
                 log.log_with(
                     loga::DEBUG,
                     "System name server doesn't have ADN, skipping",
@@ -133,6 +135,19 @@ pub fn system_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error>
                 ).context_with("Invalid ADN for URL in system resolver configuration", ea!(url = raw_url))?,
                 address: Some(s.socket_addr.ip()),
             });
+        }
+
+        // If no resolvers with ADN fall back to non-named resolvers
+        if out.is_empty() {
+            for s in conf.name_servers() {
+                let raw_url = format!("https://{}:{}", s.socket_addr.ip(), DEFAULT_API_PORT);
+                out.push(UrlPair {
+                    url: Uri::from_str(
+                        &raw_url,
+                    ).context_with("Invalid ADN for URL in system resolver configuration", ea!(url = raw_url))?,
+                    address: Some(s.socket_addr.ip()),
+                });
+            }
         }
     }
     return Ok(out);
@@ -200,24 +215,33 @@ pub async fn connect_content(log: &Log, resolvers: &[UrlPair], url: &Uri) -> Res
 }
 
 /// Connect to a resolver node. A full UrlPair (with both ip address and domain
-/// name) is expected, since this doesn't do name resolution and those are expected
-/// via other channels.
+/// name) is expected, since this doesn't do name resolution and the name should be
+/// provided via other channels.
+///
+/// As a fallback, skip verification on non-named hosts (similar to DoT fallbacks).
 pub async fn connect_resolver_node(pair: &UrlPair) -> Result<Conn, loga::Error> {
     let (scheme, host, port) = uri_parts(&pair.url).context("API URL incomplete")?;
+    let verifier = if matches!(host, htreq::Host::Name(_)) {
+        Arc::new(SpaghTlsClientVerifier {
+            hashes: Default::default(),
+            inner: None,
+        }) as Arc<dyn ServerCertVerifier>
+    } else {
+        Arc::new(UnverifyingVerifier)
+    };
     return Ok(
         connect_ips(
             Ips::from(pair.address.unwrap()),
             rustls::ClientConfig::builder()
                 .dangerous()
-                .with_custom_certificate_verifier(Arc::new(SpaghTlsClientVerifier {
-                    hashes: Default::default(),
-                    inner: None,
-                }))
+                .with_custom_certificate_verifier(verifier)
                 .with_no_client_auth(),
             scheme,
             host,
             port,
-        ).await.context("Failed to establish connection")?,
+        )
+            .await
+            .context("Failed to establish connection")?,
     );
 }
 
@@ -377,7 +401,6 @@ pub async fn resolve_for_tls(
     let (ips, mut additional_records) =
         resolve(log, resolvers, &host.to_string(), &[record::tls_record::KEY]).await?;
     let mut certs = vec![];
-
     bb!{
         let Some(r) = additional_records.remove(record::tls_record::KEY) else {
             log.log(loga::DEBUG, "Response missing TLS record entry; not using for verification");
@@ -404,7 +427,6 @@ pub async fn resolve_for_tls(
         }
         break;
     };
-
     return Ok(ResolveTlsRes {
         ips: ips,
         certs: certs,

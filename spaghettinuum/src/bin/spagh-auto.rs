@@ -64,7 +64,7 @@ struct Args {
     /// Config - json.  See the reference documentation and jsonschema for details.
     pub config: Option<AargvarkJson<Config>>,
     /// Enable debug logging
-    #[vark(break)]
+    #[vark(stop)]
     pub debug: Option<Vec<DebugFlag>>,
 }
 
@@ -169,7 +169,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             resolver_urls: resolvers,
             publisher_urls: publishers,
         }) as Arc<dyn Publisher>;
-        let Some((certs, _)) = self_tls:: htserve_certs(log, &cache_dir(), if let Some(cert_dir) = config.cert_dir {
+        let Some((certs, _)) = self_tls::htserve_certs(log, &cache_dir(), if let Some(cert_dir) = config.cert_dir {
             create_dir_all(&cert_dir)
                 .await
                 .stack_context_with(log, "Error creating cert dir", ea!(path = cert_dir.to_string_lossy()))?;
@@ -179,7 +179,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         }, tm, &publisher, &identity_signer, RequestCertOptions {
             certifier: true,
             signature: false,
-        }).await ? else {
+        }).await? else {
             return Ok(());
         };
         for content in config.content {

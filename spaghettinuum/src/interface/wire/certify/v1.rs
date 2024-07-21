@@ -7,7 +7,10 @@ use serde::{
     Deserialize,
 };
 use crate::{
-    interface::stored::identity::Identity,
+    interface::stored::{
+        cert::v1::X509ExtSpagh,
+        identity::Identity,
+    },
     utils::blob::Blob,
 };
 
@@ -41,7 +44,7 @@ impl SignedCertRequestParams {
 pub struct CertRequestParams {
     pub stamp: DateTime<Utc>,
     pub spki_der: Blob,
-    pub sig_ext: Option<Blob>,
+    pub sig_ext: Option<X509ExtSpagh>,
 }
 
 #[derive(Serialize, Deserialize)]

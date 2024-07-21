@@ -118,7 +118,7 @@ struct Args {
     /// Refer to the readme for the json schema
     pub config: Option<AargvarkJson<Config>>,
     /// Enable default debug logging, or specific log levels
-    #[vark(break)]
+    #[vark(stop)]
     pub debug: Option<Vec<DebugFlag>>,
 }
 
@@ -300,22 +300,21 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     };
 
     // Get own tls cert
-    let Some(
-        (certs, r21_certs)
-    ) = self_tls:: htserve_certs(
-        log,
-        &cache_dir,
-        false,
-        tm,
-        &(publisher.clone() as Arc<dyn spaghettinuum::publishing::Publisher>),
-        &identity_signer,
-        RequestCertOptions {
-            certifier: false,
-            signature: true,
-        }
-    ).await ? else {
-        return Ok(());
-    };
+    let Some((certs, r21_certs)) =
+        self_tls::htserve_certs(
+            log,
+            &cache_dir,
+            false,
+            tm,
+            &(publisher.clone() as Arc<dyn spaghettinuum::publishing::Publisher>),
+            &identity_signer,
+            RequestCertOptions {
+                certifier: false,
+                signature: true,
+            },
+        ).await? else {
+            return Ok(());
+        };
 
     // Start resolver
     let resolver =

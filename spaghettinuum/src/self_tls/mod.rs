@@ -28,6 +28,7 @@ use {
         interface::{
             stored::{
                 self,
+                cert::v1::X509ExtSpagh,
                 self_tls::latest::CertPair,
             },
             wire::{
@@ -38,9 +39,7 @@ use {
         publishing::Publisher,
         ta_res,
         utils::{
-            blob::{
-                ToBlob,
-            },
+            blob::ToBlob,
             db_util::{
                 self,
                 DbTx,
@@ -63,9 +62,7 @@ use {
         Duration,
         Utc,
     },
-    der::{
-        Encode,
-    },
+    der::Encode,
     http::Uri,
     htwrap::htreq,
     loga::{
@@ -102,9 +99,7 @@ use {
         wrappers::WatchStream,
         StreamExt,
     },
-    x509_cert::{
-        spki::SubjectPublicKeyInfoOwned,
-    },
+    x509_cert::spki::SubjectPublicKeyInfoOwned,
 };
 
 pub mod db;
@@ -136,12 +131,14 @@ pub async fn request_cert(
         SubjectPublicKeyInfoOwned::from_key(priv_key.verifying_key().clone()).unwrap().to_der().unwrap().blob();
     let sig_ext = if options.signature {
         Some(
-            message_signer
-                .lock()
-                .unwrap()
-                .sign(&requester_spki_der)
-                .context("Error signing SPKI der for spaghettinuum extension")?
-                .1,
+            X509ExtSpagh {
+                signature: message_signer
+                    .lock()
+                    .unwrap()
+                    .sign(&requester_spki_der)
+                    .context("Error signing SPKI der for spaghettinuum extension")?
+                    .1,
+            },
         )
     } else {
         None
@@ -231,14 +228,12 @@ pub async fn request_cert_stream(
             let log = &log;
             loop {
                 log.log_with(loga::DEBUG, "Sleeping until cert needs refresh", ea!(deadline = refresh_at));
-
                 select!{
                     _ = tm.until_terminate() => {
                         break;
                     }
                     _ = sleep_until(refresh_at.to_instant()) =>(),
                 }
-
                 let mut backoff = std::time::Duration::from_secs(30);
                 let max_tries = 5;
                 let certs = bb!{
@@ -353,7 +348,7 @@ pub async fn htserve_certs(
         Some(s) => match s {
             stored::self_tls::SelfTlsState::V1(mut s) => {
                 bb!({
-                    let Some((after, _)) =& s.pending else {
+                    let Some((after, _)) = &s.pending else {
                         break;
                     };
                     if Utc::now() < *after {
@@ -452,7 +447,6 @@ pub async fn htserve_certs(
                             return Ok(());
                         }
                     }
-
                     match load_certified_key(&pair.pub_pem, &pair.priv_pem) {
                         Ok(p) => {
                             spawn_blocking({
