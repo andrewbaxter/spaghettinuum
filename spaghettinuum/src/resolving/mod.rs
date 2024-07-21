@@ -172,6 +172,33 @@ pub async fn connect_publisher_node(log: &Log, resolvers: &[UrlPair], pair: &Url
     }
 }
 
+/// Connect to some http server that publishes its ip and tls certs over
+/// spaghettinuum. This is the ideal way to connect to such sites, it uses
+/// distributed certificate verification.
+pub async fn connect_content(log: &Log, resolvers: &[UrlPair], url: &Uri) -> Result<Conn, loga::Error> {
+    let (scheme, host, port) = uri_parts(&url)?;
+    let ResolveTlsRes { ips, certs } = resolve_for_tls(log, resolvers, &host).await?;
+    let mut cert_hashes = HashSet::new();
+    for cert in certs {
+        cert_hashes.insert(cert_pem_hash(&cert).stack_context(&log, "Invalid cert for host")?);
+    }
+    return Ok(
+        htreq::connect_ips(
+            ips,
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(SpaghTlsClientVerifier {
+                    hashes: cert_hashes,
+                    inner: None,
+                }))
+                .with_no_client_auth(),
+            scheme,
+            host,
+            port,
+        ).await?,
+    );
+}
+
 /// Connect to a resolver node. A full UrlPair (with both ip address and domain
 /// name) is expected, since this doesn't do name resolution and those are expected
 /// via other channels.

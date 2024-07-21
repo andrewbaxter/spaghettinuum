@@ -187,7 +187,14 @@ pub async fn request_cert(
         let now = Utc::now();
         let fqdn = format!("{}.s", identity);
         let pub_der =
-            create_leaf_cert_der_local(priv_key, &fqdn, now, now + Duration::days(90), sig_ext, &fqdn).await?;
+            create_leaf_cert_der_local(
+                priv_key,
+                &fqdn,
+                now,
+                now + Duration::try_days(90).unwrap(),
+                sig_ext,
+                &fqdn,
+            ).await?;
         pub_pem = encode_pub_pem(&pub_der);
     }
     return Ok(CertPair {

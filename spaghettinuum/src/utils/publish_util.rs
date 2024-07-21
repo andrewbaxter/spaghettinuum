@@ -27,7 +27,6 @@ use {
     htwrap::{
         htreq,
     },
-    hyper::Uri,
     loga::{
         ea,
         Log,
@@ -36,7 +35,6 @@ use {
     std::{
         collections::HashMap,
         path::PathBuf,
-        str::FromStr,
         sync::{
             Arc,
             Mutex,
@@ -108,11 +106,11 @@ pub async fn announce(
         announcement: announcement,
     };
     for s in publishers {
-        let url = Uri::from_str(&format!("{}publish/v1/announce", s)).unwrap();
+        let url = s.join("publish/v1/announce");
         htreq::post(
             log,
-            &mut htreq::connect(&url).await.context("Error connecting to publisher")?,
-            &url,
+            &mut connect_publisher_node(log, resolvers, &url).await.context("Error connecting to publisher")?,
+            &url.url,
             &HashMap::new(),
             serde_json::to_vec(&request).unwrap(),
             100,
