@@ -313,7 +313,7 @@ pub async fn htserve_certs(
         identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
         state: &stored::self_tls::latest::SelfTlsState,
     ) -> Result<(), loga::Error> {
-        publisher.publish(log, identity_signer.clone(), PublishRequestContent {
+        publisher.publish(log, identity_signer, PublishRequestContent {
             set: {
                 let mut m = HashMap::new();
                 let mut certs = vec![state.current.pub_pem.clone()];

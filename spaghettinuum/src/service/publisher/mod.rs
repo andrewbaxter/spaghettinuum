@@ -187,7 +187,7 @@ impl Publisher {
                 let handler = {
                     let log = log.clone();
                     let publisher = publisher.clone();
-                    Arc::new(htwrap::handler!((publisher: Arc<Publisher>, log: Log)(r -> htserve:: Body) {
+                    Arc::new(htwrap::handler!((publisher: Arc < Publisher >, log: Log)(r -> htserve:: Body) {
                         match async {
                             ta_vis_res!(Response < htserve:: Body >);
                             log.log_with(loga::DEBUG, "Recieved request", ea!(path = r.head.uri));
@@ -449,7 +449,7 @@ impl crate::publishing::Publisher for Publisher {
     async fn publish(
         &self,
         _log: &Log,
-        identity_signer: Arc<Mutex<dyn IdentitySigner>>,
+        identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
         content: wire::api::publish::latest::PublishRequestContent,
     ) -> Result<(), loga::Error> {
         let identity = identity_signer.lock().unwrap().identity()?;
@@ -484,7 +484,7 @@ pub async fn build_api_endpoints_with_authorizer(
         let mut routes = htserve::PathRouter::default();
         routes.insert("/announce", {
             let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc<State>)(r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: Body) {
                 match async {
                     ta_res!(Response < htserve:: Body >);
 
@@ -527,7 +527,7 @@ pub async fn build_api_endpoints_with_authorizer(
         });
         routes.insert("/clear_identity", {
             let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc<State>)(r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: Body) {
                 match async {
                     ta_res!(Response < htserve:: Body >);
 
@@ -566,7 +566,7 @@ pub async fn build_api_endpoints_with_authorizer(
         });
         routes.insert("/publish", {
             let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc<State>)(r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: Body) {
                 match async {
                     ta_res!(Response < htserve:: Body >);
 
@@ -605,7 +605,7 @@ pub async fn build_api_endpoints_with_authorizer(
         });
         routes.insert("/info", {
             let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc<State>)(_r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >)(_r -> htserve:: Body) {
                 return response_200_json(wire::api::publish::v1::InfoResponse {
                     advertise_addr: state.publisher.advertise_addr,
                     cert_pub_hash: state.publisher.cert_pub_hash.clone(),
@@ -699,7 +699,7 @@ pub async fn build_api_endpoints(
         routes.insert("/allowed_identities", {
             let state = state.clone();
             let admin_token = admin_token.clone();
-            Box::new(htwrap::handler!((state: Arc<State>, admin_token: AuthTokenHash)(r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: Body) {
                 match async {
                     ta_vis_res!(Response < htserve:: Body >);
                     if !check_auth_token_hash(
@@ -778,7 +778,7 @@ pub async fn build_api_endpoints(
         routes.insert("/keys", {
             let state = state.clone();
             let admin_token = admin_token.clone();
-            Box::new(htwrap::handler!((state: Arc<State>, admin_token: AuthTokenHash)(r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: Body) {
                 match async {
                     ta_res!(Response < htserve:: Body >);
                     if !check_auth_token_hash(&admin_token, &htserve::get_auth_token(&r.head.headers)?) {
@@ -820,7 +820,7 @@ pub async fn build_api_endpoints(
         routes.insert("/announcements", {
             let state = state.clone();
             let admin_token = admin_token.clone();
-            Box::new(htwrap::handler!((state: Arc<State>, admin_token: AuthTokenHash)(r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: Body) {
                 match async {
                     ta_res!(Response < htserve:: Body >);
                     if !check_auth_token_hash(&admin_token, &htserve::get_auth_token(&r.head.headers)?) {

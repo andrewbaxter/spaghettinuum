@@ -141,7 +141,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::announce(log, signer.clone(), &resolvers, &publishers).await?;
+            publish_util::announce(log, &resolvers, &publishers, &signer).await?;
         },
         args::Publish::Set(config) => {
             let signer =
@@ -152,7 +152,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 log,
                 &resolvers,
                 &publishers,
-                signer,
+                &signer,
                 wire::api::publish::latest::PublishRequestContent {
                     set: config
                         .data
@@ -250,7 +250,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 log,
                 &resolvers,
                 &publishers,
-                signer,
+                &signer,
                 wire::api::publish::latest::PublishRequestContent {
                     set: kvs,
                     ..Default::default()
@@ -266,7 +266,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 log,
                 &resolvers,
                 &publishers,
-                signer,
+                &signer,
                 wire::api::publish::latest::PublishRequestContent {
                     clear: config.keys,
                     ..Default::default()
@@ -282,7 +282,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 log,
                 &resolvers,
                 &publishers,
-                signer,
+                &signer,
                 wire::api::publish::latest::PublishRequestContent {
                     clear_all: true,
                     ..Default::default()

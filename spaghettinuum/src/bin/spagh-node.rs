@@ -44,12 +44,7 @@ use {
                 ENV_CONFIG,
             },
             stored::{
-                self,
                 node_identity::NodeIdentity,
-                record::dns_record::{
-                    format_dns_key,
-                    RecordType,
-                },
                 shared::SerialAddr,
             },
             wire::{
@@ -82,6 +77,7 @@ use {
             },
             identity_secret::get_identity_signer,
             publish_util::{
+                add_ip_record,
                 add_ssh_host_key_records,
                 generate_publish_announce,
             },
@@ -260,35 +256,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         publisher.announce(&identity, announcement).await?;
         let mut publish_data = HashMap::new();
         for ip in &public_ips {
-            let key;
-            let data;
-            match ip {
-                std::net::IpAddr::V4(ip) => {
-                    key = RecordType::A;
-                    data =
-                        serde_json::to_value(
-                            &stored::record::dns_record::DnsA::V1(
-                                stored::record::dns_record::latest::DnsA(vec![*ip]),
-                            ),
-                        ).unwrap();
-                },
-                std::net::IpAddr::V6(ip) => {
-                    key = RecordType::Aaaa;
-                    data =
-                        serde_json::to_value(
-                            &stored::record::dns_record::DnsAaaa::V1(
-                                stored::record::dns_record::latest::DnsAaaa(vec![*ip]),
-                            ),
-                        ).unwrap();
-                },
-            }
-            let key = format_dns_key(".", key);
-            if !publish_data.contains_key(&key) {
-                publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
-                    ttl: 60,
-                    data: Some(data),
-                }));
-            }
+            add_ip_record(&mut publish_data, *ip);
         }
         add_ssh_host_key_records(&mut publish_data, config.publisher.ssh_host_keys).await?;
         publisher.modify_values(&identity, wire::api::publish::v1::PublishRequestContent {

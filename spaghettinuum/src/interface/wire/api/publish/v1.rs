@@ -66,7 +66,7 @@ pub struct InfoResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct PublishRequestContent {
-    /// Update TTL for negative responses
+    /// Update TTL for negative responses (in minutes)
     pub missing_ttl: Option<u32>,
     /// Stop publishing all keys
     #[serde(default)]

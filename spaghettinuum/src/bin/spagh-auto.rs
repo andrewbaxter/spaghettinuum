@@ -17,13 +17,6 @@ use {
                 DebugFlag,
                 ENV_CONFIG,
             },
-            stored::{
-                self,
-                record::dns_record::{
-                    format_dns_key,
-                    RecordType,
-                },
-            },
             wire,
         },
         publishing::{
@@ -43,6 +36,7 @@ use {
             identity_secret::get_identity_signer,
             publish_util::{
                 self,
+                add_ip_record,
                 add_ssh_host_key_records,
             },
             system_addr::resolve_global_ip,
@@ -108,44 +102,18 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         }
         for a in global_addrs {
             let ip = resolve_global_ip(log, a).await?;
-            let key;
-            let data;
-            match ip {
-                std::net::IpAddr::V4(ip) => {
-                    key = RecordType::A;
-                    data =
-                        serde_json::to_value(
-                            &stored::record::dns_record::DnsA::V1(stored::record::dns_record::latest::DnsA(vec![ip])),
-                        ).unwrap();
-                },
-                std::net::IpAddr::V6(ip) => {
-                    key = RecordType::Aaaa;
-                    data =
-                        serde_json::to_value(
-                            &stored::record::dns_record::DnsAaaa::V1(
-                                stored::record::dns_record::latest::DnsAaaa(vec![ip]),
-                            ),
-                        ).unwrap();
-                },
-            }
-            let key = format_dns_key(".", key);
-            if !publish_data.contains_key(&key) {
-                publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
-                    ttl: 60,
-                    data: Some(data),
-                }));
-            }
+            add_ip_record(&mut publish_data, ip);
         }
         add_ssh_host_key_records(&mut publish_data, config.ssh_host_keys).await?;
         loop {
             match async {
                 ta_res!(());
-                publish_util::announce(log, identity_signer.clone(), &resolvers, &publishers).await?;
+                publish_util::announce(log, &resolvers, &publishers, &identity_signer).await?;
                 publish_util::publish(
                     log,
                     &resolvers,
                     &publishers,
-                    identity_signer.clone(),
+                    &identity_signer,
                     wire::api::publish::v1::PublishRequestContent {
                         clear_all: true,
                         set: publish_data.clone(),

@@ -11,6 +11,10 @@ use {
                 self,
                 announcement::latest::AnnouncementPublisher,
                 identity::Identity,
+                record::dns_record::{
+                    format_dns_key,
+                    RecordType,
+                },
                 shared::SerialAddr,
             },
             wire::{
@@ -24,9 +28,7 @@ use {
         },
     },
     chrono::Utc,
-    htwrap::{
-        htreq,
-    },
+    htwrap::htreq,
     loga::{
         ea,
         Log,
@@ -64,9 +66,9 @@ pub fn generate_publish_announce(
 
 pub async fn announce(
     log: &Log,
-    identity_signer: Arc<Mutex<dyn IdentitySigner>>,
     resolvers: &[UrlPair],
     publishers: &[UrlPair],
+    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
 ) -> Result<(), loga::Error> {
     let mut publishers_info = vec![];
     for s in publishers {
@@ -98,7 +100,7 @@ pub async fn announce(
     }
     let (identity, announcement) =
         generate_publish_announce(
-            &identity_signer,
+            identity_signer,
             publishers_info,
         ).map_err(|e| log.err_with("Error generating publisher announcement", ea!(err = e)))?;
     let request = wire::api::publish::v1::AnnounceRequest {
@@ -125,7 +127,7 @@ pub async fn publish(
     log: &Log,
     resolvers: &[UrlPair],
     publishers: &[UrlPair],
-    identity_signer: Arc<Mutex<dyn IdentitySigner>>,
+    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
     args: wire::api::publish::latest::PublishRequestContent,
 ) -> Result<(), loga::Error> {
     let (identity, signed_request_content) =
@@ -158,6 +160,33 @@ pub async fn publish(
     return Ok(());
 }
 
+/// Add an ip address record to a set to publish
+pub fn add_ip_record(publish_data: &mut HashMap<String, stored::record::RecordValue>, ip: std::net::IpAddr) {
+    let key;
+    let data;
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            key = RecordType::A;
+            data =
+                serde_json::to_value(
+                    &stored::record::dns_record::DnsA::V1(stored::record::dns_record::latest::DnsA(vec![ip])),
+                ).unwrap();
+        },
+        std::net::IpAddr::V6(ip) => {
+            key = RecordType::Aaaa;
+            data =
+                serde_json::to_value(
+                    &stored::record::dns_record::DnsAaaa::V1(stored::record::dns_record::latest::DnsAaaa(vec![ip])),
+                ).unwrap();
+        },
+    }
+    let key = format_dns_key(".", key);
+    publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
+        ttl: 60,
+        data: Some(data),
+    }));
+}
+
 /// Scan system for ssh host keys and add them to a record set to publish.
 ///
 /// * `paths` - if empty, search the system for default host key paths
@@ -172,7 +201,7 @@ pub async fn add_ssh_host_key_records(
     }
     let mut host_keys = vec![];
     for key_path in paths {
-        let Some(key) = fs_util:: maybe_read(&key_path).await ? else {
+        let Some(key) = fs_util::maybe_read(&key_path).await? else {
             break;
         };
         let key =

@@ -34,7 +34,7 @@ use {
 
 pub fn system_publisher_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error> {
     bb!{
-        let Some(raw_publishers) = env:: var_os(ENV_PUBLISHER_URLS) else {
+        let Some(raw_publishers) = env::var_os(ENV_PUBLISHER_URLS) else {
             break;
         };
         let raw_publishers =
@@ -62,7 +62,6 @@ pub fn system_publisher_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
         }
         return Ok(publishers);
     };
-
     return Ok(system_resolver_url_pairs(log)?);
 }
 
@@ -71,7 +70,7 @@ pub trait Publisher: Send + Sync {
     async fn publish(
         &self,
         log: &Log,
-        identity_signer: Arc<Mutex<dyn IdentitySigner>>,
+        identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
         content: wire::api::publish::latest::PublishRequestContent,
     ) -> Result<(), loga::Error>;
 }
@@ -86,7 +85,7 @@ impl Publisher for RemotePublisher {
     async fn publish(
         &self,
         log: &Log,
-        identity_signer: Arc<Mutex<dyn IdentitySigner>>,
+        identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
         content: wire::api::publish::latest::PublishRequestContent,
     ) -> Result<(), loga::Error> {
         publish_util::publish(log, &self.resolver_urls, &self.publisher_urls, identity_signer, content).await?;
