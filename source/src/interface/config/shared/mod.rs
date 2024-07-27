@@ -1,30 +1,35 @@
-use loga::{
-    ea,
-    ResultContext,
-};
-use std::{
-    net::IpAddr,
-    path::PathBuf,
-    sync::{
-        Arc,
-        Mutex,
+use {
+    aargvark::Aargvark,
+    loga::{
+        ea,
+        ResultContext,
     },
-};
-use aargvark::Aargvark;
-use schemars::JsonSchema;
-use serde::{
-    Serialize,
-    Deserialize,
-};
-use std::net::{
-    SocketAddr,
-    ToSocketAddrs,
-};
-use schemars::{
-    schema::{
-        SchemaObject,
-        Metadata,
-        InstanceType,
+    schemars::{
+        schema::{
+            InstanceType,
+            Metadata,
+            SchemaObject,
+        },
+        JsonSchema,
+    },
+    serde::{
+        Deserialize,
+        Serialize,
+    },
+    std::{
+        net::{
+            IpAddr,
+            Ipv4Addr,
+            Ipv6Addr,
+            SocketAddr,
+            ToSocketAddrs,
+        },
+        path::PathBuf,
+        str::FromStr,
+        sync::{
+            Arc,
+            Mutex,
+        },
     },
 };
 
@@ -107,6 +112,107 @@ impl JsonSchema for StrSocketAddr {
             metadata: Some(Box::new(Metadata {
                 description: Some(
                     "An ip address or domain (ex: \"localhost\") which resolves to an address".to_string(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }.into();
+    }
+}
+
+/// An IP address, optional port, and optional ADN (authentication domain name).
+#[derive(Clone)]
+pub struct AdnSocketAddr {
+    pub ip: IpAddr,
+    pub port: Option<u16>,
+    /// Authentication domain name (imaginary domain name associated with ip for tls
+    /// resolution)
+    pub adn: Option<String>,
+}
+
+impl std::fmt::Display for AdnSocketAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.ip {
+            IpAddr::V4(i) => i.fmt(f)?,
+            IpAddr::V6(i) => format_args!("[{}]", i).fmt(f)?,
+        }
+        if let Some(port) = self.port {
+            format_args!(":{}", port).fmt(f)?;
+        }
+        if let Some(adn) = &self.adn {
+            format_args!("#{}", adn).fmt(f)?;
+        }
+        return Ok(());
+    }
+}
+
+impl Serialize for AdnSocketAddr {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+        return self.to_string().serialize(serializer);
+    }
+}
+
+impl<'t> Deserialize<'t> for AdnSocketAddr {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'t> {
+        let s = String::deserialize(deserializer)?;
+        let sockaddr;
+        let adn;
+        match s.split_once("#") {
+            Some((s, a)) => {
+                sockaddr = s;
+                adn = Some(a.to_string());
+            },
+            None => {
+                sockaddr = &s;
+                adn = None;
+            },
+        }
+        let ip;
+        let port;
+        match sockaddr.split_once(":") {
+            Some((i, p)) => {
+                ip = i;
+                port =
+                    Some(
+                        u16::from_str_radix(
+                            p,
+                            10,
+                        ).map_err(|e| serde::de::Error::custom(format!("Invalid port in AdnSockAddr: {}", e)))?,
+                    );
+            },
+            None => {
+                ip = sockaddr;
+                port = None;
+            },
+        }
+        let ip = if let Some(i) = ip.strip_prefix("[").and_then(|i| i.strip_suffix("]")) {
+            IpAddr::V6(Ipv6Addr::from_str(i).map_err(|e| serde::de::Error::custom(e.to_string()))?)
+        } else {
+            IpAddr::V4(Ipv4Addr::from_str(ip).map_err(|e| serde::de::Error::custom(e.to_string()))?)
+        };
+        return Ok(Self {
+            ip: ip,
+            port: port,
+            adn: adn,
+        });
+    }
+}
+
+impl JsonSchema for AdnSocketAddr {
+    fn schema_name() -> String {
+        return "AdnSocketAddr".to_string();
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        return SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "Either just an IP address (and port) as it would appear as in a URL host part (IPv6 surrounded by `[]`), followed by `#` then the ADN (authentication domain name - that will appear on the server's TLS certificate). Default ports may change based on the context and presence of the ADN.".to_string(),
                 ),
                 ..Default::default()
             })),

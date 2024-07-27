@@ -54,7 +54,11 @@ use {
         },
     },
     hickory_resolver::{
-        config::NameServerConfigGroup,
+        config::{
+            NameServerConfig,
+            NameServerConfigGroup,
+            ResolverOpts,
+        },
         name_server::{
             GenericConnector,
             NameServerPool,
@@ -77,7 +81,10 @@ use {
         Log,
         ResultContext,
     },
-    std::sync::Arc,
+    std::{
+        net::SocketAddr,
+        sync::Arc,
+    },
     taskmanager::TaskManager,
     tokio::{
         net::{
@@ -542,21 +549,33 @@ pub async fn start_dns_bridge(
     }
 
     let upstream = {
-        let (config, options) =
-            hickory_resolver
-            ::system_conf
-            ::read_system_conf().stack_context(
-                log,
-                "Error reading system dns resolver config for dns bridge upstream",
-            )?;
-        let mut name_servers = NameServerConfigGroup::new();
-        for n in config.name_servers() {
-            name_servers.push(n.clone());
+        let mut upstream_servers = NameServerConfigGroup::new();
+        for n in &dns_config.upstream {
+            let mut upstream;
+            match &n.adn {
+                Some(adn) => {
+                    upstream =
+                        NameServerConfig::new(
+                            SocketAddr::new(n.ip, n.port.unwrap_or(853)),
+                            hickory_resolver::config::Protocol::Tls,
+                        );
+                    upstream.tls_dns_name = Some(adn.clone());
+                },
+                None => {
+                    upstream =
+                        NameServerConfig::new(
+                            SocketAddr::new(n.ip, n.port.unwrap_or(53)),
+                            hickory_resolver::config::Protocol::Udp,
+                        );
+                },
+            }
+            upstream_servers.push(upstream);
         }
-        if let Some(client_config) = config.client_config() {
-            name_servers = name_servers.with_client_config(client_config.0.clone());
-        }
-        NameServerPool::from_config(name_servers, options, GenericConnector::new(TokioRuntimeProvider::new()))
+        NameServerPool::from_config(
+            upstream_servers,
+            ResolverOpts::default(),
+            GenericConnector::new(TokioRuntimeProvider::new()),
+        )
     };
     let mut server = hickory_server::ServerFuture::new(Handler(Arc::new(HandlerInner {
         log: log.clone(),
@@ -593,7 +612,6 @@ pub async fn start_dns_bridge(
         let tm = tm.clone();
         async move {
             ta_res!(());
-
             select!{
                 _ = tm.until_terminate() => {
                     return Ok(());

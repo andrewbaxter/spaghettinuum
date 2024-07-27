@@ -1,25 +1,19 @@
 use {
     loga::{
-        ea,
         Log,
         ResultContext,
     },
     serde_json::json,
     spaghettinuum::{
-        interface::config::identity::{
-            LocalIdentitySecret,
-        },
+        interface::config::identity::LocalIdentitySecret,
         utils::local_identity::write_identity_secret,
     },
 };
 #[cfg(feature = "card")]
 use {
-    spaghettinuum::{
-        utils::{
-            pgp::{
-                self,
-            },
-        },
+    loga::ea,
+    spaghettinuum::utils::pgp::{
+        self,
     },
     openpgp_card_pcsc::PcscBackend,
     openpgp_card_sequoia::{

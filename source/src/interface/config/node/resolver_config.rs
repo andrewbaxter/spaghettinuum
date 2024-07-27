@@ -1,9 +1,14 @@
-use schemars::JsonSchema;
-use serde::{
-    Deserialize,
-    Serialize,
+use {
+    crate::interface::config::shared::{
+        AdnSocketAddr,
+        StrSocketAddr,
+    },
+    schemars::JsonSchema,
+    serde::{
+        Deserialize,
+        Serialize,
+    },
 };
-use crate::interface::config::shared::StrSocketAddr;
 
 #[derive(Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
@@ -21,6 +26,10 @@ pub struct DnsBridgeConfig {
     /// Defaults to `[::]:853` and `0:853`.
     #[serde(default)]
     pub tcp_bind_addrs: Vec<StrSocketAddr>,
+    /// Upstream resolvers, such as for non-`.s` names. Defaults to port 53 if no ADN,
+    /// otherwise 853.
+    #[serde(default)]
+    pub upstream: Vec<AdnSocketAddr>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema, Default)]
