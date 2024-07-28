@@ -84,6 +84,7 @@ use {
     },
     taskmanager::TaskManager,
     tokio::{
+        fs::create_dir_all,
         select,
         sync::watch::{
             self,
@@ -303,10 +304,14 @@ pub async fn htserve_certs(
     cache_dir: &Path,
     write_certs: bool,
     tm: &TaskManager,
-    publisher: &Arc<dyn Publisher>,
+    publisher: Option<&Arc<dyn Publisher>>,
     identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
     options: RequestCertOptions,
 ) -> Result<Option<(Arc<dyn ResolvesServerCert>, Arc<dyn rustls_21::server::ResolvesServerCert>)>, loga::Error> {
+    create_dir_all(cache_dir)
+        .await
+        .context_with("Error creating htserve cache dir", ea!(path = cache_dir.to_string_lossy()))?;
+
     async fn publish_tls_certs(
         log: &Log,
         publisher: &Arc<dyn Publisher>,
@@ -413,7 +418,9 @@ pub async fn htserve_certs(
                 ),
             ),
         );
-    publish_tls_certs(&log, publisher, &identity_signer, &state).await?;
+    if let Some(publisher) = publisher {
+        publish_tls_certs(&log, publisher, &identity_signer, &state).await?;
+    }
     if write_certs {
         write(cache_dir.join("pub.pem"), state.current.pub_pem.as_bytes())
             .await
@@ -425,10 +432,10 @@ pub async fn htserve_certs(
 
     // Start refresh loop
     tm.critical_task("API - process new certs", {
-        let persistent_dir = cache_dir.to_path_buf();
+        let cache_dir = cache_dir.to_path_buf();
         let tm = tm.clone();
         let log = log.clone();
-        let publisher = publisher.clone();
+        let publisher = publisher.cloned();
         let identity_signer = identity_signer.clone();
         let latest_certs = latest_certs.clone();
         let r21_latest_certs = r21_latest_certs.clone();
@@ -475,12 +482,14 @@ pub async fn htserve_certs(
                             return Ok(());
                         },
                     };
-                    publish_tls_certs(&log, &publisher, &identity_signer, &state).await?;
+                    if let Some(publisher) = publisher.as_ref() {
+                        publish_tls_certs(&log, publisher, &identity_signer, &state).await?;
+                    }
                     state.current = pair;
-                    write(persistent_dir.join("pub.pem"), state.current.pub_pem.as_bytes())
+                    write(cache_dir.join("pub.pem"), state.current.pub_pem.as_bytes())
                         .await
                         .context("Error writing new pub.pem")?;
-                    write(persistent_dir.join("priv.pem"), state.current.priv_pem.as_bytes())
+                    write(cache_dir.join("priv.pem"), state.current.priv_pem.as_bytes())
                         .await
                         .context("Error writing new priv.pem")?;
                 }
@@ -497,7 +506,9 @@ pub async fn htserve_certs(
                     move |conn| Ok(db::api_certs_set(conn, Some(&stored::self_tls::SelfTlsState::V1(state)))?)
                 }).await.context("Error storing updated state")?;
                 state.pending = Some((Utc::now() + publish_ssl_ttl(), new_pair));
-                publish_tls_certs(&log, &publisher, &identity_signer, &state).await?;
+                if let Some(publisher) = publisher.as_ref() {
+                    publish_tls_certs(&log, publisher, &identity_signer, &state).await?;
+                }
             }
         }
     });

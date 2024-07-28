@@ -68,9 +68,7 @@ use {
         Log,
         ResultContext,
     },
-    p256::{
-        pkcs8::EncodePrivateKey,
-    },
+    p256::pkcs8::EncodePrivateKey,
     rustls::pki_types::{
         CertificateDer,
         PrivateKeyDer,

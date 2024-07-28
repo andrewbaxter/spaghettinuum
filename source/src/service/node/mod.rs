@@ -1,73 +1,73 @@
-use crate::interface::stored::shared::SerialAddr;
-use crate::interface::wire::node::latest::FindGoal;
-use crate::interface::wire::node::v1::DhtCoord;
-use crate::{
-    bb,
-    cap_fn,
+use {
+    crate::interface::stored::shared::SerialAddr,
+    crate::interface::wire::node::latest::FindGoal,
+    crate::interface::wire::node::v1::DhtCoord,
+    crate::{
+        bb,
+        cap_fn,
+    },
+    crate::interface::config::shared::StrSocketAddr,
+    crate::interface::stored::identity::Identity,
+    crate::interface::stored::node_identity::{
+        self,
+        NodeIdentityMethods,
+        NodeSecretMethods,
+        NodeIdentity,
+    },
+    crate::interface::{
+        stored,
+        wire,
+    },
+    crate::utils::signed::{
+        IdentSignatureMethods,
+        NodeIdentSignatureMethods,
+    },
+    crate::utils::blob::Blob,
+    crate::utils::time_util::ToInstant,
+    constant_time_eq::constant_time_eq,
+    tokio::select,
+    tokio::time::sleep,
+    crate::utils::db_util::setup_db,
+    chrono::{
+        Utc,
+        DateTime,
+        Duration,
+    },
+    futures::channel::mpsc::unbounded,
+    futures::channel::mpsc::UnboundedSender,
+    generic_array::ArrayLength,
+    generic_array::GenericArray,
+    loga::{
+        ea,
+        DebugDisplay,
+        ErrContext,
+        Log,
+        ResultContext,
+    },
+    manual_future::ManualFuture,
+    manual_future::ManualFutureCompleter,
+    rand::RngCore,
+    taskmanager::TaskManager,
+    serde::Deserialize,
+    serde::Serialize,
+    sha2::Digest,
+    std::collections::hash_map::Entry,
+    std::collections::{
+        HashMap,
+        HashSet,
+    },
+    std::fmt::Debug,
+    std::net::SocketAddr,
+    std::path::Path,
+    std::sync::atomic::{
+        AtomicUsize,
+        AtomicBool,
+    },
+    std::sync::atomic::Ordering,
+    std::sync::Arc,
+    std::sync::Mutex,
+    tokio::net::UdpSocket,
 };
-use crate::interface::config::shared::StrSocketAddr;
-use crate::interface::stored::identity::Identity;
-use crate::interface::stored::node_identity::{
-    self,
-    NodeIdentityMethods,
-    NodeSecretMethods,
-    NodeIdentity,
-};
-use crate::interface::{
-    stored,
-    wire,
-};
-use crate::utils::signed::{
-    IdentSignatureMethods,
-    NodeIdentSignatureMethods,
-};
-use crate::utils::blob::{
-    Blob,
-};
-use crate::utils::time_util::ToInstant;
-use constant_time_eq::constant_time_eq;
-use tokio::select;
-use tokio::time::sleep;
-use crate::utils::db_util::setup_db;
-use chrono::{
-    Utc,
-    DateTime,
-    Duration,
-};
-use futures::channel::mpsc::unbounded;
-use futures::channel::mpsc::UnboundedSender;
-use generic_array::ArrayLength;
-use generic_array::GenericArray;
-use loga::{
-    ea,
-    DebugDisplay,
-    ErrContext,
-    Log,
-    ResultContext,
-};
-use manual_future::ManualFuture;
-use manual_future::ManualFutureCompleter;
-use rand::RngCore;
-use taskmanager::TaskManager;
-use serde::Deserialize;
-use serde::Serialize;
-use sha2::Digest;
-use std::collections::hash_map::Entry;
-use std::collections::{
-    HashMap,
-    HashSet,
-};
-use std::fmt::Debug;
-use std::net::SocketAddr;
-use std::path::Path;
-use std::sync::atomic::{
-    AtomicUsize,
-    AtomicBool,
-};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::sync::Mutex;
-use tokio::net::UdpSocket;
 
 pub mod db;
 
@@ -659,7 +659,6 @@ impl Node {
         let (f, c) = ManualFuture::new();
         self.start_find(FindGoal::Identity(key), Some(c)).await;
         let res = f.await;
-
         bb!{
             'skip_store _;
             match &res.value {
@@ -706,7 +705,6 @@ impl Node {
                 }
             }
         };
-
         return res.value;
     }
 
@@ -1187,7 +1185,6 @@ impl Node {
         let buckets = self.0.buckets.lock().unwrap();
         let (bucket_i, _) = dist(&goal_coord, &self.0.own_coord);
         let mut nodes: Vec<wire::node::latest::NodeInfo> = vec![];
-
         bb!{
             'full _;
             // 1. Start with nodes in the same k-bucket, since all nodes in a bucket are in a
@@ -1224,7 +1221,6 @@ impl Node {
                 }
             }
         }
-
         return nodes;
     }
 
@@ -1243,7 +1239,7 @@ impl Node {
                             FindGoal::Identity(i) => ident_coord(&i),
                         }, NEIGHBORHOOD),
                         value: bb!{
-                            let FindGoal:: Identity(ident) = m.goal else {
+                            let FindGoal::Identity(ident) = m.goal else {
                                 break None;
                             };
                             break self.0.store.lock().unwrap().get(&ident).map(|v| v.value.clone());

@@ -550,30 +550,46 @@ pub async fn start_dns_bridge(
 
     let upstream = {
         let mut upstream_servers = NameServerConfigGroup::new();
-        for n in &dns_config.upstream {
-            let mut upstream;
-            match &n.adn {
-                Some(adn) => {
-                    upstream =
-                        NameServerConfig::new(
-                            SocketAddr::new(n.ip, n.port.unwrap_or(853)),
-                            hickory_resolver::config::Protocol::Tls,
-                        );
-                    upstream.tls_dns_name = Some(adn.clone());
-                },
-                None => {
-                    upstream =
-                        NameServerConfig::new(
-                            SocketAddr::new(n.ip, n.port.unwrap_or(53)),
-                            hickory_resolver::config::Protocol::Udp,
-                        );
-                },
+        let upstream_opts;
+        if let Some(dns_config_upstream) = &dns_config.upstream {
+            for n in dns_config_upstream {
+                let mut upstream;
+                match &n.adn {
+                    Some(adn) => {
+                        upstream =
+                            NameServerConfig::new(
+                                SocketAddr::new(n.ip, n.port.unwrap_or(853)),
+                                hickory_resolver::config::Protocol::Tls,
+                            );
+                        upstream.tls_dns_name = Some(adn.clone());
+                    },
+                    None => {
+                        upstream =
+                            NameServerConfig::new(
+                                SocketAddr::new(n.ip, n.port.unwrap_or(53)),
+                                hickory_resolver::config::Protocol::Udp,
+                            );
+                    },
+                }
+                upstream_servers.push(upstream);
             }
-            upstream_servers.push(upstream);
+            upstream_opts = ResolverOpts::default();
+        } else {
+            let (config, options) =
+                hickory_resolver
+                ::system_conf
+                ::read_system_conf().stack_context(
+                    log,
+                    "Error reading system dns resolver config for DNS bridge upstream",
+                )?;
+            for n in config.name_servers() {
+                upstream_servers.push(n.clone());
+            }
+            upstream_opts = options;
         }
         NameServerPool::from_config(
             upstream_servers,
-            ResolverOpts::default(),
+            upstream_opts,
             GenericConnector::new(TokioRuntimeProvider::new()),
         )
     };

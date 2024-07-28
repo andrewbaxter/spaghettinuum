@@ -144,7 +144,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             true
         } else {
             false
-        }, tm, &publisher, &identity_signer, RequestCertOptions {
+        }, tm, Some(&publisher), &identity_signer, RequestCertOptions {
             certifier: true,
             signature: false,
         }).await? else {

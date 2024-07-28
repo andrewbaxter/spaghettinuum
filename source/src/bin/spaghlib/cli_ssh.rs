@@ -28,8 +28,11 @@ use {
         ta_res,
     },
     std::{
-        env::self,
-        net::SocketAddr,
+        env,
+        net::{
+            IpAddr,
+            SocketAddr,
+        },
         path::PathBuf,
         sync::Arc,
     },
@@ -189,7 +192,6 @@ async fn connect(
     let (ips, mut additional_records) =
         resolve(log, &system_resolver_url_pairs(log)?, &host.host, &[record::ssh_record::KEY_HOST_KEYS]).await?;
     let mut host_keys = vec![];
-
     bb!{
         let Some(r) = additional_records.remove(record::ssh_record::KEY_HOST_KEYS) else {
             log.log(loga::DEBUG, "Response missing SSH host keys record; not using for verification");
@@ -215,7 +217,6 @@ async fn connect(
             record::ssh_record::SshHostKeys::V1(keys) => {
                 for key in keys.0 {
                     let mut parts = key.split_whitespace();
-
                     bb!{
                         let Some(algo) = parts.next() else {
                             break;
@@ -242,7 +243,6 @@ async fn connect(
         }
         break;
     };
-
     let config_port;
     let config_user;
     match russh_config::parse_home(&host.host) {
@@ -261,13 +261,15 @@ async fn connect(
     let mut conn =
         russh::client::connect(
             Arc::new(russh::client::Config::default()),
-            Iterator::chain(ips.ipv6s.into_iter(), ips.ipv4s.into_iter())
+            Iterator::chain(
+                ips.ipv6s.into_iter().map(|x| IpAddr::V6(x)),
+                ips.ipv4s.into_iter().map(|x| IpAddr::V4(x)),
+            )
                 .map(|i| SocketAddr::new(i, host.port.unwrap_or(config_port)))
                 .collect_vec()
                 .as_slice(),
             Handler { host_keys: host_keys },
         ).await?;
-
     bb!{
         'authenticated _;
         let user = host.user.or(config_user).unwrap_or("root".to_string());
@@ -325,7 +327,6 @@ async fn connect(
         }
         return Err(loga::err("Couldn't locate any authentication methods or all attempted methods were invalid"));
     }
-
     let conn = Arc::new(conn);
     let res = async {
         ta_res!(());

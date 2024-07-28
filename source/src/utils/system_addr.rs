@@ -9,16 +9,15 @@ use {
     },
     chrono::Duration,
     http_body_util::Full,
-    htwrap::{
-        htreq::{
-            uri_parts,
-            Host,
-        },
+    htwrap::htreq::{
+        default_tls,
+        uri_parts,
+        Host,
+        Ips,
     },
     hyper::{
         body::Bytes,
         Request,
-        Uri,
     },
     loga::{
         ea,
@@ -105,11 +104,16 @@ pub async fn remote_resolve_global_ip(
     let log = &log.fork(ea!(lookup = lookup));
     let lookup = hyper::Uri::from_str(&lookup).stack_context(log, "Couldn't parse `advertise_addr` lookup as URL")?;
     let (lookup_scheme, lookup_host, lookup_port) = uri_parts(&lookup).stack_context(log, "Incomplete URL")?;
-    let (lookup_ip, lookup_host) = match lookup_host {
-        Host::Ip(i) => (i, i.to_string()),
+    let mut ips = Ips {
+        ipv4s: Default::default(),
+        ipv6s: Default::default(),
+    };
+    match &lookup_host {
+        Host::Ip(i) => ips.push(*i),
         Host::Name(lookup_host) => {
-            let ip =
-                hickory_resolver::TokioAsyncResolver::tokio(hickory_resolver::config::ResolverConfig::default(), {
+            for ip in hickory_resolver::TokioAsyncResolver::tokio(
+                hickory_resolver::config::ResolverConfig::default(),
+                {
                     let mut opts = hickory_resolver::config::ResolverOpts::default();
                     opts.ip_strategy = match contact_ip_ver {
                         Some(IpVer::V4) => hickory_resolver::config::LookupIpStrategy::Ipv4Only,
@@ -117,24 +121,23 @@ pub async fn remote_resolve_global_ip(
                         None => hickory_resolver::config::LookupIpStrategy::Ipv4AndIpv6,
                     };
                     opts
-                })
-                    .lookup_ip(&format!("{}.", lookup_host))
-                    .await
-                    .stack_context(log, "Failed to look up lookup host ip addresses")?
-                    .into_iter()
-                    .next()
-                    .stack_context(
-                        log,
-                        "Unable to resolve any lookup server addresses matching ipv4/6 requirements",
-                    )?;
-            (ip, lookup_host)
+                },
+            )
+                .lookup_ip(&format!("{}.", lookup_host))
+                .await
+                .stack_context(log, "Failed to look up lookup host ip addresses")?
+                .into_iter() {
+                ips.push(ip);
+            }
         },
-    };
-    let url = Uri::from_str(&format!("{}://{}:{}", lookup_scheme, match lookup_ip {
-        IpAddr::V4(v) => v.to_string(),
-        IpAddr::V6(v) => format!("[{}]", v),
-    }, lookup_port)).unwrap();
-    let mut conn = htwrap::htreq::connect(&url).await.context("Error connecting to lookup host")?;
+    }
+    if ips.ipv4s.is_empty() && ips.ipv6s.is_empty() {
+        return Err(log.err("Unable to resolve any lookup server addresses matching ipv4/6 requirements"));
+    }
+    let mut conn =
+        htwrap::htreq::connect_ips(ips, default_tls(), lookup_scheme, lookup_host.clone(), lookup_port)
+            .await
+            .context("Error connecting to lookup host")?;
     let resp =
         htwrap::htreq::send_simple(
             log,
@@ -143,7 +146,7 @@ pub async fn remote_resolve_global_ip(
             Duration::try_seconds(10).unwrap(),
             Request::builder()
                 .uri(lookup)
-                .header(hyper::header::HOST, lookup_host)
+                .header(hyper::header::HOST, lookup_host.to_string())
                 .body(Full::<Bytes>::new(Bytes::new()))
                 .unwrap(),
         )

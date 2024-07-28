@@ -12,26 +12,26 @@
   rustPlatform.buildRustPackage {
     pname = "spaghettinuum";
     version = "0.0.0";
-    src = ../spaghettinuum;
+    src = ../source;
     # Based on final path element of src
-    sourceRoot = "spaghettinuum";
+    sourceRoot = "source";
     # For build.rs:
     # Source is copied over with all the files read only for some reason.
     # Make a new tree as the build user and make the files writable.
     preConfigure = ''
       cd ../
-      mv spaghettinuum ro
+      mv source ro
       cp -r ro rw
       chmod -R u+w rw
       cd rw
     '';
     cargoLock = {
-      lockFile = ../spaghettinuum/Cargo.lock;
+      lockFile = ../source/Cargo.lock;
     };
-    buildFeatures = [ ] + (lib.optionals card [
+    buildFeatures = [ ] ++ (lib.optionals card [
       "card"
     ]);
-    buildInputs = [ sqlite ] + (lib.optionals card [
+    buildInputs = [ sqlite ] ++ (lib.optionals card [
       nettle
       pcsclite
       sqlite

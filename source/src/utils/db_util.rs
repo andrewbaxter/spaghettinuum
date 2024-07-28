@@ -14,6 +14,7 @@ use {
     },
     rusqlite::Transaction,
     std::path::Path,
+    tokio::fs::create_dir_all,
 };
 
 pub async fn setup_db(
@@ -21,6 +22,9 @@ pub async fn setup_db(
     migrate: fn(&mut rusqlite::Connection) -> Result<(), GoodError>,
 ) -> Result<Pool, loga::Error> {
     let log = &Log::new().fork(ea!(path = p.to_string_lossy()));
+    if let Some(parent) = p.parent() {
+        create_dir_all(parent).await.stack_context(log, "Error creating parent directories for database")?;
+    }
     let pool = Config::new(p).create_pool(Runtime::Tokio1).stack_context(log, "Error constructing db pool")?;
     let conn = pool.get().await.stack_context(log, "Error getting db connection from pool")?;
     conn.interact(move |conn| {

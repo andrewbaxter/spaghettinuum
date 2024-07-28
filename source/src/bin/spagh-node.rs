@@ -190,6 +190,12 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     let identity_signer =
         get_identity_signer(identity_secret.clone()).await.stack_context(log, "Error loading identity")?;
 
+    // Prep for api
+    let mut router = htserve::PathRouter::default();
+    router.insert("/health", Box::new(htwrap::handler!(()(_r -> htserve:: Body) {
+        return response_200();
+    })));
+
     // Start node
     let node = {
         let log = log.fork_with_log_from(debug_level(DebugFlag::Node), ea!(sys = "node"));
@@ -197,7 +203,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         for e in config.node.bootstrap.unwrap_or_else(|| vec![BootstrapConfig {
             addr: StrSocketAddr::new("[2600:1900:4040:485::]:48390"),
             ident: NodeIdentity::from_str(
-                "n_yryyyyyyynaiewf9f7pbffdi8bayqjohnwoua4syarqoxetdhbj5o15wr9rec",
+                "n_yryyyyyyyy8dqmefqpfqgpopoawdwxack5c7ixrsr639fbb69a1z9yecbcbp4",
             ).unwrap(),
         }]) {
             bootstrap.push(NodeInfo {
@@ -224,11 +230,11 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     };
 
     // Start publisher
-    let publisher = {
+    let publisher;
+    if let Some(publisher_config) = config.publisher {
         let log = &log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher"));
         let bind_addr =
-            config
-                .publisher
+            publisher_config
                 .bind_addr
                 .unwrap_or_else(
                     || StrSocketAddr::from(
@@ -241,9 +247,9 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             *public_ips
                 .get(0)
                 .stack_context(log, "Running a publisher requires at least one configured global IP")?;
-        let advertise_port = config.publisher.advertise_port.unwrap_or(bind_addr.port());
+        let advertise_port = publisher_config.advertise_port.unwrap_or(bind_addr.port());
         let advertise_addr = SocketAddr::new(advertise_ip, advertise_port);
-        let publisher =
+        let publisher1 =
             Publisher::new(log, &tm, node.clone(), bind_addr, advertise_addr, &data_dir)
                 .await
                 .stack_context(log, "Error setting up publisher")?;
@@ -251,21 +257,23 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         // Publish self
         let (identity, announcement) = generate_publish_announce(&identity_signer, vec![InfoResponse {
             advertise_addr: advertise_addr,
-            cert_pub_hash: publisher.pub_cert_hash(),
+            cert_pub_hash: publisher1.pub_cert_hash(),
         }]).map_err(|e| log.err_with("Failed to generate announcement for self publication", ea!(err = e)))?;
-        publisher.announce(&identity, announcement).await?;
+        publisher1.announce(&identity, announcement).await?;
         let mut publish_data = HashMap::new();
         for ip in &public_ips {
             add_ip_record(&mut publish_data, *ip);
         }
-        add_ssh_host_key_records(&mut publish_data, config.publisher.ssh_host_keys).await?;
-        publisher.modify_values(&identity, wire::api::publish::v1::PublishRequestContent {
+        add_ssh_host_key_records(&mut publish_data, publisher_config.ssh_host_keys).await?;
+        publisher1.modify_values(&identity, wire::api::publish::v1::PublishRequestContent {
             clear_all: true,
             set: publish_data,
             ..Default::default()
         }).await?;
-        publisher
-    };
+        publisher = Some(publisher1);
+    } else {
+        publisher = None;
+    }
 
     // Get own tls cert
     let Some((certs, r21_certs)) =
@@ -274,7 +282,10 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             &cache_dir,
             false,
             tm,
-            &(publisher.clone() as Arc<dyn spaghettinuum::publishing::Publisher>),
+            publisher
+                .as_ref()
+                .map(|publisher| publisher.clone() as Arc<dyn spaghettinuum::publishing::Publisher>)
+                .as_ref(),
             &identity_signer,
             RequestCertOptions {
                 certifier: false,
@@ -285,28 +296,34 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         };
 
     // Start resolver
-    let resolver =
-        Resolver::new(
-            &log.fork_with_log_from(debug_level(DebugFlag::Resolve), ea!(sys = "resolver")),
-            &tm,
-            node.clone(),
-            config.resolver.max_cache,
-            &cache_dir,
-            publisher.clone(),
-            public_ips.clone(),
-        )
-            .await
-            .stack_context(log, "Error setting up resolver")?;
-    if !config.resolver.dns_bridge.disable {
-        resolver::dns::start_dns_bridge(
-            &log.fork_with_log_from(debug_level(DebugFlag::Resolve), ea!(sys = "resolver_dns")),
-            &tm,
-            &resolver,
-            r21_certs,
-            config.resolver.dns_bridge,
-        )
-            .await
-            .stack_context(log, "Error setting up resolver DNS bridge")?;
+    if let Some(resolver_config) = config.resolver {
+        let resolver =
+            Resolver::new(
+                &log.fork_with_log_from(debug_level(DebugFlag::Resolve), ea!(sys = "resolver")),
+                &tm,
+                node.clone(),
+                resolver_config.max_cache,
+                &cache_dir,
+                publisher.clone(),
+                public_ips.clone(),
+            )
+                .await
+                .stack_context(log, "Error setting up resolver")?;
+        if let Some(dns_config) = resolver_config.dns_bridge {
+            resolver::dns::start_dns_bridge(
+                &log.fork_with_log_from(debug_level(DebugFlag::Resolve), ea!(sys = "resolver_dns")),
+                &tm,
+                &resolver,
+                r21_certs,
+                dns_config,
+            )
+                .await
+                .stack_context(log, "Error setting up resolver DNS bridge")?;
+        }
+        {
+            let log = log.fork_with_log_from(debug_level(DebugFlag::Resolve), ea!(sys = "resolver"));
+            router.insert("/resolve", Box::new(resolver::build_api_endpoints(log, &resolver)));
+        }
     }
 
     // Start http api
@@ -316,10 +333,6 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             log.err("Configuration enables resolver or publisher but no api http bind address present in config"),
         );
     }
-    let mut router = htserve::PathRouter::default();
-    router.insert("/health", Box::new(htwrap::handler!(()(_r -> htserve:: Body) {
-        return response_200();
-    })));
     if let Some(admin_token) = config.api.admin_token {
         let admin_token = hash_auth_token(&match admin_token {
             config::node::api_config::AdminToken::File(p) => String::from_utf8(
@@ -348,23 +361,21 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 }
             })),
         );
-        router.insert(
-            "/publish",
-            Box::new(
-                publisher::build_api_endpoints(
-                    &log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher")),
-                    &publisher,
-                    &admin_token,
-                    &data_dir,
-                )
-                    .await
-                    .stack_context(&log, "Error building publisher endpoints")?,
-            ),
-        );
-    }
-    {
-        let log = log.fork_with_log_from(debug_level(DebugFlag::Resolve), ea!(sys = "resolver"));
-        router.insert("/resolve", Box::new(resolver::build_api_endpoints(log, &resolver)));
+        if let Some(publisher) = &publisher {
+            router.insert(
+                "/publish",
+                Box::new(
+                    publisher::build_api_endpoints(
+                        &log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher")),
+                        &publisher,
+                        &admin_token,
+                        &data_dir,
+                    )
+                        .await
+                        .stack_context(&log, "Error building publisher endpoints")?,
+                ),
+            );
+        }
     }
     let router = Arc::new(router);
     let mut api_bind_addrs = config.api.bind_addrs;

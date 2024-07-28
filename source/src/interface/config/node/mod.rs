@@ -4,11 +4,9 @@ use {
         Deserialize,
         Serialize,
     },
-    super::{
-        shared::{
-            IdentitySecretArg,
-            GlobalAddrConfig,
-        },
+    super::shared::{
+        IdentitySecretArg,
+        GlobalAddrConfig,
     },
 };
 
@@ -39,11 +37,11 @@ pub struct Config {
     pub node: node_config::NodeConfig,
     /// The publisher (as named) allows publishing records.
     #[serde(default)]
-    pub publisher: publisher_config::PublisherConfig,
+    pub publisher: Option<publisher_config::PublisherConfig>,
     /// The resolver (as named) resolves records for clients. It is exposed on the API
     /// server along with other APIs.
     #[serde(default)]
-    pub resolver: resolver_config::ResolverConfig,
+    pub resolver: Option<resolver_config::ResolverConfig>,
     /// An HTTPS server for all client interaction: resolving, publishing, and
     /// administration.
     #[serde(default)]

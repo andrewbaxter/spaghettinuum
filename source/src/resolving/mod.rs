@@ -140,7 +140,10 @@ pub fn system_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error>
         // If no resolvers with ADN fall back to non-named resolvers
         if out.is_empty() {
             for s in conf.name_servers() {
-                let raw_url = format!("https://{}:{}", s.socket_addr.ip(), DEFAULT_API_PORT);
+                let raw_url = format!("https://{}:{}", match s.socket_addr.ip() {
+                    IpAddr::V4(i) => format!("{}", i),
+                    IpAddr::V6(i) => format!("[{}]", i),
+                }, DEFAULT_API_PORT);
                 out.push(UrlPair {
                     url: Uri::from_str(
                         &raw_url,
@@ -348,7 +351,7 @@ pub async fn resolve(
                 };
                 match r {
                     record::dns_record::DnsA::V1(r) => {
-                        break r.0.into_iter().map(|i| IpAddr::V4(i)).collect();
+                        break r.0;
                     },
                 }
             },
@@ -375,7 +378,7 @@ pub async fn resolve(
                 };
                 match r {
                     record::dns_record::DnsAaaa::V1(r) => {
-                        break r.0.into_iter().map(|i| IpAddr::V6(i)).collect();
+                        break r.0;
                     },
                 }
             },

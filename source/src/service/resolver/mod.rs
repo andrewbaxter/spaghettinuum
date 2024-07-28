@@ -152,7 +152,7 @@ struct Resolver_ {
     node: Node,
     log: Log,
     cache: Cache<(Identity, String), (DateTime<Utc>, Option<String>)>,
-    publisher: Arc<Publisher>,
+    publisher: Option<Arc<Publisher>>,
     global_addrs: Vec<IpAddr>,
 }
 
@@ -176,7 +176,7 @@ impl Resolver {
         node: Node,
         max_cache: Option<u64>,
         cache_dir: &Path,
-        publisher: Arc<Publisher>,
+        publisher: Option<Arc<Publisher>>,
         global_addrs: Vec<IpAddr>,
     ) -> Result<Resolver, loga::Error> {
         let db_pool =
@@ -263,7 +263,6 @@ impl Resolver {
     ) -> Result<wire::resolve::ResolveKeyValues, loga::Error> {
         // First check cache
         let now = Utc::now();
-
         bb!{
             'missing _;
             let mut kvs = HashMap::new();
@@ -325,63 +324,69 @@ impl Resolver {
                 ta_res!(ResolveKeyValues);
 
                 // Request values from publisher
-                if self.0.global_addrs.iter().any(|i| *i == publisher.addr.0.ip()) {
-                    // Publisher is us, short circuit network
-                    return Ok(self.0.publisher.get_values(&ident, request_keys.iter().map(|x| x.to_string()).collect()).await?);
-                } else {
-                    // Request values via publisher over internet
-                    let url = Uri::from_str(&format!("https://{}/{}?{}", publisher.addr, ident, request_keys.join(","))).unwrap();
-                    let connect = async {
-                        return Ok(
-                            HttpsConnectorBuilder::new()
-                                .with_tls_config(
-                                    ClientConfig::builder()
-                                        .dangerous()
-                                        .with_custom_certificate_verifier(SingleKeyVerifier::new(publisher.cert_hash))
-                                        .with_no_client_auth(),
-                                )
-                                .https_only()
-                                .enable_http1()
-                                .build()
-                                .call(url.clone())
-                                .await
-                                .map_err(
-                                    |e| loga::err_with("Connection failed", ea!(err = e.to_string(), url = url)),
-                                )?,
-                        );
+                bb!{
+                    // Check if publisher is us, short circuit network
+                    if !self.0.global_addrs.iter().any(|i| *i == publisher.addr.0.ip()) {
+                        break;
+                    }
+                    let Some(publisher) = &self.0.publisher else {
+                        break;
                     };
-                    let mut conn =
-                        Conn::new(
-                            hyper::client::conn::http1::handshake(select!{
-                                _ = sleep(
-                                    Duration::try_seconds(10).unwrap().to_std().unwrap()
-                                ) => Err(loga::err("Timeout connecting")),
-                                res = connect => res,
-                            }.context_with("Error connecting to publisher", ea!(url = url))?)
-                                .await
-                                .context("Error completing http handshake")?,
-                        );
-                    let pub_resp_bytes =
-                        htreq::send_simple(
-                            log,
-                            &mut conn,
-                            128 * 1024 * request_keys.len(),
-                            Duration::try_seconds(10).unwrap(),
-                            Request::builder()
-                                .method("GET")
-                                .uri(url)
-                                .header(hyper::header::HOST, publisher.addr.to_string())
-                                .body(Empty::<Bytes>::new())
-                                .unwrap(),
-                        )
-                            .await
-                            .context("Error getting response from publisher")?;
                     return Ok(
-                        serde_json::from_slice::<wire::resolve::ResolveKeyValues>(
-                            &pub_resp_bytes,
-                        ).stack_context(&log, "Couldn't parse response")?,
+                        publisher.get_values(&ident, request_keys.iter().map(|x| x.to_string()).collect()).await?,
                     );
                 }
+
+                // Request values via publisher over internet
+                let url = Uri::from_str(&format!("https://{}/{}?{}", publisher.addr, ident, request_keys.join(","))).unwrap();
+                let connect = async {
+                    return Ok(
+                        HttpsConnectorBuilder::new()
+                            .with_tls_config(
+                                ClientConfig::builder()
+                                    .dangerous()
+                                    .with_custom_certificate_verifier(SingleKeyVerifier::new(publisher.cert_hash))
+                                    .with_no_client_auth(),
+                            )
+                            .https_only()
+                            .enable_http1()
+                            .build()
+                            .call(url.clone())
+                            .await
+                            .map_err(|e| loga::err_with("Connection failed", ea!(err = e.to_string(), url = url)))?,
+                    );
+                };
+                let mut conn =
+                    Conn::new(
+                        hyper::client::conn::http1::handshake(select!{
+                            _ = sleep(
+                                Duration::try_seconds(10).unwrap().to_std().unwrap()
+                            ) => Err(loga::err("Timeout connecting")),
+                            res = connect => res,
+                        }.context_with("Error connecting to publisher", ea!(url = url))?)
+                            .await
+                            .context("Error completing http handshake")?,
+                    );
+                let pub_resp_bytes =
+                    htreq::send_simple(
+                        log,
+                        &mut conn,
+                        128 * 1024 * request_keys.len(),
+                        Duration::try_seconds(10).unwrap(),
+                        Request::builder()
+                            .method("GET")
+                            .uri(url)
+                            .header(hyper::header::HOST, publisher.addr.to_string())
+                            .body(Empty::<Bytes>::new())
+                            .unwrap(),
+                    )
+                        .await
+                        .context("Error getting response from publisher")?;
+                return Ok(
+                    serde_json::from_slice::<wire::resolve::ResolveKeyValues>(
+                        &pub_resp_bytes,
+                    ).stack_context(&log, "Couldn't parse response")?,
+                );
             }.await {
                 Ok(v) => {
                     values = Some(v);
@@ -440,7 +445,7 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter
         log: log,
     });
     let mut r = htserve::PathRouter::default();
-    r.insert("/v1", Box::new(htwrap::handler!((state: Arc<Inner>)(args -> htserve:: Body) {
+    r.insert("/v1", Box::new(htwrap::handler!((state: Arc < Inner >)(args -> htserve:: Body) {
         match async {
             ta_vis_res!(wire::api::resolve::v1::ResolveValues);
             let ident_src =
