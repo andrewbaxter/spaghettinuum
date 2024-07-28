@@ -34,6 +34,7 @@ use {
             wire::{
                 self,
                 api::publish::v1::PublishRequestContent,
+                resolve::DNS_DOT_SUFFIX,
             },
         },
         publishing::Publisher,
@@ -183,7 +184,7 @@ pub async fn request_cert(
     } else {
         let identity = message_signer.lock().unwrap().identity()?;
         let now = Utc::now();
-        let fqdn = format!("{}.s", identity);
+        let fqdn = format!("{}{}", identity, DNS_DOT_SUFFIX);
         let pub_der =
             create_leaf_cert_der_local(
                 priv_key,

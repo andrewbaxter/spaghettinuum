@@ -5,12 +5,13 @@ use {
     },
     crate::{
         bb,
-        interface::stored::{
-            self,
-            cert::{
-                X509_EXT_SPAGH_OID,
+        interface::{
+            stored::{
+                self,
+                cert::X509_EXT_SPAGH_OID,
+                identity::Identity,
             },
-            identity::Identity,
+            wire::resolve::DNS_SUFFIX,
         },
     },
     chrono::{
@@ -26,7 +27,9 @@ use {
         Encode,
     },
     futures::Future,
-    loga::ResultContext,
+    loga::{
+        ResultContext,
+    },
     p256::ecdsa::DerSignature,
     pem::Pem,
     rand::RngCore,
@@ -284,12 +287,18 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
             let Some((prefix, suffix)) = server_name.as_ref().trim_matches('.').rsplit_once('.') else {
                 break;
             };
-            if suffix != ".s" {
+            if suffix != DNS_SUFFIX {
                 break;
             }
-            let Some((_, raw_id_id)) = prefix.rsplit_once('.') else {
-                break;
-            };
+            let raw_id_id;
+            match prefix.rsplit_once('.') {
+                Some((_, r)) => {
+                    raw_id_id = r;
+                },
+                None => {
+                    raw_id_id = prefix;
+                },
+            }
             let Ok(id) = Identity::from_str(raw_id_id) else {
                 break;
             };

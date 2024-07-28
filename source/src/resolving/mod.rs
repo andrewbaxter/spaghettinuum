@@ -10,7 +10,10 @@ use {
                 self,
                 dns_record::format_dns_key,
             },
-            wire,
+            wire::{
+                self,
+                resolve::DNS_DOT_SUFFIX,
+            },
         },
         utils::tls_util::{
             cert_pem_hash,
@@ -27,6 +30,7 @@ use {
             Conn,
             Ips,
         },
+        IpUrl,
         UriJoin,
     },
     itertools::Itertools,
@@ -62,7 +66,7 @@ pub struct UrlPair {
 }
 
 impl UrlPair {
-    pub fn join(&self, other: impl TryInto<Uri, Error = http::uri::InvalidUri>) -> Self {
+    pub fn join(&self, other: impl AsRef<str>) -> Self {
         return Self {
             address: self.address,
             url: self.url.join(other),
@@ -140,10 +144,7 @@ pub fn system_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error>
         // If no resolvers with ADN fall back to non-named resolvers
         if out.is_empty() {
             for s in conf.name_servers() {
-                let raw_url = format!("https://{}:{}", match s.socket_addr.ip() {
-                    IpAddr::V4(i) => format!("{}", i),
-                    IpAddr::V6(i) => format!("[{}]", i),
-                }, DEFAULT_API_PORT);
+                let raw_url = format!("https://{}:{}", s.socket_addr.ip().as_url_host(), DEFAULT_API_PORT);
                 out.push(UrlPair {
                     url: Uri::from_str(
                         &raw_url,
@@ -265,7 +266,7 @@ pub async fn resolve(
         let host = at.take().unwrap();
 
         // Get key bits from next hop host
-        let Some(host) = host.strip_suffix(".s").or_else(|| host.strip_suffix(".s.")) else {
+        let Some(host) = host.strip_suffix(".").unwrap_or(&host).strip_suffix(DNS_DOT_SUFFIX) else {
             let ips;
             match IpAddr::from_str(&host).ok() {
                 Some(i) => {

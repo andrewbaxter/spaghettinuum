@@ -1,5 +1,6 @@
 use {
     aargvark::Aargvark,
+    htwrap::IpUrl,
     loga::{
         ea,
         ResultContext,
@@ -132,10 +133,7 @@ pub struct AdnSocketAddr {
 
 impl std::fmt::Display for AdnSocketAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.ip {
-            IpAddr::V4(i) => i.fmt(f)?,
-            IpAddr::V6(i) => format_args!("[{}]", i).fmt(f)?,
-        }
+        self.ip.as_url_host().fmt(f)?;
         if let Some(port) = self.port {
             format_args!(":{}", port).fmt(f)?;
         }
