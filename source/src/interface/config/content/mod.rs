@@ -27,6 +27,5 @@ pub struct ContentConfig {
     /// Interface IPs and ports to bind to
     pub bind_addrs: Vec<StrSocketAddr>,
     /// What content to serve
-    #[serde(default)]
-    pub mode: Option<ServeMode>,
+    pub mode: ServeMode,
 }

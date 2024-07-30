@@ -67,7 +67,6 @@ impl htserve::Handler<Full<Bytes>> for StaticFilesHandler {
     async fn handle(&self, args: htserve::HandlerArgs<'_>) -> Response<Full<Bytes>> {
         match async {
             ta_res!(Response < Full < Bytes >>);
-
             bb!{
                 if args.head.method != Method::GET {
                     break;
@@ -91,7 +90,6 @@ impl htserve::Handler<Full<Bytes>> for StaticFilesHandler {
                         .unwrap(),
                 );
             };
-
             return Ok(Response::builder().status(404).body(http_body_util::Full::new(Bytes::new())).unwrap());
         }.await {
             Ok(r) => r,
@@ -137,7 +135,6 @@ impl htserve::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler {
                 req_parts.uri = Uri::from_parts(uri_parts).unwrap();
                 let mut forwarded_for = vec![];
                 const HEADER_FORWARDED_FOR: &'static str = "X-Forwarded-For";
-
                 bb!{
                     let Some(old_forwarded_for) = req_parts.headers.get(HEADER_FORWARDED_FOR) else {
                         break;
@@ -159,7 +156,6 @@ impl htserve::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler {
                     };
                     forwarded_for.extend(old_forwarded_for.split("/").map(|x| x.to_string()));
                 }
-
                 forwarded_for.push(args.peer_addr.to_string());
                 req_parts.headers.insert(HEADER_FORWARDED_FOR, forwarded_for.join(", ").try_into().unwrap());
                 Request::from_parts(req_parts, args.body)
@@ -263,22 +259,19 @@ pub async fn start_serving_content(
         server_config
     }));
     match content.mode {
-        None => (),
-        Some(c) => match c {
-            ServeMode::StaticFiles { content_dir } => {
-                serve(&log, &tm, &tls_acceptor, &content.bind_addrs, Arc::new(StaticFilesHandler {
-                    log: log.clone(),
-                    content_dir: content_dir,
-                })).await?;
-            },
-            ServeMode::ReverseProxy { upstream_url } => {
-                serve(&log, &tm, &tls_acceptor, &content.bind_addrs, Arc::new(ReverseProxyHandler {
-                    log: log.clone(),
-                    upstream_url: Uri::from_str(
-                        &upstream_url,
-                    ).stack_context(log, "Unable to parse upstream address as url")?,
-                })).await?;
-            },
+        ServeMode::StaticFiles { content_dir } => {
+            serve(&log, &tm, &tls_acceptor, &content.bind_addrs, Arc::new(StaticFilesHandler {
+                log: log.clone(),
+                content_dir: content_dir,
+            })).await?;
+        },
+        ServeMode::ReverseProxy { upstream_url } => {
+            serve(&log, &tm, &tls_acceptor, &content.bind_addrs, Arc::new(ReverseProxyHandler {
+                log: log.clone(),
+                upstream_url: Uri::from_str(
+                    &upstream_url,
+                ).stack_context(log, "Unable to parse upstream address as url")?,
+            })).await?;
         },
     }
     return Ok(());

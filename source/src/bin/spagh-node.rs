@@ -58,6 +58,7 @@ use {
             RequestCertOptions,
         },
         service::{
+            content::start_serving_content,
             node::Node,
             publisher::{
                 self,
@@ -416,6 +417,13 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 }
             },
         );
+    }
+
+    // Serve content
+    if let Some(content) = config.content {
+        for content in content {
+            start_serving_content(&log, tm, certs.clone(), content).await?;
+        }
     }
 
     // Done

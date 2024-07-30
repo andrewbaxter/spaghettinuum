@@ -1,12 +1,15 @@
 use {
+    super::{
+        content::ContentConfig,
+        shared::{
+            GlobalAddrConfig,
+            IdentitySecretArg,
+        },
+    },
     schemars::JsonSchema,
     serde::{
         Deserialize,
         Serialize,
-    },
-    super::shared::{
-        IdentitySecretArg,
-        GlobalAddrConfig,
     },
 };
 
@@ -15,7 +18,7 @@ pub mod resolver_config;
 pub mod node_config;
 pub mod api_config;
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct Config {
     /// An identity secret this server will use for generating a TLS cert for the api,
@@ -46,4 +49,7 @@ pub struct Config {
     /// administration.
     #[serde(default)]
     pub api: api_config::ApiConfig,
+    /// Additionally serve more HTTP content, using the host cert.
+    #[serde(default)]
+    pub content: Option<Vec<ContentConfig>>,
 }
