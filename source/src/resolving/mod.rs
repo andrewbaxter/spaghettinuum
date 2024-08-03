@@ -296,11 +296,11 @@ pub async fn resolve(
                     .map(|k| urlencoding::encode(k))
                     .join(",")
             );
-        let resolved = bb!{
+        let mut resolved = bb!{
             'done _;
             let mut errs = vec![];
             for resolver_url in resolvers {
-                match htreq::get_json::<wire::resolve::ResolveKeyValues>(
+                match htreq::get_json::<wire::api::resolve::v1::ResolveValues>(
                     log,
                     &mut connect_resolver_node(&resolver_url).await?,
                     &resolver_url.url.join(&query_path),
@@ -316,10 +316,7 @@ pub async fn resolve(
                 }
             }
             return Err(loga::agg_err("Error making requests to any resolver", errs));
-        };
-        let mut resolved = match resolved {
-            wire::resolve::ResolveKeyValues::V1(r) => r,
-        };
+        }.0;
 
         // Got another cname, continue loop
         if let Some(serde_json::Value::String(cname)) = resolved.remove(&key_cname).and_then(|c| c.data) {
