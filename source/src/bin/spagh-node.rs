@@ -132,8 +132,6 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             return loga::INFO;
         }
     };
-    let data_dir = fs_util::data_dir();
-    let cache_dir = fs_util::cache_dir();
     let config = if let Some(p) = args.config {
         p.value
     } else if let Some(c) = match std::env::var(ENV_CONFIG) {
@@ -157,6 +155,8 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             ),
         );
     };
+    let data_dir = config.persistent_dir.unwrap_or_else(|| fs_util::data_dir());
+    let cache_dir = config.cache_dir.unwrap_or_else(|| fs_util::cache_dir());
     create_dir_all(&data_dir)
         .await
         .stack_context_with(log, "Error creating persistent data dir", ea!(path = data_dir.to_string_lossy()))?;
@@ -281,7 +281,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         self_tls::htserve_certs(
             log,
             &cache_dir,
-            false,
+            None,
             tm,
             publisher
                 .as_ref()
@@ -329,94 +329,93 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
 
     // Start http api
     let log = log.fork_with_log_from(debug_level(DebugFlag::Htserve), ea!(sys = "api_http"));
-    if config.api.bind_addrs.is_empty() {
-        return Err(
-            log.err("Configuration enables resolver or publisher but no api http bind address present in config"),
-        );
-    }
-    if let Some(admin_token) = config.api.admin_token {
-        let admin_token = hash_auth_token(&match admin_token {
-            config::node::api_config::AdminToken::File(p) => String::from_utf8(
-                fs::read(&p).context_with("Error reading admin token file", ea!(path = p.to_string_lossy()))?,
-            ).map_err(|_| loga::err_with("Admin token isn't valid utf8", ea!(path = p.to_string_lossy())))?,
-            config::node::api_config::AdminToken::Inline(p) => p,
-        });
-        router.insert(
-            "/admin/health",
-            Box::new(htwrap::handler!((log: Log, node: Node, admin_token: AuthTokenHash)(r -> htserve:: Body) {
-                match async {
-                    ta_vis_res!(http:: Response < htserve:: Body >);
-                    if !check_auth_token_hash(&admin_token, &get_auth_token(&r.head.headers).err_external()?) {
-                        return Ok(response_401());
-                    }
-                    return Ok(response_200_json(node.health_detail()));
-                }.await {
-                    Ok(r) => return r,
-                    Err(VisErr::External(e)) => {
-                        return response_400(e);
-                    },
-                    Err(VisErr::Internal(e)) => {
-                        log.log_err(loga::DEBUG, e.context("Error serving admin health endpoint"));
-                        return response_503();
-                    },
-                }
-            })),
-        );
-        if let Some(publisher) = &publisher {
+    if let Some(api) = config.api {
+        if let Some(admin_token) = api.admin_token {
+            let admin_token = hash_auth_token(&match admin_token {
+                config::node::api_config::AdminToken::File(p) => String::from_utf8(
+                    fs::read(&p).context_with("Error reading admin token file", ea!(path = p.to_string_lossy()))?,
+                ).map_err(|_| loga::err_with("Admin token isn't valid utf8", ea!(path = p.to_string_lossy())))?,
+                config::node::api_config::AdminToken::Inline(p) => p,
+            });
             router.insert(
-                "/publish",
-                Box::new(
-                    publisher::build_api_endpoints(
-                        &log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher")),
-                        &publisher,
-                        &admin_token,
-                        &data_dir,
-                    )
-                        .await
-                        .stack_context(&log, "Error building publisher endpoints")?,
-                ),
-            );
-        }
-    }
-    let router = Arc::new(router);
-    let mut api_bind_addrs = config.api.bind_addrs;
-    if api_bind_addrs.is_empty() {
-        api_bind_addrs.push(
-            StrSocketAddr::from(SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, DEFAULT_API_PORT, 0, 0))),
-        );
-        api_bind_addrs.push(
-            StrSocketAddr::from(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DEFAULT_API_PORT))),
-        );
-    }
-    for bind_addr in api_bind_addrs {
-        let bind_addr = bind_addr.resolve().stack_context(&log, "Error resolving api bind address")?;
-        let log = log.clone();
-        let routes = router.clone();
-        let tls_acceptor = tls_acceptor(certs.clone());
-        tm.stream(
-            format!("API - Server ({})", bind_addr),
-            tokio_stream::wrappers::TcpListenerStream::new(
-                tokio::net::TcpListener::bind(&bind_addr).await.stack_context(&log, "Error binding to address")?,
-            ),
-            move |stream| {
-                let log = log.clone();
-                let tls_acceptor = tls_acceptor.clone();
-                let routes = routes.clone();
-                async move {
+                "/admin/health",
+                Box::new(htwrap::handler!((log: Log, node: Node, admin_token: AuthTokenHash)(r -> htserve:: Body) {
                     match async {
-                        ta_res!(());
-                        htserve::root_handle_https(&log, tls_acceptor, routes, stream?).await?;
-                        return Ok(());
+                        ta_vis_res!(http:: Response < htserve:: Body >);
+                        if !check_auth_token_hash(&admin_token, &get_auth_token(&r.head.headers).err_external()?) {
+                            return Ok(response_401());
+                        }
+                        return Ok(response_200_json(node.health_detail()));
                     }.await {
-                        Ok(_) => (),
-                        Err(e) => {
-                            log.log_err(loga::DEBUG, e.context("Error serving request"));
-                            return;
+                        Ok(r) => return r,
+                        Err(VisErr::External(e)) => {
+                            return response_400(e);
+                        },
+                        Err(VisErr::Internal(e)) => {
+                            log.log_err(loga::DEBUG, e.context("Error serving admin health endpoint"));
+                            return response_503();
                         },
                     }
-                }
-            },
-        );
+                })),
+            );
+            if let Some(publisher) = &publisher {
+                router.insert(
+                    "/publish",
+                    Box::new(
+                        publisher::build_api_endpoints(
+                            &log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher")),
+                            &publisher,
+                            &admin_token,
+                            &data_dir,
+                        )
+                            .await
+                            .stack_context(&log, "Error building publisher endpoints")?,
+                    ),
+                );
+            }
+        }
+        let router = Arc::new(router);
+        let mut api_bind_addrs = api.bind_addrs;
+        if api_bind_addrs.is_empty() {
+            api_bind_addrs.push(
+                StrSocketAddr::from(
+                    SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, DEFAULT_API_PORT, 0, 0)),
+                ),
+            );
+            api_bind_addrs.push(
+                StrSocketAddr::from(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DEFAULT_API_PORT))),
+            );
+        }
+        for bind_addr in api_bind_addrs {
+            let bind_addr = bind_addr.resolve().stack_context(&log, "Error resolving api bind address")?;
+            let log = log.clone();
+            let routes = router.clone();
+            let tls_acceptor = tls_acceptor(certs.clone());
+            tm.stream(
+                format!("API - Server ({})", bind_addr),
+                tokio_stream::wrappers::TcpListenerStream::new(
+                    tokio::net::TcpListener::bind(&bind_addr).await.stack_context(&log, "Error binding to address")?,
+                ),
+                move |stream| {
+                    let log = log.clone();
+                    let tls_acceptor = tls_acceptor.clone();
+                    let routes = routes.clone();
+                    async move {
+                        match async {
+                            ta_res!(());
+                            htserve::root_handle_https(&log, tls_acceptor, routes, stream?).await?;
+                            return Ok(());
+                        }.await {
+                            Ok(_) => (),
+                            Err(e) => {
+                                log.log_err(loga::DEBUG, e.context("Error serving request"));
+                                return;
+                            },
+                        }
+                    }
+                },
+            );
+        }
     }
 
     // Serve content

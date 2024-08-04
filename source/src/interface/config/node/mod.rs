@@ -11,6 +11,7 @@ use {
         Deserialize,
         Serialize,
     },
+    std::path::PathBuf,
 };
 
 pub mod publisher_config;
@@ -21,6 +22,13 @@ pub mod api_config;
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct Config {
+    /// Where persistent files will be placed. You may want to back this up
+    /// periodically. If not specified, uses a default directory based on the
+    /// `DATA_DIRECTORY` environment variable.
+    pub persistent_dir: Option<PathBuf>,
+    /// Where cache files will be placed. If not specified, uses a default directory
+    /// based on the `CACHE_DIRECTORY` environment variable.
+    pub cache_dir: Option<PathBuf>,
     /// An identity secret this server will use for generating a TLS cert for the api,
     /// and for self-publication if the publisher is enabled.
     ///
@@ -45,10 +53,11 @@ pub struct Config {
     /// server along with other APIs.
     #[serde(default)]
     pub resolver: Option<resolver_config::ResolverConfig>,
-    /// An HTTPS server for all client interaction: resolving, publishing, and
-    /// administration.
+    /// An HTTPS server for all client interaction except DNS: resolving, publishing,
+    /// and administration. It is disabled if not present or null, but to enable it
+    /// with defaults you can provide an empty config.
     #[serde(default)]
-    pub api: api_config::ApiConfig,
+    pub api: Option<api_config::ApiConfig>,
     /// Additionally serve more HTTP content, using the host cert.
     #[serde(default)]
     pub content: Option<Vec<ContentConfig>>,

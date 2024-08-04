@@ -306,7 +306,7 @@ impl Node {
     /// * `bootstrap`: Nodes to connect to to join network. Ignored if restoring persisted
     ///   data. Ignores own id if present.
     ///
-    /// * `persist_path`: Save state to this file before shutting down to make next startup
+    /// * `cache_dir`: Save state to this file before shutting down to make next startup
     ///   faster
     pub async fn new(
         log: &Log,

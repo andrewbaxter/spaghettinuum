@@ -1,4 +1,5 @@
 use {
+    crate::interface::stored::identity::Identity,
     chrono::{
         DateTime,
         Utc,
@@ -20,7 +21,15 @@ pub struct CertPair {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
+pub struct SelfTlsStatePending {
+    pub after: DateTime<Utc>,
+    pub identity: Identity,
+    pub pair: CertPair,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
 pub struct SelfTlsState {
-    pub pending: Option<(DateTime<Utc>, CertPair)>,
+    pub pending: Option<SelfTlsStatePending>,
     pub current: CertPair,
 }

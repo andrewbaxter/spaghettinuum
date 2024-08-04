@@ -29,7 +29,10 @@ use {
             stored::{
                 self,
                 cert::v1::X509ExtSpagh,
-                self_tls::latest::CertPair,
+                self_tls::latest::{
+                    CertPair,
+                    SelfTlsStatePending,
+                },
             },
             wire::{
                 self,
@@ -75,7 +78,10 @@ use {
     rustls::server::ResolvesServerCert,
     std::{
         collections::HashMap,
-        path::Path,
+        path::{
+            Path,
+            PathBuf,
+        },
         str::FromStr,
         sync::{
             Arc,
@@ -303,12 +309,13 @@ impl rustls_21::server::ResolvesServerCert for Rustls21SimpleResolvesServerCert 
 pub async fn htserve_certs(
     log: &Log,
     cache_dir: &Path,
-    write_certs: bool,
+    write_certs_dir: Option<PathBuf>,
     tm: &TaskManager,
     publisher: Option<&Arc<dyn Publisher>>,
     identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
     options: RequestCertOptions,
 ) -> Result<Option<(Arc<dyn ResolvesServerCert>, Arc<dyn rustls_21::server::ResolvesServerCert>)>, loga::Error> {
+    let identity = identity_signer.lock().unwrap().identity()?;
     create_dir_all(cache_dir)
         .await
         .context_with("Error creating htserve cache dir", ea!(path = cache_dir.to_string_lossy()))?;
@@ -323,8 +330,8 @@ pub async fn htserve_certs(
             set: {
                 let mut m = HashMap::new();
                 let mut certs = vec![state.current.pub_pem.clone()];
-                if let Some((_, new)) = &state.pending {
-                    certs.push(new.pub_pem.clone());
+                if let Some(pending) = &state.pending {
+                    certs.push(pending.pair.pub_pem.clone());
                 }
                 m.insert(
                     stored::record::tls_record::KEY.to_string(),
@@ -354,14 +361,17 @@ pub async fn htserve_certs(
         Some(s) => match s {
             stored::self_tls::SelfTlsState::V1(mut s) => {
                 bb!({
-                    let Some((after, _)) = &s.pending else {
+                    let Some(pending) = &s.pending else {
                         break;
                     };
-                    if Utc::now() < *after {
+                    if Utc::now() < pending.after {
                         break;
                     }
-                    let (_, new) = s.pending.take().unwrap();
-                    s.current = new;
+                    if pending.identity != identity {
+                        break;
+                    }
+                    let pending = s.pending.take().unwrap();
+                    s.current = pending.pair;
                 });
                 s
             },
@@ -422,11 +432,11 @@ pub async fn htserve_certs(
     if let Some(publisher) = publisher {
         publish_tls_certs(&log, publisher, &identity_signer, &state).await?;
     }
-    if write_certs {
-        write(cache_dir.join("pub.pem"), state.current.pub_pem.as_bytes())
+    if let Some(write_certs_dir) = write_certs_dir {
+        write(write_certs_dir.join("pub.pem"), state.current.pub_pem.as_bytes())
             .await
             .context("Error writing new pub.pem")?;
-        write(cache_dir.join("priv.pem"), state.current.priv_pem.as_bytes())
+        write(write_certs_dir.join("priv.pem"), state.current.priv_pem.as_bytes())
             .await
             .context("Error writing new priv.pem")?;
     }
@@ -447,15 +457,15 @@ pub async fn htserve_certs(
                 );
             loop {
                 // Wait for pending certs and swap
-                if let Some((after, pair)) = state.pending.take() {
+                if let Some(pending) = state.pending.take() {
                     select!{
-                        _ = sleep_until(after.to_instant()) => {
+                        _ = sleep_until(pending.after.to_instant()) => {
                         },
                         _ = tm.until_terminate() => {
                             return Ok(());
                         }
                     }
-                    match load_certified_key(&pair.pub_pem, &pair.priv_pem) {
+                    match load_certified_key(&pending.pair.pub_pem, &pending.pair.priv_pem) {
                         Ok(p) => {
                             spawn_blocking({
                                 let latest_certs = latest_certs.clone();
@@ -469,7 +479,7 @@ pub async fn htserve_certs(
                             return Ok(());
                         },
                     };
-                    match rustls21_load_certified_key(&pair.pub_pem, &pair.priv_pem) {
+                    match rustls21_load_certified_key(&pending.pair.pub_pem, &pending.pair.priv_pem) {
                         Ok(p) => {
                             spawn_blocking({
                                 let latest_certs = r21_latest_certs.clone();
@@ -486,7 +496,7 @@ pub async fn htserve_certs(
                     if let Some(publisher) = publisher.as_ref() {
                         publish_tls_certs(&log, publisher, &identity_signer, &state).await?;
                     }
-                    state.current = pair;
+                    state.current = pending.pair;
                     write(cache_dir.join("pub.pem"), state.current.pub_pem.as_bytes())
                         .await
                         .context("Error writing new pub.pem")?;
@@ -506,7 +516,11 @@ pub async fn htserve_certs(
                     let state = state.clone();
                     move |conn| Ok(db::api_certs_set(conn, Some(&stored::self_tls::SelfTlsState::V1(state)))?)
                 }).await.context("Error storing updated state")?;
-                state.pending = Some((Utc::now() + publish_ssl_ttl(), new_pair));
+                state.pending = Some(SelfTlsStatePending {
+                    after: Utc::now() + publish_ssl_ttl(),
+                    identity: identity.clone(),
+                    pair: new_pair,
+                });
                 if let Some(publisher) = publisher.as_ref() {
                     publish_tls_certs(&log, publisher, &identity_signer, &state).await?;
                 }

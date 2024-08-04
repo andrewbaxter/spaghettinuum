@@ -1872,9 +1872,9 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "htwrap"
-version = "0.5.1"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17fcfc06e0e2b6491bf8463bcc323f12b7e29af29cf1b2dc71fda3abf6a0d0d8"
+checksum = "149494acf96f5442383eb37e7c288afaee1136f29a012892e3435024014cac46"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1917,7 +1917,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "socket2 0.5.7",
+ "socket2 0.4.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -4261,9 +4261,9 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "taskmanager"
-version = "0.6.0"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42d928ccb33c1b44d8c2e55037caa91e0cbc5b87242394d3678e99ce8343650c"
+checksum = "badb7db9abf5142eb12f9a866904bcdcd5b2aecb9caa70858999d413d02baa75"
 dependencies = [
  "futures",
  "loga",

@@ -137,19 +137,28 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             resolver_urls: resolvers,
             publisher_urls: publishers,
         }) as Arc<dyn Publisher>;
-        let Some((certs, _)) = self_tls::htserve_certs(log, &cache_dir(), if let Some(cert_dir) = config.cert_dir {
-            create_dir_all(&cert_dir)
-                .await
-                .stack_context_with(log, "Error creating cert dir", ea!(path = cert_dir.to_string_lossy()))?;
-            true
-        } else {
-            false
-        }, tm, Some(&publisher), &identity_signer, RequestCertOptions {
-            certifier: true,
-            signature: false,
-        }).await? else {
-            return Ok(());
-        };
+        let Some((certs, _)) =
+            self_tls::htserve_certs(
+                log,
+                &config.cache_dir.unwrap_or_else(|| cache_dir()),
+                if let Some(cert_dir) = config.cert_dir {
+                    create_dir_all(&cert_dir)
+                        .await
+                        .stack_context_with(log, "Error creating cert dir", ea!(path = cert_dir.to_string_lossy()))?;
+                    Some(cert_dir)
+                } else {
+                    None
+                },
+                tm,
+                Some(&publisher),
+                &identity_signer,
+                RequestCertOptions {
+                    certifier: true,
+                    signature: false,
+                },
+            ).await? else {
+                return Ok(());
+            };
         for content in config.content {
             start_serving_content(log, tm, certs.clone(), content).await?;
         }

@@ -17,6 +17,9 @@ use {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct Config {
+    /// Where to put cache files.  If not specified, uses the `CACHE_DIR` environment
+    /// variable.
+    pub cache_dir: Option<PathBuf>,
     /// How to identify and select globally routable IP addresses for this host
     #[serde(default)]
     pub global_addrs: Vec<GlobalAddrConfig>,
