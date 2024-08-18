@@ -1,5 +1,6 @@
 use {
     crate::{
+        bb,
         cap_fn,
         interface::{
             stored::{
@@ -246,7 +247,7 @@ impl Publisher {
                 }
             },
         );
-        tm.periodic("Publisher - periodic announce", Duration::try_hours(4).unwrap().to_std().unwrap(), {
+        tm.periodic("Publisher - periodic announce", Duration::try_hours(1).unwrap().to_std().unwrap(), {
             let log = log.fork(ea!(subsys = "periodic_announce"));
             cap_fn!(()(log, publisher, node) {
                 match async {
@@ -254,29 +255,68 @@ impl Publisher {
                     let mut after = None;
                     loop {
                         let announce_pairs = publisher.list_announcements(after.as_ref()).await?;
-                        let count = announce_pairs.len();
-                        if count == 0 {
-                            break;
-                        }
-                        for (i, (identity, announcement)) in announce_pairs.into_iter().enumerate() {
-                            let accepted = node.put(identity.clone(), announcement.clone()).await;
-                            if let Some(accepted) = accepted {
-                                match accepted {
-                                    Announcement::V1(accepted) => {
-                                        let have_announced = match &announcement {
+                        after = match announce_pairs.last() {
+                            Some(p) => Some(p.0.clone()),
+                            None => {
+                                break;
+                            },
+                        };
+                        for (identity, local_announcement) in announce_pairs {
+                            log.log_with(loga::DEBUG, "Sending announcement", ea!(identity = identity));
+                            let remote_announcement = node.put(identity.clone(), local_announcement.clone()).await;
+
+                            // Check to see if discovered a newer remote announcement - some other publisher
+                            // node has surplanted this one (and delete our own announcement).
+                            bb!{
+                                let Some(remote_announcement) = remote_announcement else {
+                                    break;
+                                };
+                                let local_announced = match &local_announcement {
+                                    Announcement::V1(a) => a.parse_unwrap().announced,
+                                };
+                                let remote_announced = match remote_announcement {
+                                    Announcement::V1(remote_announcement) => {
+                                        remote_announcement.parse_unwrap().announced
+                                    },
+                                };
+                                if remote_announced <= local_announced {
+                                    break;
+                                }
+
+                                // Newer announcement elsewhere, delete this announcement to save some network
+                                // effort
+                                publisher.db_pool.tx({
+                                    let identity = identity.clone();
+                                    let log = log.clone();
+                                    move |db| {
+                                        // Check once more if local announcement is older, in case it was updated while
+                                        // doing the node.put
+                                        let Some(local_announcement) = db::announcements_get(db, &identity)? else {
+                                            return Ok(());
+                                        };
+                                        let local_announced = match &local_announcement {
                                             Announcement::V1(a) => a.parse_unwrap().announced,
                                         };
-                                        if accepted.parse_unwrap().announced > have_announced {
-                                            // Newer announcement elsewhere, delete this announcement to save some network
-                                            // effort
-                                            publisher.clear_identity(&identity).await.log(&log, loga::WARN, "Error deleting obsolete announcement");
+                                        if remote_announced <= local_announced {
+                                            return Ok(());
                                         }
-                                    },
-                                }
-                            }
-                            if i + 1 == count {
-                                after = Some(identity);
-                            }
+
+                                        // Discovered announcement actually newer - delete obsolete local announcement
+                                        log.log_with(
+                                            loga::DEBUG,
+                                            "Received more up to date announcement from network, discarding obsolete local announcement",
+                                            ea!(
+                                                identity = identity,
+                                                remote_announced = remote_announced,
+                                                local_announced = local_announced
+                                            ),
+                                        );
+                                        db::announcements_delete(db, &identity)?;
+                                        db::values_delete_all(db, &identity)?;
+                                        return Ok(());
+                                    }
+                                }).await.log(&log, loga::WARN, "Error deleting obsolete announcement");
+                            };
                         }
                     }
                     return Ok(());
@@ -300,16 +340,18 @@ impl Publisher {
         identity: &Identity,
         announcement: stored::announcement::Announcement,
     ) -> Result<(), loga::Error> {
-        let accepted = self.node.put(identity.clone(), announcement.clone()).await;
-        match accepted {
-            Some(accepted) => {
+        let remote_announcement = self.node.put(identity.clone(), announcement.clone()).await;
+        match remote_announcement {
+            Some(remote_announcement) => {
                 let new_published = match &announcement {
                     Announcement::V1(a) => a.parse_unwrap().announced,
                 };
-                let accepted_published = match accepted {
+                let remote_published = match remote_announcement {
                     Announcement::V1(a) => a.parse_unwrap().announced,
                 };
-                if accepted_published > new_published {
+                if remote_published > new_published {
+                    // A newer announcement was found elsewhere in the network; just drop the outdated
+                    // announcement we're trying to publish here
                     return Ok(());
                 }
             },
@@ -318,7 +360,7 @@ impl Publisher {
         self.db_pool.tx({
             let identity = identity.clone();
             let announcement = announcement.clone();
-            move |db| Ok(db::set_announce(db, &identity, &announcement)?)
+            move |db| Ok(db::announcements_set(db, &identity, &announcement)?)
         }).await?;
         return Ok(())
     }
@@ -327,7 +369,7 @@ impl Publisher {
         self.db_pool.tx({
             let identity = identity.clone();
             move |db| {
-                db::delete_announce(db, &identity)?;
+                db::announcements_delete(db, &identity)?;
                 db::values_delete_all(db, &identity)?;
                 return Ok(());
             }
@@ -345,7 +387,7 @@ impl Publisher {
                 let res =
                     self
                         .db_pool
-                        .tx(move |db| Ok(db::list_announce_start(db)?))
+                        .tx(move |db| Ok(db::announcements_list_start(db)?))
                         .await?
                         .into_iter()
                         .map(|p| (p.identity, p.value))
@@ -355,7 +397,7 @@ impl Publisher {
             Some(a) => {
                 self
                     .db_pool
-                    .tx(move |db| Ok(db::list_announce_after(db, &a)?))
+                    .tx(move |db| Ok(db::announcements_list_after(db, &a)?))
                     .await?
                     .into_iter()
                     .map(|p| (p.identity, p.value))
@@ -398,7 +440,7 @@ impl Publisher {
         let identity = identity.clone();
         return Ok(self.db_pool.tx(move |db| {
             let mut out = HashMap::new();
-            let missing_ttl = db::ident_get(db, &identity)?.unwrap_or_else(|| 5);
+            let missing_ttl = db::ident_get(db, &identity)?.unwrap_or_else(|| 0);
             let now = Utc::now();
             for k in keys {
                 let expires;
@@ -460,6 +502,8 @@ impl crate::publishing::Publisher for Publisher {
 pub trait PublisherAuthorizer: Sync + Send {
     async fn is_identity_allowed(&self, identity: &Identity) -> Result<bool, loga::Error>;
 }
+
+pub const API_ROUTE_PUBLISH: &str = "publish";
 
 pub async fn build_api_endpoints_with_authorizer(
     log: &Log,

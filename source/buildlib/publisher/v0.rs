@@ -78,19 +78,25 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
         queries.push(
             new_insert(&announce, vec![set_field("ident", &announce_ident), set_field("value", &announce_value)])
                 .on_conflict(InsertConflict::DoUpdate(vec![set_field("value", &announce_value)]))
-                .build_query("set_announce", QueryResCount::None),
+                .build_query("announcements_set", QueryResCount::None),
         );
         queries.push(
             new_delete(&announce)
                 .where_(eq_field("ident", &announce_ident))
-                .build_query("delete_announce", QueryResCount::None),
+                .build_query("announcements_delete", QueryResCount::None),
+        );
+        queries.push(
+            new_select(&announce)
+                .where_(eq_field("ident", &announce_ident))
+                .return_field(&announce_value)
+                .build_query("announcements_get", QueryResCount::MaybeOne),
         );
         queries.push(
             new_select(&announce)
                 .return_fields(&[&announce_ident, &announce_value])
                 .order(Expr::Field(announce_ident.clone()), Order::Asc)
                 .limit(Expr::LitI32(50))
-                .build_query("list_announce_start", QueryResCount::Many),
+                .build_query("announcements_list_start", QueryResCount::Many),
         );
         queries.push(
             new_select(&announce)
@@ -98,7 +104,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
                 .where_(gt_field("ident", &announce_ident))
                 .order(Expr::Field(announce_ident.clone()), Order::Asc)
                 .limit(Expr::LitI32(50))
-                .build_query("list_announce_after", QueryResCount::Many),
+                .build_query("announcements_list_after", QueryResCount::Many),
         );
     }
 

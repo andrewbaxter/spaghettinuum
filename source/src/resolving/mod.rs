@@ -15,6 +15,7 @@ use {
                 resolve::DNS_DOT_SUFFIX,
             },
         },
+        service::resolver::API_ROUTE_RESOLVE,
         utils::tls_util::{
             cert_pem_hash,
             SpaghTlsClientVerifier,
@@ -287,7 +288,8 @@ pub async fn resolve(
         let key_a = format_dns_key(&subdomain, record::dns_record::RecordType::A);
         let query_path =
             format!(
-                "resolve/v1/{}?{}",
+                "{}/v1/{}?{}",
+                API_ROUTE_RESOLVE,
                 ident_str,
                 Iterator::chain(
                     [key_cname.as_str(), key_aaaa.as_str(), key_a.as_str()].iter(),

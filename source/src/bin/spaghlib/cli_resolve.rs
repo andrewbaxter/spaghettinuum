@@ -11,6 +11,7 @@ use {
             connect_resolver_node,
             system_resolver_url_pairs,
         },
+        service::resolver::API_ROUTE_RESOLVE,
         ta_res,
     },
     std::collections::HashMap,
@@ -38,7 +39,8 @@ pub async fn run_get(log: &Log, config: args::Query) -> Result<(), loga::Error> 
             let pair =
                 pair.join(
                     format!(
-                        "resolve/v1/{}?{}",
+                        "{}/v1/{}?{}",
+                        API_ROUTE_RESOLVE,
                         config.identity,
                         config.keys.iter().map(|k| urlencoding::encode(k)).join(",")
                     ),

@@ -30,7 +30,6 @@ use {
                 node::{
                     api_config::DEFAULT_API_PORT,
                     node_config::{
-                        BootstrapConfig,
                         DEFAULT_NODE_PORT,
                     },
                     publisher_config::DEFAULT_PUBLISHER_PORT,
@@ -44,7 +43,6 @@ use {
                 ENV_CONFIG,
             },
             stored::{
-                node_identity::NodeIdentity,
                 shared::SerialAddr,
             },
             wire::{
@@ -59,14 +57,19 @@ use {
         },
         service::{
             content::start_serving_content,
-            node::Node,
+            node::{
+                default_bootstrap,
+                Node,
+            },
             publisher::{
                 self,
                 Publisher,
+                API_ROUTE_PUBLISH,
             },
             resolver::{
                 self,
                 Resolver,
+                API_ROUTE_RESOLVE,
             },
         },
         ta_res,
@@ -201,18 +204,20 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     let node = {
         let log = log.fork_with_log_from(debug_level(DebugFlag::Node), ea!(sys = "node"));
         let mut bootstrap = vec![];
-        for e in config.node.bootstrap.unwrap_or_else(|| vec![BootstrapConfig {
-            addr: StrSocketAddr::new("[2600:1900:4040:485::]:48390"),
-            ident: NodeIdentity::from_str(
-                "n_yryyyyyyyy8dqmefqpfqgpopoawdwxack5c7ixrsr639fbb69a1z9yecbcbp4",
-            ).unwrap(),
-        }]) {
-            bootstrap.push(NodeInfo {
-                ident: e.ident,
-                address: SerialAddr(
-                    e.addr.resolve().stack_context(&log, "Error resolving bootstrap node address")?,
-                ),
-            });
+        match config.node.bootstrap {
+            Some(bootstrap1) => {
+                for e in bootstrap1 {
+                    bootstrap.push(NodeInfo {
+                        ident: e.ident,
+                        address: SerialAddr(
+                            e.addr.resolve().stack_context(&log, "Error resolving bootstrap node address")?,
+                        ),
+                    });
+                }
+            },
+            None => {
+                bootstrap = default_bootstrap();
+            },
         }
         Node::new(
             &log,
@@ -323,7 +328,10 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         }
         {
             let log = log.fork_with_log_from(debug_level(DebugFlag::Resolve), ea!(sys = "resolver"));
-            router.insert("/resolve", Box::new(resolver::build_api_endpoints(log, &resolver)));
+            router.insert(
+                format!("/{}", API_ROUTE_RESOLVE),
+                Box::new(resolver::build_api_endpoints(log, &resolver)),
+            );
         }
     }
 
@@ -360,7 +368,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             );
             if let Some(publisher) = &publisher {
                 router.insert(
-                    "/publish",
+                    format!("/{}", API_ROUTE_PUBLISH),
                     Box::new(
                         publisher::build_api_endpoints(
                             &log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher")),

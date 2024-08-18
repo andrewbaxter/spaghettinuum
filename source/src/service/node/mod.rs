@@ -1,42 +1,52 @@
 use {
-    crate::interface::stored::shared::SerialAddr,
-    crate::interface::wire::node::latest::FindGoal,
-    crate::interface::wire::node::v1::DhtCoord,
     crate::{
         bb,
         cap_fn,
+        interface::{
+            config::shared::StrSocketAddr,
+            stored::{
+                self,
+                identity::Identity,
+                node_identity::{
+                    self,
+                    NodeIdentity,
+                    NodeIdentityMethods,
+                    NodeSecretMethods,
+                },
+                shared::SerialAddr,
+            },
+            wire::{
+                self,
+                node::{
+                    latest::FindGoal,
+                    v1::DhtCoord,
+                },
+            },
+        },
+        utils::{
+            blob::Blob,
+            db_util::setup_db,
+            signed::{
+                IdentSignatureMethods,
+                NodeIdentSignatureMethods,
+            },
+            time_util::ToInstant,
+        },
     },
-    crate::interface::config::shared::StrSocketAddr,
-    crate::interface::stored::identity::Identity,
-    crate::interface::stored::node_identity::{
-        self,
-        NodeIdentityMethods,
-        NodeSecretMethods,
-        NodeIdentity,
-    },
-    crate::interface::{
-        stored,
-        wire,
-    },
-    crate::utils::signed::{
-        IdentSignatureMethods,
-        NodeIdentSignatureMethods,
-    },
-    crate::utils::blob::Blob,
-    crate::utils::time_util::ToInstant,
-    constant_time_eq::constant_time_eq,
-    tokio::select,
-    tokio::time::sleep,
-    crate::utils::db_util::setup_db,
     chrono::{
-        Utc,
         DateTime,
         Duration,
+        Utc,
     },
-    futures::channel::mpsc::unbounded,
-    futures::channel::mpsc::UnboundedSender,
-    generic_array::ArrayLength,
-    generic_array::GenericArray,
+    constant_time_eq::constant_time_eq,
+    futures::channel::mpsc::{
+        unbounded,
+        UnboundedSender,
+    },
+    generic_array::{
+        ArrayLength,
+        GenericArray,
+    },
     loga::{
         ea,
         DebugDisplay,
@@ -44,32 +54,52 @@ use {
         Log,
         ResultContext,
     },
-    manual_future::ManualFuture,
-    manual_future::ManualFutureCompleter,
+    manual_future::{
+        ManualFuture,
+        ManualFutureCompleter,
+    },
     rand::RngCore,
-    taskmanager::TaskManager,
-    serde::Deserialize,
-    serde::Serialize,
+    serde::{
+        Deserialize,
+        Serialize,
+    },
     sha2::Digest,
-    std::collections::hash_map::Entry,
-    std::collections::{
-        HashMap,
-        HashSet,
+    std::{
+        collections::{
+            hash_map::Entry,
+            HashMap,
+            HashSet,
+        },
+        fmt::Debug,
+        net::SocketAddr,
+        path::Path,
+        str::FromStr,
+        sync::{
+            atomic::{
+                AtomicBool,
+                AtomicUsize,
+                Ordering,
+            },
+            Arc,
+            Mutex,
+        },
     },
-    std::fmt::Debug,
-    std::net::SocketAddr,
-    std::path::Path,
-    std::sync::atomic::{
-        AtomicUsize,
-        AtomicBool,
+    taskmanager::TaskManager,
+    tokio::{
+        net::UdpSocket,
+        select,
+        time::sleep,
     },
-    std::sync::atomic::Ordering,
-    std::sync::Arc,
-    std::sync::Mutex,
-    tokio::net::UdpSocket,
 };
 
 pub mod db;
+
+pub fn default_bootstrap() -> Vec<wire::node::latest::NodeInfo> {
+    return vec![wire::node::latest::NodeInfo {
+        ident: NodeIdentity::from_str("n_yryyyyyyyy8dqmefqpfqgpopoawdwxack5c7ixrsr639fbb69a1z9yecbcbp4").unwrap(),
+        address: SerialAddr(SocketAddr::from_str("[2600:1900:4040:485::]:48390").unwrap()),
+    }];
+}
 
 // Number of bits in hash, minus the number of bits in size of bucket
 // (neighborhood)
@@ -81,11 +111,6 @@ const PARALLEL: usize = 3;
 
 fn req_timeout() -> Duration {
     return Duration::try_seconds(2).unwrap();
-}
-
-// Republish stored values once an hour
-fn store_fresh_duration() -> Duration {
-    return Duration::try_hours(1).unwrap();
 }
 
 // All stored values expire after 24h
@@ -188,7 +213,6 @@ struct NextFindTimeout {
 struct ValueState {
     value: stored::announcement::Announcement,
     received: DateTime<Utc>,
-    updated: DateTime<Utc>,
 }
 
 struct NextPingTimeout {
@@ -473,26 +497,18 @@ impl Node {
             dir.complete_state(state).await;
         }));
 
-        // Stored data expiry or maybe re-propagation
+        // Stored data expiry
         tm.periodic(
             "Node - re-propagate/expire stored data",
             Duration::try_hours(1).unwrap().to_std().unwrap(),
             cap_fn!(()(dir) {
-                let mut unfresh = vec![];
                 let now = Utc::now();
-                dir.0.store.lock().unwrap().retain(|k, v| {
+                dir.0.store.lock().unwrap().retain(|_, v| {
                     if v.received + store_expire_duration() < now {
                         return false;
                     }
-                    if v.updated + store_fresh_duration() < now {
-                        v.updated = now;
-                        unfresh.push((k.clone(), v.value.clone()));
-                    }
                     return true;
                 });
-                for (k, v) in unfresh {
-                    dir.put(k, v).await;
-                }
             }),
         );
 
@@ -607,9 +623,16 @@ impl Node {
         // getting an ip address so do it again in a minute.
         tm.task("Node - retry startup find once", {
             let dir = dir.clone();
+            let tm = tm.clone();
             async move {
-                sleep(Duration::try_seconds(60).unwrap().to_std().unwrap()).await;
-                dir.start_find(FindGoal::Coord(node_ident_coord(&dir.0.own_ident)), None).await;
+                select!{
+                    _ = async {
+                        sleep(Duration::try_seconds(60).unwrap().to_std().unwrap()).await;
+                        dir.start_find(FindGoal::Coord(node_ident_coord(&dir.0.own_ident)), None).await;
+                    }
+                    =>(),
+                    _ = tm.until_terminate() =>(),
+                }
             }
         });
         return Ok(dir);
@@ -686,7 +709,6 @@ impl Node {
                         self.0.store.lock().unwrap().insert(key.clone(), ValueState {
                             value: value.clone(),
                             received: Utc::now(),
-                            updated: Utc::now(),
                         });
                     },
                     NearestNodeEntryNode::Node(node) => {
@@ -1093,7 +1115,7 @@ impl Node {
                                     have_published = have_value.parse_unwrap().announced;
                                 },
                             }
-                            if have_published > found_published {
+                            if have_published >= found_published {
                                 log.log_with(
                                     loga::DEBUG,
                                     "Received value older than one we already have",
@@ -1285,17 +1307,22 @@ impl Node {
                     }
                     match self.0.store.lock().unwrap().entry(m.key) {
                         Entry::Occupied(mut e) => {
-                            let have_published;
-                            match &e.get().value {
+                            let existing_value = &e.get().value;
+                            let existing_published;
+                            match existing_value {
                                 stored::announcement::Announcement::V1(have_value) => {
-                                    have_published = have_value.parse_unwrap().announced;
+                                    existing_published = have_value.parse_unwrap().announced;
                                 },
                             }
-                            if new_announced >= have_published {
+                            if new_announced >= existing_published {
                                 e.insert(ValueState {
                                     value: m.value,
                                     received: Utc::now(),
-                                    updated: Utc::now(),
+                                });
+                            } else if existing_value == &m.value {
+                                e.insert(ValueState {
+                                    value: m.value,
+                                    received: Utc::now(),
                                 });
                             }
                         },
@@ -1303,7 +1330,6 @@ impl Node {
                             e.insert(ValueState {
                                 value: m.value,
                                 received: Utc::now(),
-                                updated: Utc::now(),
                             });
                         },
                     };

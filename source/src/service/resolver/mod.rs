@@ -269,7 +269,7 @@ impl Resolver {
             for k in request_keys {
                 if let Some(found) = self.0.cache.get(&(ident.clone(), k.to_string())) {
                     let (expiry, v) = found;
-                    if expiry + Duration::try_minutes(5).unwrap() < now {
+                    if expiry < now {
                         break 'missing;
                     }
                     let v = match v {
@@ -305,7 +305,13 @@ impl Resolver {
         // Not in cache, find publisher via nodes
         let resp = match self.0.node.get(ident.clone()).await {
             Some(v) => v,
-            None => return Ok(wire::resolve::ResolveKeyValues::V1(HashMap::new())),
+            None => {
+                self
+                    .0
+                    .log
+                    .log_with(loga::DEBUG, "No announcement found, returning empty result", ea!(ident = ident));
+                return Ok(wire::resolve::ResolveKeyValues::V1(HashMap::new()));
+            },
         };
         let mut publishers;
         match resp {
@@ -318,7 +324,7 @@ impl Resolver {
         let mut values = None;
         let mut errs = vec![];
         for publisher in publishers {
-            let log = self.0.log.fork(ea!(publisher = publisher.addr, action = "publisher_request"));
+            let log = self.0.log.fork(ea!(publisher = publisher.addr));
             let log = &log;
             match async {
                 ta_res!(ResolveKeyValues);
@@ -431,6 +437,8 @@ impl Resolver {
         return Ok(values);
     }
 }
+
+pub const API_ROUTE_RESOLVE: &str = "resolve";
 
 /// Launch a publisher into the task manager and return the API endpoints for
 /// attaching to the user-facing HTTP servers.

@@ -31,7 +31,7 @@ struct SerialIpv6 {
     port: u16,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SerialAddr(pub SocketAddr);
 
 impl std::fmt::Display for SerialAddr {

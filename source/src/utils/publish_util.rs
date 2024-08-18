@@ -26,6 +26,7 @@ use {
             connect_publisher_node,
             UrlPair,
         },
+        service::publisher::API_ROUTE_PUBLISH,
     },
     chrono::Utc,
     htwrap::htreq,
@@ -140,7 +141,7 @@ pub async fn publish(
         content: signed_request_content,
     };
     for s in publishers {
-        let url = s.join("publish/v1/publish");
+        let url = s.join(format!("{}/v1/publish", API_ROUTE_PUBLISH));
         log.log_with(
             loga::DEBUG,
             "Sending publish request",
@@ -212,13 +213,13 @@ pub async fn add_ssh_host_key_records(
     }
     if !host_keys.is_empty() {
         publish_data.insert(
-            stored::record::tls_record::KEY.to_string(),
+            stored::record::ssh_record::KEY.to_string(),
             stored::record::RecordValue::latest(stored::record::latest::RecordValue {
                 ttl: 60,
                 data: Some(
                     serde_json::to_value(
-                        &stored::record::tls_record::TlsCerts::latest(
-                            stored::record::tls_record::latest::TlsCerts(host_keys),
+                        &stored::record::ssh_record::SshHostKeys::latest(
+                            stored::record::ssh_record::latest::SshHostKeys(host_keys),
                         ),
                     ).unwrap(),
                 ),

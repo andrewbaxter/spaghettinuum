@@ -31,13 +31,15 @@ impl<T: Serialize + DeserializeOwned, I> BincodeSignature<T, I> {
     }
 }
 
-impl<T: Serialize + DeserializeOwned, I> std::fmt::Debug for BincodeSignature<T, I> {
+impl<T: Serialize + DeserializeOwned + Debug, I> std::fmt::Debug for BincodeSignature<T, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f
-            .debug_struct("BincodeSignature")
-            .field("message", &self.message)
-            .field("signature", &self.signature)
-            .finish()
+        format_args!("(sig: {}) ", &zbase32::encode_full_bytes(&self.signature)[..8]).fmt(f)?;
+        if let Ok(v) = bincode::deserialize::<T>(&self.message) {
+            v.fmt(f)?;
+        } else {
+            self.message.fmt(f)?;
+        }
+        return Ok(());
     }
 }
 

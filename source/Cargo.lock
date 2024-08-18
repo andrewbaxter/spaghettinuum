@@ -1872,9 +1872,9 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "htwrap"
-version = "0.5.4"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "149494acf96f5442383eb37e7c288afaee1136f29a012892e3435024014cac46"
+checksum = "173b2222fa12fecfaadc08a8a558b9ae5a5c9e9b969ac22c57ad87915131aeb9"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1917,7 +1917,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "socket2 0.4.10",
+ "socket2 0.5.7",
  "tokio",
  "tower-service",
  "tracing",

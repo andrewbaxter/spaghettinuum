@@ -190,10 +190,10 @@ async fn connect(
     inner: impl SshInner,
 ) -> Result<(), loga::Error> {
     let (ips, mut additional_records) =
-        resolve(log, &system_resolver_url_pairs(log)?, &host.host, &[record::ssh_record::KEY_HOST_KEYS]).await?;
+        resolve(log, &system_resolver_url_pairs(log)?, &host.host, &[record::ssh_record::KEY]).await?;
     let mut host_keys = vec![];
     bb!{
-        let Some(r) = additional_records.remove(record::ssh_record::KEY_HOST_KEYS) else {
+        let Some(r) = additional_records.remove(record::ssh_record::KEY) else {
             log.log(loga::DEBUG, "Response missing SSH host keys record; not using for verification");
             break;
         };

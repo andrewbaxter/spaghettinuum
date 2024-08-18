@@ -8,7 +8,7 @@ pub mod v1;
 
 pub use v1 as latest;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Announcement {
     V1(v1::Announcement),
