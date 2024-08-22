@@ -1,6 +1,7 @@
 use {
     loga::{
         ea,
+        ErrContext,
         ResultContext,
     },
     serde::de::DeserializeOwned,
@@ -45,7 +46,7 @@ pub async fn maybe_read(path: impl AsRef<Path>) -> Result<Option<Vec<u8>>, loga:
                 return Ok(None);
             },
             _ => {
-                return Err(e.into());
+                return Err(e.context_with("Error reading file", ea!(path = path.as_ref().to_string_lossy())));
             },
         },
     }

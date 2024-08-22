@@ -14,6 +14,9 @@ use {
         Disconnect,
         Pty,
     },
+    russh_keys::{
+        parse_public_key_base64,
+    },
     russh_sftp::{
         client::SftpSession,
         protocol::OpenFlags,
@@ -29,6 +32,7 @@ use {
     },
     std::{
         env,
+        io::ErrorKind,
         net::{
             IpAddr,
             SocketAddr,
@@ -128,6 +132,7 @@ pub mod args {
     #[derive(Aargvark)]
     pub struct SshShell {
         pub host: StrUserSocketAddr,
+        /// Use a specific key file instead of whatever's automatically detected.
         pub key: Option<PathBuf>,
         pub command: Option<Vec<String>>,
     }
@@ -135,6 +140,7 @@ pub mod args {
     #[derive(Aargvark)]
     pub struct SshDownload {
         pub host: StrUserSocketAddr,
+        /// Use a specific key file instead of whatever's automatically detected.
         pub key: Option<PathBuf>,
         pub remote: PathBuf,
         pub local: PathBuf,
@@ -144,6 +150,7 @@ pub mod args {
     #[derive(Aargvark)]
     pub struct SshUpload {
         pub host: StrUserSocketAddr,
+        /// Use a specific key file instead of whatever's automatically detected.
         pub key: Option<PathBuf>,
         pub local: PathBuf,
         pub remote: PathBuf,
@@ -190,7 +197,9 @@ async fn connect(
     inner: impl SshInner,
 ) -> Result<(), loga::Error> {
     let (ips, mut additional_records) =
-        resolve(log, &system_resolver_url_pairs(log)?, &host.host, &[record::ssh_record::KEY]).await?;
+        resolve(log, &system_resolver_url_pairs(log)?, &host.host, &[record::ssh_record::KEY])
+            .await
+            .context("Error resolving host")?;
     let mut host_keys = vec![];
     bb!{
         let Some(r) = additional_records.remove(record::ssh_record::KEY) else {
@@ -218,14 +227,13 @@ async fn connect(
                 for key in keys.0 {
                     let mut parts = key.split_whitespace();
                     bb!{
-                        let Some(algo) = parts.next() else {
+                        let Some(_algo) = parts.next() else {
                             break;
                         };
-                        match russh_keys::key::PublicKey::parse(
-                            algo.as_bytes(),
-                            // Needs redundant algorithm as part of key again
-                            key.as_bytes(),
-                        ) {
+                        let Some(key_key) = parts.next() else {
+                            break;
+                        };
+                        match parse_public_key_base64(&key_key) {
                             Ok(k) => {
                                 host_keys.push(k);
                             },
@@ -243,6 +251,9 @@ async fn connect(
         }
         break;
     };
+    if host_keys.is_empty() {
+        return Err(loga::err("No host keys published for host, use normal SSH if this is intended"));
+    }
     let config_port;
     let config_user;
     match russh_config::parse_home(&host.host) {
@@ -255,7 +266,11 @@ async fn connect(
                 config_port = 22;
                 config_user = None;
             },
-            _ => return Err(e.into()),
+            russh_config::Error::Io(x) if x.kind() == ErrorKind::NotFound => {
+                config_port = 22;
+                config_user = None;
+            },
+            _ => return Err(e.context("Error parsing ssh config")),
         },
     };
     let mut conn =
@@ -269,7 +284,9 @@ async fn connect(
                 .collect_vec()
                 .as_slice(),
             Handler { host_keys: host_keys },
-        ).await?;
+        )
+            .await
+            .context("Error connecting to remote host")?;
     bb!{
         'authenticated _;
         let user = host.user.or(config_user).unwrap_or("root".to_string());
@@ -334,7 +351,7 @@ async fn connect(
         inner.run(session).await?;
         return Ok(());
     }.await;
-    conn.disconnect(Disconnect::ByApplication, "", "English").await?;
+    conn.disconnect(Disconnect::ByApplication, "", "English").await.log(log, loga::DEBUG, "Error disconnecting");
     return res;
 }
 
@@ -350,8 +367,8 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
             impl SshInner for Inner {
                 async fn run(self, mut session: Channel<Msg>) -> Result<(), loga::Error> {
                     let config = self.0;
-                    let _raw_term = std::io::stdout().into_raw_mode()?;
-                    let (w, h) = termion::terminal_size()?;
+                    let _raw_term = std::io::stdout().into_raw_mode().context("Error putting terminal in raw mode")?;
+                    let (w, h) = termion::terminal_size().context("Error determining terminal size")?;
                     session.request_pty(
                         false,
                         &env::var("TERM").unwrap_or("xterm".into()),
@@ -361,7 +378,7 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
                         0,
                         // ideally you want to pass the actual terminal modes here
                         &[(Pty::ECHO, 1), (Pty::TTY_OP_ISPEED, 14400), (Pty::TTY_OP_OSPEED, 14400)],
-                    ).await?;
+                    ).await.context("Error requesting remote pty")?;
                     if let Some(command) = config.command {
                         session.exec(true, quote(command).into_bytes()).await.context("Error running command")?;
                     } else {

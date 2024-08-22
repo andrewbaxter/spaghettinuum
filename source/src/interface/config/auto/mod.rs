@@ -29,7 +29,7 @@ pub struct Config {
     /// default SSH host key location will be used, otherwise no SSH host keys will be
     /// published.
     #[serde(default)]
-    pub ssh_host_keys: Vec<PathBuf>,
+    pub ssh_host_keys: Option<Vec<PathBuf>>,
     /// Where to store TLS certs.  This directory and its parents will be created if
     /// they don't already exist.  The certs will be named `pub.pem` and `priv.pem`.
     #[serde(default)]

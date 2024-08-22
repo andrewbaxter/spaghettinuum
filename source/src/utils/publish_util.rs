@@ -193,13 +193,15 @@ pub fn add_ip_record(publish_data: &mut HashMap<String, stored::record::RecordVa
 /// * `paths` - if empty, search the system for default host key paths
 pub async fn add_ssh_host_key_records(
     publish_data: &mut HashMap<String, stored::record::RecordValue>,
-    mut paths: Vec<PathBuf>,
+    paths: Option<Vec<PathBuf>>,
 ) -> Result<(), loga::Error> {
-    if paths.is_empty() {
+    let paths = paths.unwrap_or_else(|| {
+        let mut paths = vec![];
         for algo in ["rsa", "ed25519", "dsa", "ecdsa"] {
             paths.push(PathBuf::from(format!("/etc/ssh/ssh_host_{}_key.pub", algo)));
         }
-    }
+        return paths;
+    });
     let mut host_keys = vec![];
     for key_path in paths {
         let Some(key) = fs_util::maybe_read(&key_path).await? else {

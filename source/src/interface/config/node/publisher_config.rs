@@ -27,5 +27,5 @@ pub struct PublisherConfig {
     /// If not specified, a default SSH host key location will be used, otherwise no
     /// SSH host keys will be published.
     #[serde(default)]
-    pub ssh_host_keys: Vec<PathBuf>,
+    pub ssh_host_keys: Option<Vec<PathBuf>>,
 }
