@@ -1,6 +1,5 @@
 use {
     crate::{
-        bb,
         cap_fn,
         interface::{
             stored::{
@@ -37,23 +36,16 @@ use {
             ResultVisErr,
             VisErr,
         },
-    },
-    async_trait::async_trait,
-    chrono::{
+    }, async_trait::async_trait, chrono::{
         DateTime,
         Duration,
         NaiveDate,
         NaiveDateTime,
         Utc,
-    },
-    deadpool_sqlite::Pool,
-    good_ormning_runtime::GoodError,
-    http::{
+    }, deadpool_sqlite::Pool, flowcontrol::shed, good_ormning_runtime::GoodError, http::{
         Method,
         Response,
-    },
-    http_body_util::BodyExt,
-    htwrap::htserve::{
+    }, http_body_util::BodyExt, htwrap::htserve::{
         self,
         check_auth_token_hash,
         response_200,
@@ -63,20 +55,15 @@ use {
         response_404,
         response_503,
         AuthTokenHash,
-    },
-    loga::{
+    }, loga::{
         ea,
         Log,
         ResultContext,
-    },
-    p256::pkcs8::EncodePrivateKey,
-    rustls::pki_types::{
+    }, p256::pkcs8::EncodePrivateKey, rustls::pki_types::{
         CertificateDer,
         PrivateKeyDer,
         PrivatePkcs8KeyDer,
-    },
-    serde::Deserialize,
-    std::{
+    }, serde::Deserialize, std::{
         collections::HashMap,
         net::SocketAddr,
         path::Path,
@@ -85,8 +72,7 @@ use {
             Mutex,
             RwLock,
         },
-    },
-    taskmanager::TaskManager,
+    }, taskmanager::TaskManager
 };
 
 pub mod db;
@@ -267,7 +253,7 @@ impl Publisher {
 
                             // Check to see if discovered a newer remote announcement - some other publisher
                             // node has surplanted this one (and delete our own announcement).
-                            bb!{
+                            shed!{
                                 let Some(remote_announcement) = remote_announcement else {
                                     break;
                                 };

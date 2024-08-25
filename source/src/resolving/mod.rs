@@ -1,6 +1,5 @@
 use {
     crate::{
-        bb,
         interface::{
             config::{
                 node::api_config::DEFAULT_API_PORT,
@@ -22,6 +21,7 @@ use {
             UnverifyingVerifier,
         },
     },
+    flowcontrol::shed,
     http::Uri,
     htwrap::{
         htreq::{
@@ -298,7 +298,7 @@ pub async fn resolve(
                     .map(|k| urlencoding::encode(k))
                     .join(",")
             );
-        let mut resolved = bb!{
+        let mut resolved = shed!{
             'done _;
             let mut errs = vec![];
             for resolver_url in resolvers {
@@ -328,7 +328,7 @@ pub async fn resolve(
 
         // No cname, handle what we have at this final hop
         let ips = htreq::Ips {
-            ipv4s: bb!{
+            ipv4s: shed!{
                 let Some(r) = resolved.remove(&key_a) else {
                     log.log(loga::DEBUG, "Response missing A record, assuming no IPv4 addresses");
                     break vec![];
@@ -355,7 +355,7 @@ pub async fn resolve(
                     },
                 }
             },
-            ipv6s: bb!{
+            ipv6s: shed!{
                 let Some(r) = resolved.remove(&key_aaaa) else {
                     log.log(loga::DEBUG, "Response missing AAAA record, assuming no IPv6 addresses");
                     break vec![];
@@ -404,7 +404,7 @@ pub async fn resolve_for_tls(
     let (ips, mut additional_records) =
         resolve(log, resolvers, &host.to_string(), &[record::tls_record::KEY]).await?;
     let mut certs = vec![];
-    bb!{
+    shed!{
         let Some(r) = additional_records.remove(record::tls_record::KEY) else {
             log.log(loga::DEBUG, "Response missing TLS record entry; not using for verification");
             break;

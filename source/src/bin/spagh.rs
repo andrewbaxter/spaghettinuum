@@ -26,7 +26,7 @@ mod args {
     }
 
     #[derive(Aargvark)]
-    #[vark(stop)]
+    #[vark(break_help)]
     pub enum Command {
         /// Simple liveness check
         Ping(Ping),

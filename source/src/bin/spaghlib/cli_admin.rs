@@ -78,7 +78,7 @@ pub mod args {
     }
 
     #[derive(Aargvark)]
-    #[vark(stop)]
+    #[vark(break_help)]
     pub enum Admin {
         /// Get detailed node health information
         HealthDetail,

@@ -2,53 +2,35 @@ use {
     super::blob::{
         Blob,
         ToBlob,
-    },
-    crate::{
-        bb,
-        interface::{
+    }, crate::interface::{
             stored::{
                 self,
                 cert::X509_EXT_SPAGH_OID,
                 identity::Identity,
             },
             wire::resolve::DNS_SUFFIX,
-        },
-    },
-    chrono::{
+        }, chrono::{
         DateTime,
         Datelike,
         Duration,
         Utc,
-    },
-    der::{
+    }, der::{
         oid::AssociatedOid,
         Decode,
         DecodePem,
         Encode,
-    },
-    futures::Future,
-    loga::{
-        ResultContext,
-    },
-    p256::ecdsa::DerSignature,
-    pem::Pem,
-    rand::RngCore,
-    rustls::client::WebPkiServerVerifier,
-    sha2::{
+    }, flowcontrol::shed, futures::Future, loga::ResultContext, p256::ecdsa::DerSignature, pem::Pem, rand::RngCore, rustls::client::WebPkiServerVerifier, sha2::{
         Digest,
         Sha256,
-    },
-    signature::SignerMut,
-    std::{
+    }, signature::SignerMut, std::{
         collections::HashSet,
         str::FromStr,
         sync::Arc,
-    },
-    x509_cert::{
+    }, x509_cert::{
         builder::Builder,
         ext::AsExtension,
         Certificate,
-    },
+    }
 };
 
 pub fn encode_pub_pem(der: &[u8]) -> String {
@@ -262,7 +244,7 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
         }
 
         // Validate based on signature extension
-        bb!{
+        shed!{
             // Get signature
             let Ok(cert) = x509_cert::Certificate::from_der(&end_entity) else {
                 break;

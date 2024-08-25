@@ -1,6 +1,5 @@
 use {
     crate::{
-        bb,
         cap_block,
         cap_fn,
         interface::config::{
@@ -14,6 +13,7 @@ use {
         utils::fs_util::maybe_read,
     },
     async_trait::async_trait,
+    flowcontrol::shed,
     http::{
         uri::PathAndQuery,
         Method,
@@ -67,7 +67,7 @@ impl htserve::Handler<Full<Bytes>> for StaticFilesHandler {
     async fn handle(&self, args: htserve::HandlerArgs<'_>) -> Response<Full<Bytes>> {
         match async {
             ta_res!(Response < Full < Bytes >>);
-            bb!{
+            shed!{
                 if args.head.method != Method::GET {
                     break;
                 }
@@ -135,7 +135,7 @@ impl htserve::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler {
                 req_parts.uri = Uri::from_parts(uri_parts).unwrap();
                 let mut forwarded_for = vec![];
                 const HEADER_FORWARDED_FOR: &'static str = "X-Forwarded-For";
-                bb!{
+                shed!{
                     let Some(old_forwarded_for) = req_parts.headers.get(HEADER_FORWARDED_FOR) else {
                         break;
                     };

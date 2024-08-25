@@ -31,6 +31,7 @@ pub mod time_util;
 pub mod blob;
 pub mod signed;
 pub mod fs_util;
+pub mod ssh_util;
 
 #[derive(Clone)]
 pub struct AsyncBus<T: Clone + Unpin>(Arc<Mutex<Vec<ManualFutureCompleter<T>>>>);
@@ -96,25 +97,6 @@ impl<O, E: Into<loga::Error>> ResultVisErr<O> for Result<O, E> {
             Err(e) => Err(VisErr::External(e.into())),
         }
     }
-}
-
-/// Break barrier - remove the footgunishness of using loop for this directly
-#[macro_export]
-macro_rules! bb{
-    ($l: lifetime _; $($t: tt) *) => {
-        $l: loop {
-            #[allow(unreachable_code)] break {
-                $($t) *
-            };
-        }
-    };
-    ($($t: tt) *) => {
-        loop {
-            #[allow(unreachable_code)] break {
-                $($t) *
-            };
-        }
-    };
 }
 
 /// Explicitly capturing async closure - clones elements in the second parens into

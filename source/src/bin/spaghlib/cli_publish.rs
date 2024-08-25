@@ -115,7 +115,7 @@ pub mod args {
     }
 
     #[derive(Aargvark)]
-    #[vark(stop)]
+    #[vark(break_help)]
     pub enum Publish {
         /// Announce the publisher server as the authority for this identity. This must be
         /// done before any values published on this publisher can be queried, and replaces

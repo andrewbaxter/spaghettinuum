@@ -3,6 +3,7 @@ use {
         Aargvark,
         AargvarkJson,
     },
+    flowcontrol::shed,
     htwrap::htserve::{
         self,
         check_auth_token_hash,
@@ -22,16 +23,13 @@ use {
         ResultContext,
     },
     spaghettinuum::{
-        bb,
         interface::{
             config::{
                 self,
                 identity::LocalIdentitySecret,
                 node::{
                     api_config::DEFAULT_API_PORT,
-                    node_config::{
-                        DEFAULT_NODE_PORT,
-                    },
+                    node_config::DEFAULT_NODE_PORT,
                     publisher_config::DEFAULT_PUBLISHER_PORT,
                     Config,
                 },
@@ -42,9 +40,7 @@ use {
                 DebugFlag,
                 ENV_CONFIG,
             },
-            stored::{
-                shared::SerialAddr,
-            },
+            stored::shared::SerialAddr,
             wire::{
                 self,
                 api::publish::latest::InfoResponse,
@@ -118,7 +114,7 @@ struct Args {
     /// Refer to the readme for the json schema
     pub config: Option<AargvarkJson<Config>>,
     /// Enable default debug logging, or specific log levels
-    #[vark(stop)]
+    #[vark(break_help)]
     pub debug: Option<Vec<DebugFlag>>,
 }
 
@@ -179,7 +175,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     };
 
     // Get identity signer for self-publish and getting ssl certs
-    let identity_secret = bb!{
+    let identity_secret = shed!{
         if let Some(i) = config.identity {
             break i;
         }

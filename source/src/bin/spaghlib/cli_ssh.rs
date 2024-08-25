@@ -1,51 +1,33 @@
 use {
-    itertools::Itertools,
     loga::{
         ea,
+        DebugDisplay,
         ErrContext,
         Log,
         ResultContext,
     },
     path_absolutize::Absolutize,
     russh::{
-        client::Msg,
-        Channel,
         ChannelMsg,
-        Disconnect,
         Pty,
     },
-    russh_keys::{
-        parse_public_key_base64,
-    },
-    russh_sftp::{
-        client::SftpSession,
-        protocol::OpenFlags,
-    },
-    spaghettinuum::{
-        bb,
-        interface::stored::record,
-        resolving::{
-            resolve,
-            system_resolver_url_pairs,
-        },
-        ta_res,
+    russh_sftp::client::SftpSession,
+    spaghettinuum::utils::ssh_util::{
+        download,
+        quote,
+        run_command,
+        ssh_connect,
+        upload,
+        SshConn,
+        SshConnectHandler,
     },
     std::{
         env,
-        io::ErrorKind,
-        net::{
-            IpAddr,
-            SocketAddr,
-        },
         path::PathBuf,
-        sync::Arc,
     },
     termion::raw::IntoRawMode,
     tokio::{
-        fs::{
-            create_dir_all,
-            File,
-        },
+        fs::create_dir_all,
         io::{
             stdin,
             stdout,
@@ -138,13 +120,35 @@ pub mod args {
     }
 
     #[derive(Aargvark)]
+    pub enum Preposition {
+        /// Place the file or directory as a child of the destination path, using the
+        /// filename of the source path to name the destination file.
+        In,
+        /// Place the file or directory at the exact destination path. If a file, the
+        /// destination must not exist or be a file. If a directory, the destination must
+        /// not exist or be a directory, and the contents of the source will be created in
+        /// the destination.
+        At,
+    }
+
+    #[derive(Aargvark)]
     pub struct SshDownload {
         pub host: StrUserSocketAddr,
         /// Use a specific key file instead of whatever's automatically detected.
         pub key: Option<PathBuf>,
+        /// Absolute path to a file or directory to download.
         pub remote: PathBuf,
+        pub preposition: Preposition,
+        /// Path of where to place the file on the local host.
         pub local: PathBuf,
+        /// Create the parent directories on the destination if they don't already exist.
         pub create_dirs: Option<()>,
+        /// By default, newer files in the destination are skipped. This flag disables that
+        /// behavior.
+        pub no_skip_newer: Option<()>,
+        /// When transfering a directory, delete files in the destination that aren't in
+        /// the source so that the directory contents are equal afterwards.
+        pub sync: Option<()>,
     }
 
     #[derive(Aargvark)]
@@ -152,9 +156,19 @@ pub mod args {
         pub host: StrUserSocketAddr,
         /// Use a specific key file instead of whatever's automatically detected.
         pub key: Option<PathBuf>,
+        /// Path to a file or directory to upload.
         pub local: PathBuf,
+        pub preposition: Preposition,
+        /// Absolute path of where to place the file on the remote.
         pub remote: PathBuf,
+        /// Create the parent directories on the destination if they don't already exist.
         pub create_dirs: Option<()>,
+        /// By default, newer files in the destination are skipped. This flag disables that
+        /// behavior.
+        pub no_skip_newer: Option<()>,
+        /// When transfering a directory, delete files in the destination that aren't in
+        /// the source so that the directory contents are equal afterwards.
+        pub sync: Option<()>,
     }
 
     #[derive(Aargvark)]
@@ -165,207 +179,14 @@ pub mod args {
     }
 }
 
-struct Handler {
-    host_keys: Vec<russh_keys::key::PublicKey>,
-}
-
-#[async_trait::async_trait]
-impl russh::client::Handler for Handler {
-    type Error = loga::Error;
-
-    async fn check_server_key(
-        &mut self,
-        server_public_key: &russh_keys::key::PublicKey,
-    ) -> Result<bool, Self::Error> {
-        for k in &self.host_keys {
-            if k == server_public_key {
-                return Ok(true);
-            }
-        }
-        return Ok(false);
-    }
-}
-
-trait SshInner {
-    async fn run(self, session: Channel<Msg>) -> Result<(), loga::Error>;
-}
-
-async fn connect(
-    log: &Log,
-    host: args::StrUserSocketAddr,
-    key: Option<PathBuf>,
-    inner: impl SshInner,
-) -> Result<(), loga::Error> {
-    let (ips, mut additional_records) =
-        resolve(log, &system_resolver_url_pairs(log)?, &host.host, &[record::ssh_record::KEY])
-            .await
-            .context("Error resolving host")?;
-    let mut host_keys = vec![];
-    bb!{
-        let Some(r) = additional_records.remove(record::ssh_record::KEY) else {
-            log.log(loga::DEBUG, "Response missing SSH host keys record; not using for verification");
-            break;
-        };
-        let Some(r) = r.data else {
-            log.log(loga::DEBUG, "Response SSH host keys record is empty; not using for verification");
-            break;
-        };
-        let r = match serde_json::from_value::<record::ssh_record::SshHostKeys>(r) {
-            Ok(r) => r,
-            Err(e) => {
-                log.log_err(
-                    loga::DEBUG,
-                    e.context(
-                        "Couldn't parse SSH host keys record into expected JSON format, not using for verification",
-                    ),
-                );
-                break;
-            },
-        };
-        match r {
-            record::ssh_record::SshHostKeys::V1(keys) => {
-                for key in keys.0 {
-                    let mut parts = key.split_whitespace();
-                    bb!{
-                        let Some(_algo) = parts.next() else {
-                            break;
-                        };
-                        let Some(key_key) = parts.next() else {
-                            break;
-                        };
-                        match parse_public_key_base64(&key_key) {
-                            Ok(k) => {
-                                host_keys.push(k);
-                            },
-                            Err(e) => {
-                                log.log_err(
-                                    loga::DEBUG,
-                                    e.context_with("Received invalid host key, skipping", ea!(key = key)),
-                                );
-                                break;
-                            },
-                        }
-                    }
-                }
-            },
-        }
-        break;
-    };
-    if host_keys.is_empty() {
-        return Err(loga::err("No host keys published for host, use normal SSH if this is intended"));
-    }
-    let config_port;
-    let config_user;
-    match russh_config::parse_home(&host.host) {
-        Ok(c) => {
-            config_port = c.port;
-            config_user = Some(c.user);
-        },
-        Err(e) => match e {
-            russh_config::Error::HostNotFound => {
-                config_port = 22;
-                config_user = None;
-            },
-            russh_config::Error::Io(x) if x.kind() == ErrorKind::NotFound => {
-                config_port = 22;
-                config_user = None;
-            },
-            _ => return Err(e.context("Error parsing ssh config")),
-        },
-    };
-    let mut conn =
-        russh::client::connect(
-            Arc::new(russh::client::Config::default()),
-            Iterator::chain(
-                ips.ipv6s.into_iter().map(|x| IpAddr::V6(x)),
-                ips.ipv4s.into_iter().map(|x| IpAddr::V4(x)),
-            )
-                .map(|i| SocketAddr::new(i, host.port.unwrap_or(config_port)))
-                .collect_vec()
-                .as_slice(),
-            Handler { host_keys: host_keys },
-        )
-            .await
-            .context("Error connecting to remote host")?;
-    bb!{
-        'authenticated _;
-        let user = host.user.or(config_user).unwrap_or("root".to_string());
-        if let Some(key) = key {
-            let key =
-                russh_keys::load_secret_key(
-                    &key,
-                    None,
-                ).context_with("Error loading specified keypair", ea!(path = key.to_string_lossy()))?;
-            let pubkey = key.clone_public_key().context("Error getting public key from keypair")?;
-            log.log_with(loga::DEBUG, "Attempting auth via command line keypair", ea!(key = pubkey.fingerprint()));
-            if conn
-                .authenticate_publickey(&user, Arc::new(key))
-                .await
-                .context("Error attempting auth method via specified key")? {
-                break 'authenticated;
-            } else {
-                return Err(loga::err("Key provided on command line was rejected"));
-            }
-        }
-        match russh_keys::agent::client::AgentClient::connect_env().await {
-            Ok(mut agent) => {
-                let identities =
-                    agent.request_identities().await.context("Error requesting identities from SSH agent")?;
-                for key in identities {
-                    log.log_with(loga::DEBUG, "Attempting auth via SSH agent key", ea!(key = key.fingerprint()));
-                    let res;
-                    (agent, res) = conn.authenticate_future(&user, key, agent).await;
-                    if res.context("Error attempting auth method via SSH agent")? {
-                        break 'authenticated;
-                    };
-                }
-            },
-            Err(e) => {
-                log.log_err(loga::DEBUG, e.context("Error connecting to SSH agent, skipping as auth method"));
-            },
-        }
-        if let Some(home) = dirs_next::home_dir() {
-            for suffix in ["rsa", "ed25519"] {
-                let key = home.join(format!(".ssh/id_{}", suffix));
-                let key =
-                    russh_keys::load_secret_key(
-                        &key,
-                        None,
-                    ).context_with("Error loading discovered keypair", ea!(path = key.to_string_lossy()))?;
-                let pubkey = key.clone_public_key().context("Error getting public key from keypair")?;
-                log.log_with(loga::DEBUG, "Attempting auth via discovered keypair", ea!(key = pubkey.fingerprint()));
-                if conn
-                    .authenticate_publickey(&user, Arc::new(key))
-                    .await
-                    .context("Error attempting auth method via specified key")? {
-                    break 'authenticated;
-                }
-            }
-        }
-        return Err(loga::err("Couldn't locate any authentication methods or all attempted methods were invalid"));
-    }
-    let conn = Arc::new(conn);
-    let res = async {
-        ta_res!(());
-        let session = conn.channel_open_session().await.context("Error opening command channel")?;
-        inner.run(session).await?;
-        return Ok(());
-    }.await;
-    conn.disconnect(Disconnect::ByApplication, "", "English").await.log(log, loga::DEBUG, "Error disconnecting");
-    return res;
-}
-
-fn quote(command: Vec<String>) -> String {
-    return command.iter().map(|x| shell_escape::escape(x.into())).join(" ");
-}
-
 pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
     match config {
         args::Ssh::Shell(config) => {
             struct Inner(args::SshShell);
 
-            impl SshInner for Inner {
-                async fn run(self, mut session: Channel<Msg>) -> Result<(), loga::Error> {
+            impl SshConnectHandler for Inner {
+                async fn run(self, conn: SshConn) -> Result<(), loga::Error> {
+                    let mut session = conn.channel_open_session().await.context("Error opening command channel")?;
                     let config = self.0;
                     let _raw_term = std::io::stdout().into_raw_mode().context("Error putting terminal in raw mode")?;
                     let (w, h) = termion::terminal_size().context("Error determining terminal size")?;
@@ -437,141 +258,178 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
                 }
             }
 
-            connect(log, config.host.clone(), config.key.clone(), Inner(config)).await?;
+            ssh_connect(
+                log,
+                config.host.user.clone(),
+                config.host.host.clone(),
+                config.host.port,
+                config.key.clone(),
+                Inner(config),
+            ).await?;
         },
         args::Ssh::Download(config) => {
             struct Inner(args::SshDownload);
 
-            impl SshInner for Inner {
-                async fn run(self, session: Channel<Msg>) -> Result<(), loga::Error> {
+            impl SshConnectHandler for Inner {
+                async fn run(self, conn: SshConn) -> Result<(), loga::Error> {
                     let config = self.0;
-                    session.request_subsystem(true, "sftp").await?;
+
+                    // Prep (connection)
+                    let sftp_session = conn.channel_open_session().await.context("Error opening sftp channel")?;
+                    sftp_session.request_subsystem(true, "sftp").await?;
+                    let sftp = SftpSession::new(sftp_session.into_stream()).await.unwrap();
+
+                    // Prep (calc)
                     let local = config.local.absolutize().context("Invalid local path")?;
+                    let local = match config.preposition {
+                        args::Preposition::In => local.join(
+                            config
+                                .remote
+                                .file_name()
+                                .context("File name of remote path unknown, can't form local path (`in`)")?,
+                        ),
+                        args::Preposition::At => local.to_path_buf(),
+                    };
+                    let str_remote =
+                        config
+                            .remote
+                            .to_str()
+                            .context_with(
+                                "Error converting remote path to utf-8, required by sftp subsystem",
+                                ea!(path = config.remote.dbg_str()),
+                            )?;
+
+                    // Prep (mutation)
+                    let source_meta =
+                        sftp
+                            .metadata(str_remote)
+                            .await
+                            .context_with("Error reading metadata for remote file", ea!(path = str_remote))?;
                     if config.create_dirs.is_some() {
-                        let parent =
+                        let create_dirs = if source_meta.is_dir() {
+                            &local
+                        } else {
                             local
                                 .parent()
                                 .context_with(
                                     "Absolute local path has no parent",
                                     ea!(path = local.to_string_lossy()),
-                                )?;
-                        create_dir_all(parent)
+                                )?
+                        };
+                        create_dir_all(create_dirs)
                             .await
                             .context_with(
                                 "Error ensuring parent directories for destination",
-                                ea!(path = parent.to_string_lossy()),
+                                ea!(path = create_dirs.to_string_lossy()),
                             )?;
                     }
-                    let sftp = SftpSession::new(session.into_stream()).await.unwrap();
-                    let mut source =
-                        sftp
-                            .open_with_flags(
-                                config
-                                    .remote
-                                    .to_str()
-                                    .context_with(
-                                        "Couldn't convert remote path to string, required by sftp subsystem",
-                                        ea!(path = config.remote.to_string_lossy()),
-                                    )?,
-                                OpenFlags::READ,
-                            )
-                            .await
-                            .unwrap();
-                    let mut dest =
-                        File::create(&local)
-                            .await
-                            .context_with(
-                                "Error opening local file for writing",
-                                ea!(path = local.to_string_lossy()),
-                            )?;
-                    tokio::io::copy(&mut source, &mut dest).await.context("Error during data transfer")?;
+
+                    // Transfer
+                    download(
+                        &sftp,
+                        &config.remote,
+                        source_meta.is_dir(),
+                        &local,
+                        !config.no_skip_newer.is_some(),
+                        config.sync.is_some(),
+                    ).await?;
                     return Ok(());
                 }
             }
 
-            connect(log, config.host.clone(), config.key.clone(), Inner(config)).await?;
+            ssh_connect(
+                log,
+                config.host.user.clone(),
+                config.host.host.clone(),
+                config.host.port,
+                config.key.clone(),
+                Inner(config),
+            ).await?;
         },
         args::Ssh::Upload(config) => {
             struct Inner(args::SshUpload);
 
-            impl SshInner for Inner {
-                async fn run(self, mut session: Channel<Msg>) -> Result<(), loga::Error> {
+            impl SshConnectHandler for Inner {
+                async fn run(self, conn: SshConn) -> Result<(), loga::Error> {
                     let config = self.0;
-                    let mut source =
-                        File::open(&config.local)
+
+                    // Prep (conn)
+                    let mut session = conn.channel_open_session().await.context("Error opening command channel")?;
+                    let sftp_session = conn.channel_open_session().await.context("Error opening sftp channel")?;
+                    sftp_session.request_subsystem(true, "sftp").await?;
+                    let sftp = SftpSession::new(sftp_session.into_stream()).await.unwrap();
+
+                    // Prep ( calc)
+                    let remote = config.remote.absolutize().context("Invalid remote path")?;
+                    let remote = match config.preposition {
+                        args::Preposition::In => remote.join(
+                            PathBuf::from(
+                                config
+                                    .local
+                                    .file_name()
+                                    .context("File name of local path unknown, can't form remote path (`in`)")?,
+                            ),
+                        ),
+                        args::Preposition::At => remote.to_path_buf(),
+                    };
+
+                    // Prep (mutation)
+                    let source_meta =
+                        tokio::fs::metadata(&config.local)
                             .await
                             .context_with(
-                                "Error opening local file for reading",
-                                ea!(path = config.local.to_string_lossy()),
+                                "Error reading metadata for local file",
+                                ea!(path = config.local.dbg_str()),
                             )?;
-                    session.request_subsystem(true, "sftp").await?;
-                    let remote = config.remote.absolutize().context("Invalid remote path")?;
                     if config.create_dirs.is_some() {
-                        let parent =
+                        let create_dirs = if source_meta.is_dir() {
+                            &remote
+                        } else {
                             remote
                                 .parent()
                                 .context_with(
                                     "Absolute remote path has no parent",
                                     ea!(path = remote.to_string_lossy()),
-                                )?;
-                        let command =
-                            quote(
-                                vec![
-                                    "mkdir".to_string(),
-                                    "-p".to_string(),
-                                    parent
-                                        .to_str()
-                                        .context_with(
-                                            "Couldn't convert remote parent path to string, required by sftp subsystem",
-                                            ea!(path = config.remote.to_string_lossy()),
-                                        )?
-                                        .to_string()
-                                ],
-                            );
-                        session
-                            .exec(true, command.as_bytes())
-                            .await
-                            .context_with("Error running command", ea!(command = command))?;
-                        loop {
-                            match session.wait().await {
-                                None => {
-                                    return Ok(());
-                                },
-                                Some(ChannelMsg::ExitStatus { exit_status }) => {
-                                    if exit_status != 0 {
-                                        return Err(
-                                            loga::err_with(
-                                                "Command exited with non-0 exit code",
-                                                ea!(command = command),
-                                            ),
-                                        );
-                                    }
-                                    break;
-                                },
-                                _ => { },
-                            }
-                        }
-                    }
-                    let sftp = SftpSession::new(session.into_stream()).await.unwrap();
-                    let mut dest =
-                        sftp
-                            .open_with_flags(
-                                remote
+                                )?
+                        };
+                        run_command(
+                            &mut session,
+                            vec![
+                                "mkdir".to_string(),
+                                "-p".to_string(),
+                                create_dirs
                                     .to_str()
                                     .context_with(
-                                        "Couldn't convert remote path to string, required by sftp subsystem",
+                                        "Couldn't convert remote parent path to string, required by sftp subsystem",
                                         ea!(path = config.remote.to_string_lossy()),
-                                    )?,
-                                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-                            )
-                            .await
-                            .unwrap();
-                    tokio::io::copy(&mut source, &mut dest).await.context("Error during data transfer")?;
+                                    )?
+                                    .to_string()
+                            ],
+                        ).await?;
+                    }
+
+                    // Transfer
+                    upload(
+                        &mut session,
+                        &sftp,
+                        &config.local,
+                        source_meta.is_dir(),
+                        &remote,
+                        !config.no_skip_newer.is_some(),
+                        config.sync.is_some(),
+                    ).await?;
                     return Ok(());
                 }
             }
 
-            connect(log, config.host.clone(), config.key.clone(), Inner(config)).await?;
+            ssh_connect(
+                log,
+                config.host.user.clone(),
+                config.host.host.clone(),
+                config.host.port,
+                config.key.clone(),
+                Inner(config),
+            ).await?;
         },
     }
     return Ok(());

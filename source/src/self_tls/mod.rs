@@ -24,7 +24,6 @@
 //!   requires client support.
 use {
     crate::{
-        bb,
         interface::{
             stored::{
                 self,
@@ -60,23 +59,15 @@ use {
                 rustls21_load_certified_key,
             },
         },
-    },
-    chrono::{
+    }, chrono::{
         DateTime,
         Duration,
         Utc,
-    },
-    der::Encode,
-    http::Uri,
-    htwrap::htreq,
-    loga::{
+    }, der::Encode, flowcontrol::shed, http::Uri, htwrap::htreq, loga::{
         ea,
         Log,
         ResultContext,
-    },
-    p256::pkcs8::EncodePrivateKey,
-    rustls::server::ResolvesServerCert,
-    std::{
+    }, p256::pkcs8::EncodePrivateKey, rustls::server::ResolvesServerCert, std::{
         collections::HashMap,
         path::{
             Path,
@@ -88,9 +79,7 @@ use {
             Mutex,
             RwLock,
         },
-    },
-    taskmanager::TaskManager,
-    tokio::{
+    }, taskmanager::TaskManager, tokio::{
         fs::create_dir_all,
         select,
         sync::watch::{
@@ -102,12 +91,10 @@ use {
             sleep,
             sleep_until,
         },
-    },
-    tokio_stream::{
+    }, tokio_stream::{
         wrappers::WatchStream,
         StreamExt,
-    },
-    x509_cert::spki::SubjectPublicKeyInfoOwned,
+    }, x509_cert::spki::SubjectPublicKeyInfoOwned
 };
 
 pub mod db;
@@ -244,7 +231,7 @@ pub async fn request_cert_stream(
                 }
                 let mut backoff = std::time::Duration::from_secs(30);
                 let max_tries = 5;
-                let certs = bb!{
+                let certs = shed!{
                     'ok _;
                     for _ in 0 .. max_tries {
                         match request_cert(log, signer.clone(), options).await {
@@ -360,7 +347,7 @@ pub async fn htserve_certs(
     let mut state = match db_pool.tx(|conn| Ok(db::api_certs_get(conn)?)).await? {
         Some(s) => match s {
             stored::self_tls::SelfTlsState::V1(mut s) => {
-                bb!({
+                shed!({
                     let Some(pending) = &s.pending else {
                         break;
                     };

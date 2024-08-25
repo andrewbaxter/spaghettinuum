@@ -4,9 +4,9 @@ version = 3
 
 [[package]]
 name = "aargvark"
-version = "0.3.0"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee30f45b6bb8aaa22d58e70a17d727c302383e8a5e8ff4c7ab77569fbc06d883"
+checksum = "0a21a6e1dbb5f35da90622ce6bf7e4067790b7b73cad14d0c9152e6206d22582"
 dependencies = [
  "aargvark_proc_macros",
  "comfy-table",
@@ -22,11 +22,12 @@ dependencies = [
 
 [[package]]
 name = "aargvark_proc_macros"
-version = "0.1.2"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f79aa888318c32f962f8bbe7541635fb6c5400d8bc68deeb1becc583b6161c92"
+checksum = "b5a3399e854b022839136dbabb178039d4199f60c206210967c5318dda3a811b"
 dependencies = [
  "convert_case 0.6.0",
+ "darling",
  "genemichaels-lib",
  "proc-macro2",
  "quote",
@@ -951,6 +952,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "darling"
+version = "0.20.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f63b86c8a8826a49b8c21f08a2d07338eec8d900540f8630dc76284be802989"
+dependencies = [
+ "darling_core",
+ "darling_macro",
+]
+
+[[package]]
+name = "darling_core"
+version = "0.20.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95133861a8032aaea082871032f5815eb9e98cef03fa916ab4500513994df9e5"
+dependencies = [
+ "fnv",
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 2.0.75",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.20.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d336a2a514f6ccccaa3e09b02d41d35330c07ddf03a62165fcec10bb561c7806"
+dependencies = [
+ "darling_core",
+ "quote",
+ "syn 2.0.75",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1349,6 +1385,12 @@ dependencies = [
  "crc32fast",
  "miniz_oxide",
 ]
+
+[[package]]
+name = "flowcontrol"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e18cda47a9c6910827bf1f5f825decb3777be16324ccf4e4295eb3d09caa156"
 
 [[package]]
 name = "flurry"
@@ -2020,6 +2062,12 @@ dependencies = [
  "rand 0.8.5",
  "static_assertions",
 ]
+
+[[package]]
+name = "ident_case"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "idna"
@@ -4030,6 +4078,7 @@ dependencies = [
  "ecdsa",
  "ed25519-dalek",
  "enum_dispatch",
+ "flowcontrol",
  "futures",
  "generic-array 0.14.7",
  "good-ormning",

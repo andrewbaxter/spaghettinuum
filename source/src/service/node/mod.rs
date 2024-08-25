@@ -1,6 +1,5 @@
 use {
     crate::{
-        bb,
         cap_fn,
         interface::{
             config::shared::StrSocketAddr,
@@ -32,39 +31,29 @@ use {
             },
             time_util::ToInstant,
         },
-    },
-    chrono::{
+    }, chrono::{
         DateTime,
         Duration,
         Utc,
-    },
-    constant_time_eq::constant_time_eq,
-    futures::channel::mpsc::{
+    }, constant_time_eq::constant_time_eq, flowcontrol::shed, futures::channel::mpsc::{
         unbounded,
         UnboundedSender,
-    },
-    generic_array::{
+    }, generic_array::{
         ArrayLength,
         GenericArray,
-    },
-    loga::{
+    }, loga::{
         ea,
         DebugDisplay,
         ErrContext,
         Log,
         ResultContext,
-    },
-    manual_future::{
+    }, manual_future::{
         ManualFuture,
         ManualFutureCompleter,
-    },
-    rand::RngCore,
-    serde::{
+    }, rand::RngCore, serde::{
         Deserialize,
         Serialize,
-    },
-    sha2::Digest,
-    std::{
+    }, sha2::Digest, std::{
         collections::{
             hash_map::Entry,
             HashMap,
@@ -83,13 +72,11 @@ use {
             Arc,
             Mutex,
         },
-    },
-    taskmanager::TaskManager,
-    tokio::{
+    }, taskmanager::TaskManager, tokio::{
         net::UdpSocket,
         select,
         time::sleep,
-    },
+    }
 };
 
 pub mod db;
@@ -682,7 +669,7 @@ impl Node {
         let (f, c) = ManualFuture::new();
         self.start_find(FindGoal::Identity(key), Some(c)).await;
         let res = f.await;
-        bb!{
+        shed!{
             'skip_store _;
             match &res.value {
                 Some(accepted) => match accepted {
@@ -1096,7 +1083,7 @@ impl Node {
 
             // Process received value
             if let (Some(value), FindGoal::Identity(goal_identity)) = (content.value, goal) {
-                bb!{
+                shed!{
                     let found_published;
                     match &value {
                         stored::announcement::Announcement::V1(found) => {
@@ -1207,7 +1194,7 @@ impl Node {
         let buckets = self.0.buckets.lock().unwrap();
         let (bucket_i, _) = dist(&goal_coord, &self.0.own_coord);
         let mut nodes: Vec<wire::node::latest::NodeInfo> = vec![];
-        bb!{
+        shed!{
             'full _;
             // 1. Start with nodes in the same k-bucket, since all nodes in a bucket are in a
             //    distinct subtree from all higher and lower-k buckets, so nodes in that bucket will
@@ -1260,7 +1247,7 @@ impl Node {
                             FindGoal::Coord(c) => c,
                             FindGoal::Identity(i) => ident_coord(&i),
                         }, NEIGHBORHOOD),
-                        value: bb!{
+                        value: shed!{
                             let FindGoal::Identity(ident) = m.goal else {
                                 break None;
                             };

@@ -39,7 +39,7 @@ pub mod args {
     }
 
     #[derive(Aargvark)]
-    #[vark(stop)]
+    #[vark(break_help)]
     pub enum Identity {
         /// Create a new local (file) identity
         NewLocal(NewLocalIdentity),

@@ -1,6 +1,5 @@
 use {
     crate::{
-        bb,
         interface::{
             config::ENV_PUBLISHER_URLS,
             wire,
@@ -15,6 +14,7 @@ use {
         },
     },
     async_trait::async_trait,
+    flowcontrol::shed,
     http::Uri,
     loga::{
         ea,
@@ -33,7 +33,7 @@ use {
 };
 
 pub fn system_publisher_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error> {
-    bb!{
+    shed!{
         let Some(raw_publishers) = env::var_os(ENV_PUBLISHER_URLS) else {
             break;
         };

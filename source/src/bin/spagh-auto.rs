@@ -58,7 +58,7 @@ struct Args {
     /// Config - json.  See the reference documentation and jsonschema for details.
     pub config: Option<AargvarkJson<Config>>,
     /// Enable debug logging
-    #[vark(stop)]
+    #[vark(break_help)]
     pub debug: Option<Vec<DebugFlag>>,
 }
 

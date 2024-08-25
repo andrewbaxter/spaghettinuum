@@ -1,6 +1,5 @@
 use {
     crate::{
-        bb,
         interface::{
             stored::{
                 self,
@@ -25,14 +24,11 @@ use {
             ResultVisErr,
             VisErr,
         },
-    },
-    chrono::{
+    }, chrono::{
         DateTime,
         Duration,
         Utc,
-    },
-    http_body_util::Empty,
-    htwrap::{
+    }, flowcontrol::shed, http_body_util::Empty, htwrap::{
         htreq::{
             self,
             Conn,
@@ -43,40 +39,29 @@ use {
             response_400,
             response_503,
         },
-    },
-    hyper::{
+    }, hyper::{
         body::Bytes,
         Request,
         Uri,
-    },
-    hyper_rustls::HttpsConnectorBuilder,
-    itertools::Itertools,
-    loga::{
+    }, hyper_rustls::HttpsConnectorBuilder, itertools::Itertools, loga::{
         ea,
         ErrContext,
         Log,
         ResultContext,
-    },
-    moka::future::Cache,
-    rand::{
+    }, moka::future::Cache, rand::{
         seq::SliceRandom,
         thread_rng,
-    },
-    rustls::ClientConfig,
-    std::{
+    }, rustls::ClientConfig, std::{
         collections::HashMap,
         net::IpAddr,
         path::Path,
         str::FromStr,
         sync::Arc,
-    },
-    taskmanager::TaskManager,
-    tokio::{
+    }, taskmanager::TaskManager, tokio::{
         select,
         spawn,
         time::sleep,
-    },
-    tower_service::Service,
+    }, tower_service::Service
 };
 
 pub mod db;
@@ -263,7 +248,7 @@ impl Resolver {
     ) -> Result<wire::resolve::ResolveKeyValues, loga::Error> {
         // First check cache
         let now = Utc::now();
-        bb!{
+        shed!{
             'missing _;
             let mut kvs = HashMap::new();
             for k in request_keys {
@@ -330,7 +315,7 @@ impl Resolver {
                 ta_res!(ResolveKeyValues);
 
                 // Request values from publisher
-                bb!{
+                shed!{
                     // Check if publisher is us, short circuit network
                     if !self.0.global_addrs.iter().any(|i| *i == publisher.addr.0.ip()) {
                         break;
