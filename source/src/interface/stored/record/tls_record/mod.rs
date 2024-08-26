@@ -6,11 +6,11 @@ use {
     },
 };
 
-pub const KEY: &'static str = "tls";
-
 pub mod v1;
 
 pub use v1 as latest;
+
+pub const KEY_SUFFIX_TLS: &'static str = "tls";
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "snake_case")]

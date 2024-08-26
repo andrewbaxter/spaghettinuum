@@ -6,6 +6,11 @@ use {
                 self,
                 announcement::Announcement,
                 identity::Identity,
+                record::record_utils::{
+                    join_record_key,
+                    split_query_record_keys,
+                    RecordKey,
+                },
             },
             wire::{
                 self,
@@ -36,16 +41,24 @@ use {
             ResultVisErr,
             VisErr,
         },
-    }, async_trait::async_trait, chrono::{
+    },
+    async_trait::async_trait,
+    chrono::{
         DateTime,
         Duration,
         NaiveDate,
         NaiveDateTime,
         Utc,
-    }, deadpool_sqlite::Pool, flowcontrol::shed, good_ormning_runtime::GoodError, http::{
+    },
+    deadpool_sqlite::Pool,
+    flowcontrol::shed,
+    good_ormning_runtime::GoodError,
+    http::{
         Method,
         Response,
-    }, http_body_util::BodyExt, htwrap::htserve::{
+    },
+    http_body_util::BodyExt,
+    htwrap::htserve::{
         self,
         check_auth_token_hash,
         response_200,
@@ -55,15 +68,20 @@ use {
         response_404,
         response_503,
         AuthTokenHash,
-    }, loga::{
+    },
+    loga::{
         ea,
         Log,
         ResultContext,
-    }, p256::pkcs8::EncodePrivateKey, rustls::pki_types::{
+    },
+    p256::pkcs8::EncodePrivateKey,
+    rustls::pki_types::{
         CertificateDer,
         PrivateKeyDer,
         PrivatePkcs8KeyDer,
-    }, serde::Deserialize, std::{
+    },
+    serde::Deserialize,
+    std::{
         collections::HashMap,
         net::SocketAddr,
         path::Path,
@@ -72,7 +90,8 @@ use {
             Mutex,
             RwLock,
         },
-    }, taskmanager::TaskManager
+    },
+    taskmanager::TaskManager,
 };
 
 pub mod db;
@@ -181,15 +200,14 @@ impl Publisher {
                             };
                             let ident =
                                 Identity::from_str(&ident).context("Couldn't parse identity").err_external()?;
-                            let mut keys = vec![];
-                            for raw_key in r.query.split(",") {
-                                keys.push(
-                                    urlencoding::decode(raw_key)
-                                        .map(|x| x.to_string())
-                                        .unwrap_or_else(|_| raw_key.to_string()),
-                                );
-                            }
-                            return Ok(response_200_json(publisher.get_values(&ident, keys).await.err_internal()?));
+                            return Ok(
+                                response_200_json(
+                                    publisher
+                                        .get_values(&ident, split_query_record_keys(&r.query))
+                                        .await
+                                        .err_internal()?,
+                                ),
+                            );
                         }.await {
                             Ok(r) => return r,
                             Err(VisErr::Internal(e)) => {
@@ -407,10 +425,10 @@ impl Publisher {
                     db::values_delete_all(db, &identity)?;
                 }
                 for k in args.clear {
-                    db::values_delete(db, &identity, &k)?;
+                    db::values_delete(db, &identity, &join_record_key(&k))?;
                 }
                 for (k, v) in args.set {
-                    db::values_set(db, &identity, &k, &v)?;
+                    db::values_set(db, &identity, &join_record_key(&k), &v)?;
                 }
                 return Ok(());
             }
@@ -421,7 +439,7 @@ impl Publisher {
     pub async fn get_values(
         &self,
         identity: &Identity,
-        keys: Vec<String>,
+        keys: Vec<RecordKey>,
     ) -> Result<wire::resolve::ResolveKeyValues, loga::Error> {
         let identity = identity.clone();
         return Ok(self.db_pool.tx(move |db| {
@@ -431,7 +449,7 @@ impl Publisher {
             for k in keys {
                 let expires;
                 let data;
-                match db::values_get(db, &identity, &k)? {
+                match db::values_get(db, &identity, &join_record_key(&k))? {
                     Some(v) => match v {
                         stored::record::RecordValue::V1(v) => {
                             expires = now + Duration::try_minutes(v.ttl as i64).context("TTL out of range")?;
@@ -444,7 +462,7 @@ impl Publisher {
                         data = None;
                     },
                 }
-                out.insert(k, wire::resolve::v1::ResolveValue {
+                out.insert(k.clone(), wire::resolve::v1::ResolveValue {
                     expires: expires,
                     data: data,
                 });

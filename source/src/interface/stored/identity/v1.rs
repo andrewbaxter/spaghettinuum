@@ -17,7 +17,6 @@ use crate::utils::blob::{
     ToBlob,
 };
 use super::{
-    IdentityVersionMethods,
     hash_for_ed25519,
 };
 
@@ -88,15 +87,13 @@ impl Display for Identity {
     }
 }
 
-impl IdentityVersionMethods for Identity {
-    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), &'static str> {
+impl Identity {
+    pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), &'static str> {
         match self {
             Identity::Ed25519(i) => i.verify(message, signature),
         }
     }
-}
 
-impl Identity {
     pub fn from_bytes(data: &[u8]) -> Result<Self, loga::Error> {
         return Ok(bincode::deserialize(data)?);
     }

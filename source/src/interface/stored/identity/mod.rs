@@ -5,6 +5,7 @@ use good_ormning_runtime::sqlite::{
 use loga::{
     ea,
 };
+use schemars::JsonSchema;
 use sha2::{
     Sha512,
     Digest,
@@ -35,6 +36,23 @@ versioned!(
     Hash;
     (V1, 1, v1::Identity)
 );
+
+impl JsonSchema for Identity {
+    fn schema_name() -> String {
+        return "Identity".to_string();
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        return schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            metadata: Some(Box::new(schemars::schema::Metadata {
+                description: Some("An identity (zbase32 string)".to_string()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }.into();
+    }
+}
 
 impl Display for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,10 +86,6 @@ impl Identity {
             )?,
         );
     }
-}
-
-pub trait IdentityVersionMethods {
-    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), &'static str>;
 }
 
 impl Identity {

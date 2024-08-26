@@ -4,6 +4,13 @@ use {
             stored::{
                 self,
                 identity::Identity,
+                record::record_utils::{
+                    join_query_record_keys,
+                    join_record_key,
+                    split_query_record_keys,
+                    split_record_key,
+                    RecordKey,
+                },
             },
             wire::{
                 self,
@@ -24,11 +31,15 @@ use {
             ResultVisErr,
             VisErr,
         },
-    }, chrono::{
+    },
+    chrono::{
         DateTime,
         Duration,
         Utc,
-    }, flowcontrol::shed, http_body_util::Empty, htwrap::{
+    },
+    flowcontrol::shed,
+    http_body_util::Empty,
+    htwrap::{
         htreq::{
             self,
             Conn,
@@ -39,29 +50,40 @@ use {
             response_400,
             response_503,
         },
-    }, hyper::{
+    },
+    hyper::{
         body::Bytes,
         Request,
         Uri,
-    }, hyper_rustls::HttpsConnectorBuilder, itertools::Itertools, loga::{
+    },
+    hyper_rustls::HttpsConnectorBuilder,
+    loga::{
         ea,
+        DebugDisplay,
         ErrContext,
         Log,
         ResultContext,
-    }, moka::future::Cache, rand::{
+    },
+    moka::future::Cache,
+    rand::{
         seq::SliceRandom,
         thread_rng,
-    }, rustls::ClientConfig, std::{
+    },
+    rustls::ClientConfig,
+    std::{
         collections::HashMap,
         net::IpAddr,
         path::Path,
         str::FromStr,
         sync::Arc,
-    }, taskmanager::TaskManager, tokio::{
+    },
+    taskmanager::TaskManager,
+    tokio::{
         select,
         spawn,
         time::sleep,
-    }, tower_service::Service
+    },
+    tower_service::Service,
 };
 
 pub mod db;
@@ -136,7 +158,7 @@ impl rustls::client::danger::ServerCertVerifier for SingleKeyVerifier {
 struct Resolver_ {
     node: Node,
     log: Log,
-    cache: Cache<(Identity, String), (DateTime<Utc>, Option<String>)>,
+    cache: Cache<(Identity, RecordKey), (DateTime<Utc>, Option<String>)>,
     publisher: Option<Arc<Publisher>>,
     global_addrs: Vec<IpAddr>,
 }
@@ -189,7 +211,9 @@ impl Resolver {
                         .interact(move |db| db::cache_list(db, e))
                         .await?? {
                         edge = Some(row.rowid);
-                        cache.insert((row.identity.clone(), row.key), (row.expires, row.value)).await;
+                        cache
+                            .insert((row.identity.clone(), split_record_key(&row.key)), (row.expires, row.value))
+                            .await;
                     }
                 }
                 return Ok(()) as Result<(), loga::Error>;
@@ -224,7 +248,13 @@ impl Resolver {
                         move |db| {
                             db::cache_clear(db)?;
                             for (k, v) in cache.iter() {
-                                db::cache_push(db, &k.0, &k.1, v.0, v.1.as_ref().map(|v| v.as_str()))?;
+                                db::cache_push(
+                                    db,
+                                    &k.0,
+                                    &join_record_key(&k.1),
+                                    v.0,
+                                    v.1.as_ref().map(|v| v.as_str()),
+                                )?;
                             }
                             return Ok(()) as Result<_, loga::Error>;
                         }
@@ -244,15 +274,16 @@ impl Resolver {
     pub async fn get(
         &self,
         ident: &Identity,
-        request_keys: &[String],
+        request_keys: Vec<RecordKey>,
     ) -> Result<wire::resolve::ResolveKeyValues, loga::Error> {
-        // First check cache
+        // First check cache. Only respond with cache answers if all keys are in cache
+        // (will be making a request anyway, might as well get fresh data).
         let now = Utc::now();
         shed!{
             'missing _;
             let mut kvs = HashMap::new();
-            for k in request_keys {
-                if let Some(found) = self.0.cache.get(&(ident.clone(), k.to_string())) {
+            for k in &request_keys {
+                if let Some(found) = self.0.cache.get(&(ident.clone(), k.clone())) {
                     let (expiry, v) = found;
                     if expiry < now {
                         break 'missing;
@@ -267,7 +298,10 @@ impl Resolver {
                                         .log
                                         .log_err(
                                             loga::WARN,
-                                            e.context_with("Couldn't parse cache value as json", ea!(key = k)),
+                                            e.context_with(
+                                                "Couldn't parse cache value as json",
+                                                ea!(key = k.dbg_str()),
+                                            ),
                                         );
                                     break 'missing;
                                 },
@@ -275,12 +309,12 @@ impl Resolver {
                         },
                         None => None,
                     };
-                    kvs.insert(k.to_string(), wire::resolve::v1::ResolveValue {
+                    kvs.insert(k.clone(), wire::resolve::v1::ResolveValue {
                         expires: expiry,
                         data: v,
                     });
                 } else {
-                    self.0.log.log_with(loga::DEBUG, "Cache miss", ea!(ident = ident, key = k));
+                    self.0.log.log_with(loga::DEBUG, "Cache miss", ea!(ident = ident, key = k.dbg_str()));
                     break 'missing;
                 }
             }
@@ -308,6 +342,8 @@ impl Resolver {
         publishers.shuffle(&mut thread_rng());
         let mut values = None;
         let mut errs = vec![];
+        let joined_request_keys = join_query_record_keys(&request_keys);
+        let resp_max_size = request_keys.len() * 128 * 1024;
         for publisher in publishers {
             let log = self.0.log.fork(ea!(publisher = publisher.addr));
             let log = &log;
@@ -323,13 +359,11 @@ impl Resolver {
                     let Some(publisher) = &self.0.publisher else {
                         break;
                     };
-                    return Ok(
-                        publisher.get_values(&ident, request_keys.iter().map(|x| x.to_string()).collect()).await?,
-                    );
+                    return Ok(publisher.get_values(&ident, request_keys.clone()).await?);
                 }
 
                 // Request values via publisher over internet
-                let url = Uri::from_str(&format!("https://{}/{}?{}", publisher.addr, ident, request_keys.join(","))).unwrap();
+                let url = Uri::from_str(&format!("https://{}/{}?{}", publisher.addr, ident, joined_request_keys)).unwrap();
                 let connect = async {
                     return Ok(
                         HttpsConnectorBuilder::new()
@@ -362,7 +396,7 @@ impl Resolver {
                     htreq::send_simple(
                         log,
                         &mut conn,
-                        128 * 1024 * request_keys.len(),
+                        resp_max_size,
                         Duration::try_seconds(10).unwrap(),
                         Request::builder()
                             .method("GET")
@@ -407,7 +441,7 @@ impl Resolver {
                 match &resp_kvs {
                     wire::resolve::ResolveKeyValues::V1(resp_kvs) => {
                         for (k, v) in resp_kvs {
-                            log.log_with(loga::DEBUG, "Cache store", ea!(ident = ident, key = k));
+                            log.log_with(loga::DEBUG, "Cache store", ea!(ident = ident, key = k.dbg_str()));
                             cache
                                 .insert(
                                     (identity.clone(), k.to_owned()),
@@ -443,10 +477,7 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter
             ta_vis_res!(wire::api::resolve::v1::ResolveValues);
             let ident_src =
                 args.subpath.strip_prefix("/").context("Missing identity final path element").err_external()?;
-            let keys = args.query.split(",").map(|x| match urlencoding::decode(&x) {
-                Ok(x) => x.to_string(),
-                Err(_) => x.to_string(),
-            }).collect_vec();
+            let keys = split_query_record_keys(&args.query);
             let kvs =
                 state
                     .resolver
@@ -454,7 +485,7 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter
                         &Identity::from_str(&ident_src)
                             .context_with("Failed to parse identity", ea!(identity = ident_src))
                             .err_external()?,
-                        &keys,
+                        keys,
                     )
                     .await
                     .err_internal()?;

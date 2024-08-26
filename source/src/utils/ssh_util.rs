@@ -96,13 +96,14 @@ pub async fn ssh_connect(
     key: Option<PathBuf>,
     inner: impl SshConnectHandler,
 ) -> Result<(), loga::Error> {
+    let hostkey_key = vec![record::ssh_record::KEY_SUFFIX_SSH_HOSTKEYS.to_string()];
     let (ips, mut additional_records) =
-        resolve(log, &system_resolver_url_pairs(log)?, &host, &[record::ssh_record::KEY])
+        resolve(log, &system_resolver_url_pairs(log)?, &host, &[hostkey_key.clone()])
             .await
             .context("Error resolving host")?;
     let mut host_keys = vec![];
     shed!{
-        let Some(r) = additional_records.remove(record::ssh_record::KEY) else {
+        let Some(r) = additional_records.remove(&hostkey_key) else {
             log.log(loga::DEBUG, "Response missing SSH host keys record; not using for verification");
             break;
         };

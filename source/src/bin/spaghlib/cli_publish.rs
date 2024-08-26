@@ -1,5 +1,6 @@
 use {
     loga::{
+        ea,
         Log,
         ResultContext,
     },
@@ -8,9 +9,18 @@ use {
         interface::{
             stored::{
                 self,
-                record::dns_record::{
-                    format_dns_key,
-                    RecordType,
+                record::{
+                    delegate_record::build_delegate_key,
+                    dns_record::{
+                        build_dns_key,
+                        RecordType,
+                    },
+                    record_utils::{
+                        split_dns_name,
+                        split_dns_path,
+                        split_record_key,
+                        RecordRoot,
+                    },
                 },
             },
             wire,
@@ -25,6 +35,7 @@ use {
     std::{
         collections::HashMap,
         net::{
+            IpAddr,
             Ipv4Addr,
             Ipv6Addr,
         },
@@ -70,20 +81,22 @@ pub mod args {
         /// Identity to publish as
         pub identity: IdentitySecretArg,
         /// Data to publish.  Must be json in the structure
-        /// `{KEY: {"ttl": MINUTES, "value": DATA}, ...}`
+        /// `{KEY: {"ttl": MINUTES, "value": DATA}, ...}`. `KEY` is a string that's a
+        /// dotted list of key segments, with `/` to escape dots and escape characters.
         pub data: AargvarkJson<HashMap<String, stored::record::latest::RecordValue>>,
     }
 
     #[derive(Aargvark)]
     pub struct SetDns {
-        /// Identity to publish as
+        /// Identity to publish
         pub identity: IdentitySecretArg,
-        /// Subdomain, prefixed to the identity. Must end with `.`.
-        pub subdomain: Option<String>,
+        /// Dotted list of subdomains to publish under (ex: `a.b.c` will publish
+        /// `a.b.c.IDENT.s`).
+        pub subdomain: String,
         /// TTL for hits and misses, in minutes
         pub ttl: u32,
         /// A list of other DNS names.
-        pub dns_cname: Vec<String>,
+        pub delegate: Vec<String>,
         /// A list of Ipv4 addresses
         pub dns_a: Vec<String>,
         /// A list of Ipv6 addresses
@@ -158,22 +171,14 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                         .data
                         .value
                         .into_iter()
-                        .map(|(k, v)| (k, stored::record::RecordValue::V1(v)))
+                        .map(|(k, v)| (split_record_key(&k), stored::record::RecordValue::V1(v)))
                         .collect(),
                     ..Default::default()
                 },
             ).await?;
         },
         args::Publish::SetDns(config) => {
-            let subdomain = match &config.subdomain {
-                Some(s) => {
-                    if !s.ends_with('.') {
-                        return Err(log.err("Subdomain must end with ."));
-                    }
-                    s.as_str()
-                },
-                None => ".",
-            };
+            let path = split_dns_path(&config.subdomain)?;
 
             fn rec_val(ttl: u32, data: impl Serialize) -> stored::record::RecordValue {
                 return stored::record::RecordValue::latest(stored::record::latest::RecordValue {
@@ -183,13 +188,25 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
             }
 
             let mut kvs = HashMap::new();
-            if !config.dns_mx.is_empty() {
+            if !config.delegate.is_empty() {
+                let mut values = vec![];
+                for v in config.delegate {
+                    if let Ok(ip) = IpAddr::from_str(&v) {
+                        values.push((RecordRoot::Ip(ip), vec![]));
+                    } else {
+                        values.push(
+                            split_dns_name(
+                                hickory_resolver::Name::from_utf8(&v).context("Invalid DNS name for delegation")?,
+                            ).context_with("Invalid delegation", ea!(value = v))?,
+                        );
+                    }
+                }
                 kvs.insert(
-                    format_dns_key(subdomain, RecordType::Cname),
+                    build_delegate_key(path.clone()),
                     rec_val(
                         config.ttl,
-                        stored::record::dns_record::DnsCname::V1(
-                            stored::record::dns_record::latest::DnsCname(config.dns_cname),
+                        stored::record::delegate_record::Delegate::latest(
+                            stored::record::delegate_record::latest::Delegate(values),
                         ),
                     ),
                 );
@@ -200,7 +217,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                     v.push(Ipv4Addr::from_str(&r).context("Invalid IP address for A record")?);
                 }
                 kvs.insert(
-                    format_dns_key(subdomain, RecordType::A),
+                    build_dns_key(path.clone(), RecordType::A),
                     rec_val(
                         config.ttl,
                         stored::record::dns_record::DnsA::V1(stored::record::dns_record::latest::DnsA(v)),
@@ -213,7 +230,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                     v.push(Ipv6Addr::from_str(&r).context("Invalid IP address for AAAA record")?);
                 }
                 kvs.insert(
-                    format_dns_key(subdomain, RecordType::Aaaa),
+                    build_dns_key(path.clone(), RecordType::Aaaa),
                     rec_val(
                         config.ttl,
                         &stored::record::dns_record::DnsAaaa::V1(stored::record::dns_record::latest::DnsAaaa(v)),
@@ -222,7 +239,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
             }
             if !config.dns_txt.is_empty() {
                 kvs.insert(
-                    format_dns_key(subdomain, RecordType::Txt),
+                    build_dns_key(path.clone(), RecordType::Txt),
                     rec_val(
                         config.ttl,
                         &stored::record::dns_record::DnsTxt::V1(
@@ -233,7 +250,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
             }
             if !config.dns_mx.is_empty() {
                 kvs.insert(
-                    format_dns_key(subdomain, RecordType::Mx),
+                    build_dns_key(path.clone(), RecordType::Mx),
                     rec_val(
                         config.ttl,
                         &stored::record::dns_record::DnsMx::V1(
@@ -268,7 +285,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 &publishers,
                 &signer,
                 wire::api::publish::latest::PublishRequestContent {
-                    clear: config.keys,
+                    clear: config.keys.into_iter().map(|k| split_record_key(&k)).collect(),
                     ..Default::default()
                 },
             ).await?;

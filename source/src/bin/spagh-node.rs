@@ -264,9 +264,9 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         publisher1.announce(&identity, announcement).await?;
         let mut publish_data = HashMap::new();
         for ip in &public_ips {
-            add_ip_record(&mut publish_data, *ip);
+            add_ip_record(&mut publish_data, vec![], *ip);
         }
-        add_ssh_host_key_records(&mut publish_data, publisher_config.ssh_host_keys).await?;
+        add_ssh_host_key_records(&mut publish_data, vec![], publisher_config.ssh_host_keys).await?;
         publisher1.modify_values(&identity, wire::api::publish::v1::PublishRequestContent {
             clear_all: true,
             set: publish_data,

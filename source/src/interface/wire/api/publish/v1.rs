@@ -13,11 +13,12 @@ use serde::{
     Serialize,
 };
 use crate::{
-    interface::{
-        stored::{
-            self,
-            identity::Identity,
-            record::RecordValue,
+    interface::stored::{
+        self,
+        identity::Identity,
+        record::{
+            record_utils::RecordKey,
+            RecordValue,
         },
     },
     utils::blob::Blob,
@@ -73,9 +74,9 @@ pub struct PublishRequestContent {
     #[serde(default)]
     pub clear_all: bool,
     /// Stop publishing keys
-    pub clear: HashSet<String>,
+    pub clear: HashSet<RecordKey>,
     /// Start publishing values for keys
-    pub set: HashMap<String, RecordValue>,
+    pub set: HashMap<RecordKey, RecordValue>,
 }
 
 #[derive(Serialize, Deserialize)]

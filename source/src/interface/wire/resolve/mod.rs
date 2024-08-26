@@ -11,11 +11,12 @@ pub const DNS_DOT_SUFFIX: &str = ".s";
 pub mod v1;
 
 pub use v1 as latest;
+use crate::interface::stored::record::record_utils::RecordKey;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolveKeyValues {
-    V1(HashMap<String, v1::ResolveValue>),
+    V1(HashMap<RecordKey, v1::ResolveValue>),
 }
 
 #[derive(Clone, Serialize, Deserialize)]

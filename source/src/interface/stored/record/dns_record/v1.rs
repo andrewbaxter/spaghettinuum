@@ -20,11 +20,6 @@ pub struct DnsA(pub Vec<Ipv4Addr>);
 #[serde(rename_all = "snake_case")]
 pub struct DnsAaaa(pub Vec<Ipv6Addr>);
 
-/// A list of DNS names
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct DnsCname(pub Vec<String>);
-
 /// A list of TXT record strings. Each entry is a separate TXT record, there can be
 /// no multi-string single-record values.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]

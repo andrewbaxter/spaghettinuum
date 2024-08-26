@@ -59,15 +59,24 @@ use {
                 rustls21_load_certified_key,
             },
         },
-    }, chrono::{
+    },
+    chrono::{
         DateTime,
         Duration,
         Utc,
-    }, der::Encode, flowcontrol::shed, http::Uri, htwrap::htreq, loga::{
+    },
+    der::Encode,
+    flowcontrol::shed,
+    http::Uri,
+    htwrap::htreq,
+    loga::{
         ea,
         Log,
         ResultContext,
-    }, p256::pkcs8::EncodePrivateKey, rustls::server::ResolvesServerCert, std::{
+    },
+    p256::pkcs8::EncodePrivateKey,
+    rustls::server::ResolvesServerCert,
+    std::{
         collections::HashMap,
         path::{
             Path,
@@ -79,7 +88,9 @@ use {
             Mutex,
             RwLock,
         },
-    }, taskmanager::TaskManager, tokio::{
+    },
+    taskmanager::TaskManager,
+    tokio::{
         fs::create_dir_all,
         select,
         sync::watch::{
@@ -91,10 +102,12 @@ use {
             sleep,
             sleep_until,
         },
-    }, tokio_stream::{
+    },
+    tokio_stream::{
         wrappers::WatchStream,
         StreamExt,
-    }, x509_cert::spki::SubjectPublicKeyInfoOwned
+    },
+    x509_cert::spki::SubjectPublicKeyInfoOwned,
 };
 
 pub mod db;
@@ -321,7 +334,7 @@ pub async fn htserve_certs(
                     certs.push(pending.pair.pub_pem.clone());
                 }
                 m.insert(
-                    stored::record::tls_record::KEY.to_string(),
+                    vec![stored::record::tls_record::KEY_SUFFIX_TLS.to_string()],
                     stored::record::RecordValue::V1(stored::record::latest::RecordValue {
                         ttl: publish_ssl_ttl().num_minutes() as i32,
                         data: Some(

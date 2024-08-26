@@ -11,9 +11,14 @@ use {
                 self,
                 announcement::latest::AnnouncementPublisher,
                 identity::Identity,
-                record::dns_record::{
-                    format_dns_key,
-                    RecordType,
+                record::{
+                    dns_record::{
+                        build_dns_key,
+                        RecordType,
+                    },
+                    record_utils::{
+                        RecordKey,
+                    },
                 },
                 shared::SerialAddr,
             },
@@ -162,7 +167,11 @@ pub async fn publish(
 }
 
 /// Add an ip address record to a set to publish
-pub fn add_ip_record(publish_data: &mut HashMap<String, stored::record::RecordValue>, ip: std::net::IpAddr) {
+pub fn add_ip_record(
+    publish_data: &mut HashMap<RecordKey, stored::record::RecordValue>,
+    head: Vec<String>,
+    ip: std::net::IpAddr,
+) {
     let key;
     let data;
     match ip {
@@ -181,7 +190,7 @@ pub fn add_ip_record(publish_data: &mut HashMap<String, stored::record::RecordVa
                 ).unwrap();
         },
     }
-    let key = format_dns_key(".", key);
+    let key = build_dns_key(head, key);
     publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
         ttl: 60,
         data: Some(data),
@@ -192,7 +201,8 @@ pub fn add_ip_record(publish_data: &mut HashMap<String, stored::record::RecordVa
 ///
 /// * `paths` - if empty, search the system for default host key paths
 pub async fn add_ssh_host_key_records(
-    publish_data: &mut HashMap<String, stored::record::RecordValue>,
+    publish_data: &mut HashMap<RecordKey, stored::record::RecordValue>,
+    head: RecordKey,
     paths: Option<Vec<PathBuf>>,
 ) -> Result<(), loga::Error> {
     let paths = paths.unwrap_or_else(|| {
@@ -214,19 +224,18 @@ pub async fn add_ssh_host_key_records(
         host_keys.push(key);
     }
     if !host_keys.is_empty() {
-        publish_data.insert(
-            stored::record::ssh_record::KEY.to_string(),
-            stored::record::RecordValue::latest(stored::record::latest::RecordValue {
-                ttl: 60,
-                data: Some(
-                    serde_json::to_value(
-                        &stored::record::ssh_record::SshHostKeys::latest(
-                            stored::record::ssh_record::latest::SshHostKeys(host_keys),
-                        ),
-                    ).unwrap(),
-                ),
-            }),
-        );
+        let mut key = head;
+        key.push(stored::record::ssh_record::KEY_SUFFIX_SSH_HOSTKEYS.to_string());
+        publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
+            ttl: 60,
+            data: Some(
+                serde_json::to_value(
+                    &stored::record::ssh_record::SshHostKeys::latest(
+                        stored::record::ssh_record::latest::SshHostKeys(host_keys),
+                    ),
+                ).unwrap(),
+            ),
+        }));
     }
     return Ok(());
 }

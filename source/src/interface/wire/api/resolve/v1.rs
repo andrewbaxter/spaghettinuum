@@ -5,8 +5,9 @@ use serde::{
     Serialize,
 };
 use crate::interface::{
+    stored::record::record_utils::RecordKey,
     wire,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ResolveValues(pub HashMap<String, wire::resolve::v1::ResolveValue>);
+pub struct ResolveValues(pub HashMap<RecordKey, wire::resolve::v1::ResolveValue>);

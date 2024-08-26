@@ -5,9 +5,21 @@ use {
                 node::api_config::DEFAULT_API_PORT,
                 ENV_RESOLVER_PAIRS,
             },
-            stored::record::{
-                self,
-                dns_record::format_dns_key,
+            stored::{
+                identity::Identity,
+                record::{
+                    self,
+                    delegate_record::{
+                        build_delegate_key,
+                        Delegate,
+                    },
+                    dns_record::build_dns_key,
+                    record_utils::{
+                        join_query_record_keys,
+                        RecordKey,
+                        RecordRoot,
+                    },
+                },
             },
             wire::{
                 self,
@@ -21,7 +33,10 @@ use {
             UnverifyingVerifier,
         },
     },
-    flowcontrol::shed,
+    flowcontrol::{
+        shed,
+        superif,
+    },
     http::Uri,
     htwrap::{
         htreq::{
@@ -34,12 +49,16 @@ use {
         IpUrl,
         UriJoin,
     },
-    itertools::Itertools,
+    idna::punycode,
     loga::{
         ea,
         ErrContext,
         Log,
         ResultContext,
+    },
+    rand::{
+        seq::SliceRandom,
+        thread_rng,
     },
     rustls::client::danger::ServerCertVerifier,
     std::{
@@ -250,54 +269,54 @@ pub async fn connect_resolver_node(pair: &UrlPair) -> Result<Conn, loga::Error> 
     );
 }
 
-/// Resolve ip addresses for a host plus any additional keys. DNS CNAME records are
-/// followed, with all returned results being from the final hop.
+/// Resolve ip addresses for a host plus any additional keys. Delegation records
+/// are followed, with all returned results being from the final hop. The returned
+/// hash map contains only exact keys in additional keys - prefixes due to
+/// delegation or the initial host name are trimmed before returning.
 ///
-/// `name` is a DNS name like `a.b.identity.s` - can handle both spaghettinuum and
-/// non- names.
+/// `name` is a DNS name like `a.b.identity.s` - however this can handle both
+/// spaghettinuum and non- names.
 pub async fn resolve(
     log: &Log,
     resolvers: &[UrlPair],
     name: &str,
-    additional_keys: &[&str],
-) -> Result<(htreq::Ips, HashMap<String, wire::resolve::v1::ResolveValue>), loga::Error> {
-    // Resolve, repeatedly following CNAMEs
-    let mut at = Some(name.to_string());
-    loop {
-        let host = at.take().unwrap();
-
-        // Get key bits from next hop host
-        let Some(host) = host.strip_suffix(".").unwrap_or(&host).strip_suffix(DNS_DOT_SUFFIX) else {
-            let ips;
-            match IpAddr::from_str(&host).ok() {
-                Some(i) => {
-                    ips = htreq::Ips::from(i);
-                },
-                None => {
-                    ips = htreq::resolve(&htreq::Host::Name(host.to_string())).await?;
-                },
-            };
-            return Ok((ips, HashMap::new()));
+    additional_keys: &[RecordKey],
+) -> Result<(htreq::Ips, HashMap<RecordKey, wire::resolve::v1::ResolveValue>), loga::Error> {
+    let Some(host) = name.strip_suffix(".").unwrap_or(&name).strip_suffix(DNS_DOT_SUFFIX) else {
+        let ips;
+        match IpAddr::from_str(&name).ok() {
+            Some(i) => {
+                ips = htreq::Ips::from(i);
+            },
+            None => {
+                ips = htreq::resolve(&htreq::Host::Name(name.to_string())).await?;
+            },
         };
-        let (subdomain, ident_str) = host.rsplit_once(".").unwrap_or(("", host));
-        let subdomain = format!("{}.", subdomain);
+        return Ok((ips, HashMap::new()));
+    };
+    let (path, ident_str) = host.rsplit_once(".").unwrap_or(("", host));
+    let mut root = Identity::from_str(ident_str).context("Invalid identity in host")?;
+    let mut path = path.split(".").map(|x| x.to_string()).collect::<RecordKey>();
 
+    // Resolve, repeatedly following delegations
+    'delegated : loop {
         // Look up information required to connect
-        let key_cname = format_dns_key(&subdomain, record::dns_record::RecordType::Cname);
-        let key_aaaa = format_dns_key(&subdomain, record::dns_record::RecordType::Aaaa);
-        let key_a = format_dns_key(&subdomain, record::dns_record::RecordType::A);
-        let query_path =
-            format!(
-                "{}/v1/{}?{}",
-                API_ROUTE_RESOLVE,
-                ident_str,
-                Iterator::chain(
-                    [key_cname.as_str(), key_aaaa.as_str(), key_a.as_str()].iter(),
-                    additional_keys.iter(),
-                )
-                    .map(|k| urlencoding::encode(k))
-                    .join(",")
-            );
+        let mut keys_delegate = vec![];
+        for i in 1 ..= path.len() {
+            keys_delegate.push(build_delegate_key(path[..i + 1].to_vec()));
+        }
+        let key_aaaa = build_dns_key(path.clone(), record::dns_record::RecordType::Aaaa);
+        let key_a = build_dns_key(path.clone(), record::dns_record::RecordType::A);
+        let mut keys = vec![];
+        keys.extend(keys_delegate.clone());
+        keys.push(key_aaaa.clone());
+        keys.push(key_a.clone());
+        keys.extend(additional_keys.iter().map(|x| {
+            let mut out = path.clone();
+            out.extend(x.clone());
+            out
+        }));
+        let query_path = format!("{}/v1/{}?{}", API_ROUTE_RESOLVE, root.to_string(), join_query_record_keys(&keys));
         let mut resolved = shed!{
             'done _;
             let mut errs = vec![];
@@ -320,10 +339,59 @@ pub async fn resolve(
             return Err(loga::agg_err("Error making requests to any resolver", errs));
         }.0;
 
-        // Got another cname, continue loop
-        if let Some(serde_json::Value::String(cname)) = resolved.remove(&key_cname).and_then(|c| c.data) {
-            at = Some(cname);
-            continue;
+        // Check if delegated, repeat
+        for key_delegate in keys_delegate {
+            shed!{
+                let Some(delegate) = resolved.remove(&key_delegate).and_then(|c| c.data) else {
+                    break;
+                };
+                let Ok(delegate) = serde_json::from_value::<Delegate>(delegate) else {
+                    break;
+                };
+                match delegate {
+                    Delegate::V1(d) => {
+                        let Some((choose_root, mut choose_head)) =
+                            d.0.as_slice().choose(&mut thread_rng()).cloned() else {
+                                return Ok((Ips {
+                                    ipv4s: vec![],
+                                    ipv6s: vec![],
+                                }, HashMap::new()));
+                            };
+
+                        // Replace prefix of head
+                        choose_head.extend(path.split_off(key_delegate.len()));
+                        path = choose_head;
+                        superif!({
+                            match choose_root {
+                                RecordRoot::S(choose_root) => {
+                                    root = choose_root.clone();
+                                    continue 'delegated;
+                                },
+                                RecordRoot::Dns(dns_root) => {
+                                    let mut dns_path = vec![];
+                                    dns_path.reserve(path.len() + 1);
+                                    for e in path.iter().rev() {
+                                        dns_path.push(
+                                            punycode::encode_str(
+                                                e,
+                                            ).context_with(
+                                                "Delegation to DNS root produces invalid DNS name from segment",
+                                                ea!(segment = e),
+                                            )?,
+                                        );
+                                    }
+                                    break 'external htreq::resolve(
+                                        &htreq::Host::Name(format!("{}.{}", dns_path.join("."), dns_root)),
+                                    ).await?
+                                },
+                                RecordRoot::Ip(ip) => break 'external htreq::Ips::from(ip),
+                            }
+                        } ips = 'external {
+                            return Ok((ips, HashMap::new()));
+                        })
+                    },
+                }
+            }
         }
 
         // No cname, handle what we have at this final hop
@@ -383,7 +451,12 @@ pub async fn resolve(
                 }
             },
         };
-        return Ok((ips, resolved));
+        return Ok((ips, resolved.into_iter().filter_map(|(mut k, v)| {
+            if !k.starts_with(&path) {
+                return None;
+            }
+            return Some((k.split_off(path.len()), v));
+        }).collect::<HashMap::<_, _>>()));
     }
 }
 
@@ -401,11 +474,11 @@ pub async fn resolve_for_tls(
     resolvers: &[UrlPair],
     host: &htreq::Host,
 ) -> Result<ResolveTlsRes, loga::Error> {
-    let (ips, mut additional_records) =
-        resolve(log, resolvers, &host.to_string(), &[record::tls_record::KEY]).await?;
+    let tls_key = vec![record::tls_record::KEY_SUFFIX_TLS.to_string()];
+    let (ips, mut additional_records) = resolve(log, resolvers, &host.to_string(), &[tls_key.clone()]).await?;
     let mut certs = vec![];
     shed!{
-        let Some(r) = additional_records.remove(record::tls_record::KEY) else {
+        let Some(r) = additional_records.remove(&tls_key) else {
             log.log(loga::DEBUG, "Response missing TLS record entry; not using for verification");
             break;
         };

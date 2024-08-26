@@ -10,7 +10,9 @@ use {
 pub mod dns_record;
 pub mod tls_record;
 pub mod ssh_record;
+pub mod delegate_record;
 pub mod v1;
+pub mod record_utils;
 
 pub use v1 as latest;
 

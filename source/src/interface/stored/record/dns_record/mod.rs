@@ -1,39 +1,40 @@
-pub mod v1;
-
-use schemars::JsonSchema;
-pub use v1 as latest;
-use serde::{
-    Deserialize,
-    Serialize,
+use {
+    super::record_utils::{
+        RecordKey,
+    },
+    schemars::JsonSchema,
+    serde::{
+        Deserialize,
+        Serialize,
+    },
 };
 
-pub const KEY_DNS_PREFIX: &'static str = "dns";
-pub const KEY_SUFFIX_DNS_CNAME: &'static str = "cname";
-pub const KEY_SUFFIX_DNS_A: &'static str = "a";
-pub const KEY_SUFFIX_DNS_AAAA: &'static str = "aaaa";
-pub const KEY_SUFFIX_DNS_TXT: &'static str = "txt";
-pub const KEY_SUFFIX_DNS_MX: &'static str = "mx";
+pub mod v1;
+
+pub use v1 as latest;
+
+pub const KEY_SUFFIX_DNS_A: &'static str = "dns/a";
+pub const KEY_SUFFIX_DNS_AAAA: &'static str = "dns/aaaa";
+pub const KEY_SUFFIX_DNS_TXT: &'static str = "dns/txt";
+pub const KEY_SUFFIX_DNS_MX: &'static str = "dns/mx";
 
 #[derive(Clone, Copy)]
 pub enum RecordType {
-    Cname,
     A,
     Aaaa,
     Txt,
     Mx,
 }
 
-pub const COMMON_HTTP_RECORD_TYPES: &[RecordType] =
-    &[RecordType::Cname, RecordType::A, RecordType::Aaaa, RecordType::Txt];
-
-pub fn format_dns_key(subdomain: &str, record_type: RecordType) -> String {
-    return format!("{}/{}/{}", KEY_DNS_PREFIX, subdomain, match record_type {
-        RecordType::Cname => KEY_SUFFIX_DNS_CNAME,
+pub fn build_dns_key(head: RecordKey, record_type: RecordType) -> RecordKey {
+    let mut out = head;
+    out.push(match record_type {
         RecordType::A => KEY_SUFFIX_DNS_A,
         RecordType::Aaaa => KEY_SUFFIX_DNS_AAAA,
         RecordType::Txt => KEY_SUFFIX_DNS_TXT,
         RecordType::Mx => KEY_SUFFIX_DNS_MX,
-    });
+    }.to_string());
+    return out;
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -46,12 +47,6 @@ pub enum DnsA {
 #[serde(rename_all = "snake_case")]
 pub enum DnsAaaa {
     V1(v1::DnsAaaa),
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum DnsCname {
-    V1(v1::DnsCname),
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]

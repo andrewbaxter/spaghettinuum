@@ -47,8 +47,8 @@ pub fn main() {
     validate(&auto_schema, &examples.join("spagh_auto_reverse_proxy.json"));
     validate(&auto_schema, &examples.join("spagh_auto_static_files.json"));
     fs::write(
-        out.join("record_dns_cname.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(stored::record::dns_record::DnsCname)).unwrap(),
+        out.join("record_delegate.schema.json"),
+        &serde_json::to_string_pretty(&schema_for!(stored::record::delegate_record::Delegate)).unwrap(),
     ).unwrap();
     fs::write(
         out.join("record_dns_a.schema.json"),
@@ -72,6 +72,14 @@ pub fn main() {
     ).unwrap();
     fs::write(
         out.join("record_ssh_host_keys.schema.json"),
+        &serde_json::to_string_pretty(&schema_for!(stored::record::ssh_record::SshHostKeys)).unwrap(),
+    ).unwrap();
+    fs::write(
+        out.join("record_tls_certs.schema.json"),
+        &serde_json::to_string_pretty(&schema_for!(stored::record::tls_record::TlsCerts)).unwrap(),
+    ).unwrap();
+    fs::write(
+        out.join("record_ssh_hostkeys.schema.json"),
         &serde_json::to_string_pretty(&schema_for!(stored::record::ssh_record::SshHostKeys)).unwrap(),
     ).unwrap();
     fs::write(
