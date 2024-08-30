@@ -2,7 +2,9 @@ use {
     super::Resolver,
     crate::{
         interface::{
-            config::node::resolver_config::DnsBridgeConfig,
+            config::{
+                node::resolver_config::DnsBridgeConfig,
+            },
             stored::{
                 self,
                 identity::Identity,
@@ -35,6 +37,7 @@ use {
         Duration,
         Utc,
     },
+    flowcontrol::shed,
     futures::StreamExt,
     hickory_proto::{
         op::{
@@ -78,9 +81,7 @@ use {
     },
     hickory_server::{
         authority::MessageResponseBuilder,
-        server::{
-            ResponseInfo,
-        },
+        server::ResponseInfo,
     },
     loga::{
         ea,
@@ -95,7 +96,13 @@ use {
     },
     std::{
         collections::HashMap,
-        net::SocketAddr,
+        net::{
+            IpAddr,
+            Ipv4Addr,
+            Ipv6Addr,
+            SocketAddr,
+        },
+        str::FromStr,
         sync::Arc,
     },
     taskmanager::TaskManager,
@@ -113,12 +120,16 @@ pub async fn start_dns_bridge(
     tm: &TaskManager,
     resolver: &Resolver,
     certs: Arc<dyn rustls_21::server::ResolvesServerCert>,
+    global_ips: &[IpAddr],
     dns_config: DnsBridgeConfig,
 ) -> Result<(), loga::Error> {
     struct HandlerInner {
         log: Log,
         resolver: Resolver,
         upstream: NameServerPool<TokioConnectionProvider>,
+        synthetic_self_record: Option<LowerName>,
+        global_ipv4: Vec<Ipv4Addr>,
+        global_ipv6: Vec<Ipv6Addr>,
     }
 
     struct Handler(Arc<HandlerInner>);
@@ -135,7 +146,47 @@ pub async fn start_dns_bridge(
             let self1 = self.0.clone();
             match async {
                 ta_vis_res!(ResponseInfo);
-                let (root, path) = split_dns_name(request.query().name()).err_external()?;
+                let name = request.query().name();
+                shed!{
+                    if Some(name) == self1.synthetic_self_record.as_ref() {
+                        let mut answers = vec![];
+                        match request.query().query_type() {
+                            hickory_proto::rr::RecordType::A => {
+                                for n in &self1.global_ipv4 {
+                                    answers.push(
+                                        Record::from_rdata(request.query().name().into(), 60, RData::A(A(*n))),
+                                    );
+                                }
+                            },
+                            hickory_proto::rr::RecordType::AAAA => {
+                                for n in &self1.global_ipv6 {
+                                    answers.push(
+                                        Record::from_rdata(request.query().name().into(), 60, RData::AAAA(AAAA(*n))),
+                                    );
+                                }
+                            },
+                            _ => break,
+                        }
+                        return Ok(
+                            response_handle
+                                .send_response(
+                                    MessageResponseBuilder::from_message_request(
+                                        request,
+                                    ).build(
+                                        Header::response_from_request(request.header()),
+                                        answers.iter().map(|r| r),
+                                        &[],
+                                        &[],
+                                        &[],
+                                    ),
+                                )
+                                .await
+                                .context("Error sending response")
+                                .err_internal()?,
+                        );
+                    }
+                }
+                let (root, path) = split_dns_name(name).err_external()?;
                 match root {
                     stored::record::record_utils::RecordRoot::S(ident) => {
                         self.0.log.log_with(loga::DEBUG, "Received spagh request", ea!(request = request.dbg_str()));
@@ -598,21 +649,68 @@ pub async fn start_dns_bridge(
             GenericConnector::new(TokioRuntimeProvider::new()),
         )
     };
+    let mut global_ipv4 = vec![];
+    let mut global_ipv6 = vec![];
+    for ip in global_ips {
+        match ip {
+            IpAddr::V4(n) => {
+                global_ipv4.push(*n);
+            },
+            IpAddr::V6(n) => {
+                global_ipv6.push(*n);
+            },
+        }
+    }
     let mut server = hickory_server::ServerFuture::new(Handler(Arc::new(HandlerInner {
         log: log.clone(),
         resolver: resolver.clone(),
         upstream: upstream,
+        synthetic_self_record: if let Some(name) = dns_config.synthetic_self_record {
+            Some(
+                LowerName::from_str(
+                    &name,
+                ).context_with("Synthetic record name isn't a valid DNS name", ea!(name = name))?,
+            )
+        } else {
+            None
+        },
+        global_ipv4: global_ipv4,
+        global_ipv6: global_ipv6,
     })));
-    for bind_addr in &dns_config.udp_bind_addrs {
-        let bind_addr = bind_addr.resolve()?;
+    let udp_bind_addrs = if let Some(bind_addrs) = dns_config.udp_bind_addrs {
+        let mut out = vec![];
+        for bind_addr in bind_addrs {
+            out.push(bind_addr.resolve()?);
+        }
+        out
+    } else {
+        vec![
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 53),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53)
+        ]
+    };
+    let tcp_bind_addrs = if let Some(bind_addrs) = dns_config.tcp_bind_addrs {
+        let mut out = vec![];
+        for bind_addr in bind_addrs {
+            out.push(bind_addr.resolve()?);
+        }
+        out
+    } else {
+        vec![
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 853),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 853)
+        ]
+    };
+    let mut registered = false;
+    for bind_addr in udp_bind_addrs {
         server.register_socket(
             UdpSocket::bind(&bind_addr)
                 .await
                 .stack_context_with(&log, "Opening UDP listener failed", ea!(socket = bind_addr))?,
         );
+        registered = true;
     }
-    for bind_addr in &dns_config.tcp_bind_addrs {
-        let bind_addr = bind_addr.resolve()?;
+    for bind_addr in tcp_bind_addrs {
         server
             .register_tls_listener_with_tls_config(
                 TcpListener::bind(&bind_addr)
@@ -627,6 +725,10 @@ pub async fn start_dns_bridge(
                 ),
             )
             .context_with("Error starting DoT server", ea!(socket = bind_addr))?;
+        registered = true;
+    }
+    if !registered {
+        return Err(loga::err("No UDP or TCP bind addresses defined for DNS resolver"));
     }
     tm.critical_task("DNS bridge - server", {
         let log = log.clone();

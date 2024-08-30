@@ -122,7 +122,7 @@ impl JsonSchema for StrSocketAddr {
 }
 
 /// An IP address, optional port, and optional ADN (authentication domain name).
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdnSocketAddr {
     pub ip: IpAddr,
     pub port: Option<u16>,
@@ -152,51 +152,124 @@ impl Serialize for AdnSocketAddr {
     }
 }
 
+#[structre::structre("^(?:(?:\\[(?<ipv6>[0-9:]+)\\])|(?<ipv4>[0-9.]+))(?::(?<port>[0-9]+))?(?:#(?P<adn>.*))?$")]
+struct AdnSockAddrRegex {
+    ipv4: Option<String>,
+    ipv6: Option<String>,
+    port: Option<u16>,
+    adn: Option<String>,
+}
+
+impl FromStr for AdnSocketAddr {
+    type Err = loga::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let r = AdnSockAddrRegex::from_str(s).context("String can't be parsed as AdnSocketAddr (`ip:port#adn`)")?;
+        let ip = if let Some(ipv4) = r.ipv4 {
+            IpAddr::V4(Ipv4Addr::from_str(&ipv4)?)
+        } else if let Some(ipv6) = r.ipv6 {
+            IpAddr::V6(Ipv6Addr::from_str(&ipv6)?)
+        } else {
+            unreachable!();
+        };
+        return Ok(Self {
+            ip: ip,
+            port: r.port,
+            adn: r.adn,
+        });
+    }
+}
+
 impl<'t> Deserialize<'t> for AdnSocketAddr {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'t> {
         let s = String::deserialize(deserializer)?;
-        let sockaddr;
-        let adn;
-        match s.split_once("#") {
-            Some((s, a)) => {
-                sockaddr = s;
-                adn = Some(a.to_string());
-            },
-            None => {
-                sockaddr = &s;
-                adn = None;
-            },
-        }
-        let ip;
-        let port;
-        match sockaddr.split_once(":") {
-            Some((i, p)) => {
-                ip = i;
-                port =
-                    Some(
-                        u16::from_str_radix(
-                            p,
-                            10,
-                        ).map_err(|e| serde::de::Error::custom(format!("Invalid port in AdnSockAddr: {}", e)))?,
-                    );
-            },
-            None => {
-                ip = sockaddr;
-                port = None;
-            },
-        }
-        let ip = if let Some(i) = ip.strip_prefix("[").and_then(|i| i.strip_suffix("]")) {
-            IpAddr::V6(Ipv6Addr::from_str(i).map_err(|e| serde::de::Error::custom(e.to_string()))?)
-        } else {
-            IpAddr::V4(Ipv4Addr::from_str(ip).map_err(|e| serde::de::Error::custom(e.to_string()))?)
+        return Ok(AdnSocketAddr::from_str(&s).map_err(|e| serde::de::Error::custom(e.to_string()))?);
+    }
+}
+
+#[cfg(test)]
+mod test_adn_socket_addr {
+    use std::{
+        net::{
+            Ipv4Addr,
+            Ipv6Addr,
+        },
+        str::FromStr,
+    };
+    use super::AdnSocketAddr;
+
+    #[test]
+    fn adn_socket_addr_roundtrip_ipv4() {
+        let start = AdnSocketAddr {
+            ip: std::net::IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+            port: None,
+            adn: None,
         };
-        return Ok(Self {
-            ip: ip,
-            port: port,
-            adn: adn,
-        });
+        let mid = start.to_string();
+        assert_eq!(&mid, "1.2.3.4");
+        assert_eq!(AdnSocketAddr::from_str(&mid).unwrap(), start);
+    }
+
+    #[test]
+    fn adn_socket_addr_roundtrip_ipv6() {
+        let start = AdnSocketAddr {
+            ip: std::net::IpAddr::V6(Ipv6Addr::from_str("::").unwrap()),
+            port: None,
+            adn: None,
+        };
+        let mid = start.to_string();
+        assert_eq!(&mid, "[::]");
+        assert_eq!(AdnSocketAddr::from_str(&mid).unwrap(), start);
+    }
+
+    #[test]
+    fn adn_socket_addr_roundtrip_port() {
+        let start = AdnSocketAddr {
+            ip: std::net::IpAddr::V6(Ipv6Addr::from_str("::").unwrap()),
+            port: Some(44),
+            adn: None,
+        };
+        let mid = start.to_string();
+        assert_eq!(&mid, "[::]:44");
+        assert_eq!(AdnSocketAddr::from_str(&mid).unwrap(), start);
+    }
+
+    #[test]
+    fn adn_socket_addr_roundtrip_ipv4_port() {
+        let start = AdnSocketAddr {
+            ip: std::net::IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+            port: Some(44),
+            adn: None,
+        };
+        let mid = start.to_string();
+        assert_eq!(&mid, "1.2.3.4:44");
+        assert_eq!(AdnSocketAddr::from_str(&mid).unwrap(), start);
+    }
+
+    #[test]
+    fn adn_socket_addr_roundtrip_adn() {
+        let start = AdnSocketAddr {
+            ip: std::net::IpAddr::V6(Ipv6Addr::from_str("::").unwrap()),
+            port: None,
+            adn: Some("abc.def".to_string()),
+        };
+        let mid = start.to_string();
+        assert_eq!(&mid, "[::]#abc.def");
+        assert_eq!(AdnSocketAddr::from_str(&mid).unwrap(), start);
+    }
+
+    #[test]
+    fn adn_socket_addr_roundtrip_port_adn() {
+        let start = AdnSocketAddr {
+            ip: std::net::IpAddr::V6(Ipv6Addr::from_str("::").unwrap()),
+            port: Some(44),
+            adn: Some("abc.def".to_string()),
+        };
+        let mid = start.to_string();
+        assert_eq!(&mid, "[::]:44#abc.def");
+        assert_eq!(AdnSocketAddr::from_str(&mid).unwrap(), start);
     }
 }
 

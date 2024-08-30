@@ -65,10 +65,10 @@ hickory-proto = { version = "0.24", features = [
 ] }
 urlencoding = "2"
 ipnet = "2"
-structre = "0.0"
+structre = "0.1"
 rpassword = "7"
 good-ormning-runtime = { version = "0.1", features = ["sqlite", "chrono"] }
-network-interface = "1.1"
+network-interface = "1"
 schemars = { version = "0.8", features = ["chrono"] }
 signature = "2"
 x509-cert = { version = "0.2", features = ["builder"] }

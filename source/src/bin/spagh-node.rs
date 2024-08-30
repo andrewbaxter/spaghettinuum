@@ -169,7 +169,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         };
         return Ok(ips);
     };
-    let public_ips = select!{
+    let global_ips = select!{
         x = resolve_public_ips => x ?,
         _ = tm.until_terminate() => return Ok(()),
     };
@@ -246,7 +246,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 .resolve()
                 .stack_context(log, "Error resolving publisher bind address")?;
         let advertise_ip =
-            *public_ips
+            *global_ips
                 .get(0)
                 .stack_context(log, "Running a publisher requires at least one configured global IP")?;
         let advertise_port = publisher_config.advertise_port.unwrap_or(bind_addr.port());
@@ -263,7 +263,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         }]).map_err(|e| log.err_with("Failed to generate announcement for self publication", ea!(err = e)))?;
         publisher1.announce(&identity, announcement).await?;
         let mut publish_data = HashMap::new();
-        for ip in &public_ips {
+        for ip in &global_ips {
             add_ip_record(&mut publish_data, vec![], *ip);
         }
         add_ssh_host_key_records(&mut publish_data, vec![], publisher_config.ssh_host_keys).await?;
@@ -307,7 +307,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 resolver_config.max_cache,
                 &cache_dir,
                 publisher.clone(),
-                public_ips.clone(),
+                global_ips.clone(),
             )
                 .await
                 .stack_context(log, "Error setting up resolver")?;
@@ -317,6 +317,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 &tm,
                 &resolver,
                 r21_certs,
+                &global_ips,
                 dns_config,
             )
                 .await
