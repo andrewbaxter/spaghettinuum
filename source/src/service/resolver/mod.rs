@@ -461,7 +461,7 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter
     let mut r = htserve::PathRouter::default();
     r.insert("/v1", Box::new(htwrap::handler!((state: Arc < Inner >)(args -> htserve:: Body) {
         match async {
-            ta_vis_res!(wire::api::resolve::v1::ResolveKeyValues);
+            ta_vis_res!(wire::api::resolve::v1::ResolveResp);
             let ident_src =
                 args.subpath.strip_prefix("/").context("Missing identity final path element").err_external()?;
             let keys = split_query_record_keys(&args.query);
@@ -476,7 +476,7 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter
                     )
                     .await
                     .err_internal()?;
-            return Ok(wire::api::resolve::v1::ResolveKeyValues(kvs));
+            return Ok(kvs.into_iter().collect::<Vec<_>>());
         }.await {
             Ok(r) => response_200_json(r),
             Err(VisErr::External(e)) => {

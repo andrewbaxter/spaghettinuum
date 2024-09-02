@@ -23,6 +23,7 @@ use {
             },
             wire::{
                 self,
+                api::resolve::v1::ResolveKeyValues,
                 resolve::DNS_DOT_SUFFIX,
             },
         },
@@ -321,7 +322,7 @@ pub async fn resolve(
             'done _;
             let mut errs = vec![];
             for resolver_url in resolvers {
-                match htreq::get_json::<wire::api::resolve::v1::ResolveKeyValues>(
+                match htreq::get_json::<wire::api::resolve::v1::ResolveResp>(
                     log,
                     &mut connect_resolver_node(&resolver_url).await?,
                     &resolver_url.url.join(&query_path),
@@ -337,7 +338,7 @@ pub async fn resolve(
                 }
             }
             return Err(loga::agg_err("Error making requests to any resolver", errs));
-        }.0;
+        }.into_iter().collect::<ResolveKeyValues>();
 
         // Check if delegated, repeat
         for key_delegate in keys_delegate {

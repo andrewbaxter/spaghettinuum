@@ -1,13 +1,10 @@
-use std::collections::HashMap;
-use schemars::JsonSchema;
-use serde::{
-    Deserialize,
-    Serialize,
-};
-use crate::interface::{
-    stored::record::record_utils::RecordKey,
-    wire,
+use {
+    crate::interface::{
+        stored::record::record_utils::RecordKey,
+        wire,
+    },
+    std::collections::HashMap,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ResolveKeyValues(pub HashMap<RecordKey, wire::resolve::v1::ResolveValue>);
+pub type ResolveResp = Vec<(RecordKey, wire::resolve::v1::ResolveValue)>;
+pub type ResolveKeyValues = HashMap<RecordKey, wire::resolve::v1::ResolveValue>;
