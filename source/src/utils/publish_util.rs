@@ -16,9 +16,7 @@ use {
                         build_dns_key,
                         RecordType,
                     },
-                    record_utils::{
-                        RecordKey,
-                    },
+                    record_utils::RecordKey,
                 },
                 shared::SerialAddr,
             },
@@ -37,6 +35,7 @@ use {
     htwrap::htreq,
     loga::{
         ea,
+        DebugDisplay,
         Log,
         ResultContext,
     },
@@ -213,7 +212,7 @@ pub async fn add_ssh_host_key_records(
         return paths;
     });
     let mut host_keys = vec![];
-    for key_path in paths {
+    for key_path in &paths {
         let Some(key) = fs_util::maybe_read(&key_path).await? else {
             break;
         };
@@ -223,19 +222,20 @@ pub async fn add_ssh_host_key_records(
             ).context_with("Host key isn't valid utf-8", ea!(path = key_path.to_string_lossy()))?;
         host_keys.push(key);
     }
-    if !host_keys.is_empty() {
-        let mut key = head;
-        key.push(stored::record::ssh_record::KEY_SUFFIX_SSH_HOSTKEYS.to_string());
-        publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
-            ttl: 60,
-            data: Some(
-                serde_json::to_value(
-                    &stored::record::ssh_record::SshHostKeys::latest(
-                        stored::record::ssh_record::latest::SshHostKeys(host_keys),
-                    ),
-                ).unwrap(),
-            ),
-        }));
+    if host_keys.is_empty() {
+        return Err(loga::err_with("No ssh host keys could be located", ea!(paths = paths.dbg_str())));
     }
+    let mut key = head;
+    key.push(stored::record::ssh_record::KEY_SUFFIX_SSH_HOSTKEYS.to_string());
+    publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
+        ttl: 60,
+        data: Some(
+            serde_json::to_value(
+                &stored::record::ssh_record::SshHostKeys::latest(
+                    stored::record::ssh_record::latest::SshHostKeys(host_keys),
+                ),
+            ).unwrap(),
+        ),
+    }));
     return Ok(());
 }

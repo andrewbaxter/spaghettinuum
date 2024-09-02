@@ -63,6 +63,18 @@ pub fn join_record_key(key: &RecordKey) -> String {
     return out;
 }
 
+#[cfg(test)]
+mod test_join_record_key {
+    use {
+        crate::interface::stored::record::record_utils::join_record_key,
+    };
+
+    #[test]
+    fn test_join_record_key_simple1() {
+        assert_eq!(join_record_key(&vec!["ssh_hostkey".to_string()]), "ssh_hostkey".to_string());
+    }
+}
+
 pub fn split_record_key(key: &str) -> RecordKey {
     let mut out = vec![];
     let mut current = String::new();

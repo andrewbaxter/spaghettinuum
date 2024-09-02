@@ -6,7 +6,6 @@ use {
                 ENV_RESOLVER_PAIRS,
             },
             stored::{
-                identity::Identity,
                 record::{
                     self,
                     delegate_record::{
@@ -16,6 +15,7 @@ use {
                     dns_record::build_dns_key,
                     record_utils::{
                         join_query_record_keys,
+                        split_dns_name,
                         RecordKey,
                         RecordRoot,
                     },
@@ -24,7 +24,6 @@ use {
             wire::{
                 self,
                 api::resolve::v1::ResolveKeyValues,
-                resolve::DNS_DOT_SUFFIX,
             },
         },
         service::resolver::API_ROUTE_RESOLVE,
@@ -283,28 +282,28 @@ pub async fn resolve(
     name: &str,
     additional_keys: &[RecordKey],
 ) -> Result<(htreq::Ips, HashMap<RecordKey, wire::resolve::v1::ResolveValue>), loga::Error> {
-    let Some(host) = name.strip_suffix(".").unwrap_or(&name).strip_suffix(DNS_DOT_SUFFIX) else {
-        let ips;
-        match IpAddr::from_str(&name).ok() {
-            Some(i) => {
-                ips = htreq::Ips::from(i);
-            },
-            None => {
-                ips = htreq::resolve(&htreq::Host::Name(name.to_string())).await?;
-            },
-        };
-        return Ok((ips, HashMap::new()));
+    let (root, mut path) =
+        split_dns_name(
+            hickory_resolver::Name::from_str(
+                name,
+            ).context_with("Error parsing name to resolve as DNS name", ea!(name = name))?,
+        )?;
+    let mut root = match root {
+        RecordRoot::S(i) => i,
+        RecordRoot::Dns(name) => {
+            return Ok((htreq::resolve(&htreq::Host::Name(name.to_string())).await?, HashMap::new()));
+        },
+        RecordRoot::Ip(ip) => {
+            return Ok((htreq::Ips::from(ip), HashMap::new()));
+        },
     };
-    let (path, ident_str) = host.rsplit_once(".").unwrap_or(("", host));
-    let mut root = Identity::from_str(ident_str).context("Invalid identity in host")?;
-    let mut path = path.split(".").map(|x| x.to_string()).collect::<RecordKey>();
 
     // Resolve, repeatedly following delegations
     'delegated : loop {
         // Look up information required to connect
         let mut keys_delegate = vec![];
         for i in 1 ..= path.len() {
-            keys_delegate.push(build_delegate_key(path[..i + 1].to_vec()));
+            keys_delegate.push(build_delegate_key(path[..i].to_vec()));
         }
         let key_aaaa = build_dns_key(path.clone(), record::dns_record::RecordType::Aaaa);
         let key_a = build_dns_key(path.clone(), record::dns_record::RecordType::A);

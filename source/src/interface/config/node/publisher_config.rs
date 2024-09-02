@@ -24,8 +24,8 @@ pub struct PublisherConfig {
     pub advertise_port: Option<u16>,
     /// A list of paths to SSH host keys to self-publish for this host.
     ///
-    /// If not specified, a default SSH host key location will be used, otherwise no
-    /// SSH host keys will be published.
+    /// If not specified at all, a default SSH host key location will be used. If an
+    /// empty list is provided no SSH host keys will be published.
     #[serde(default)]
     pub ssh_host_keys: Option<Vec<PathBuf>>,
 }
