@@ -30,6 +30,6 @@ Some more subtle differences:
 
 ## IPNS
 
-IPNS development was specific to IPFS use cases last I checked: [no arbitrary data, and publishing is tied tightly to nodes](https://github.com/ipfs/notes/issues/439).
+IPNS development was specific to IPFS use cases last I checked: [no arbitrary data, and publishing is tied tightly to serving files](https://github.com/ipfs/notes/issues/439).
 
 There have been complaints that IPFS is slow, possibly relating to using TCP for the DHT.

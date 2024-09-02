@@ -5,7 +5,6 @@ use {
                 self,
                 identity::Identity,
                 record::record_utils::{
-                    join_query_record_keys,
                     join_record_key,
                     split_query_record_keys,
                     split_record_key,
@@ -14,7 +13,6 @@ use {
             },
             wire::{
                 self,
-                resolve::ResolveKeyValues,
             },
         },
         service::{
@@ -38,7 +36,6 @@ use {
         Utc,
     },
     flowcontrol::shed,
-    http_body_util::Empty,
     htwrap::{
         htreq::{
             self,
@@ -52,8 +49,6 @@ use {
         },
     },
     hyper::{
-        body::Bytes,
-        Request,
         Uri,
     },
     hyper_rustls::HttpsConnectorBuilder,
@@ -275,7 +270,7 @@ impl Resolver {
         &self,
         ident: &Identity,
         request_keys: Vec<RecordKey>,
-    ) -> Result<wire::resolve::ResolveKeyValues, loga::Error> {
+    ) -> Result<wire::resolve::v1::ResolveKeyValues, loga::Error> {
         // First check cache. Only respond with cache answers if all keys are in cache
         // (will be making a request anyway, might as well get fresh data).
         let now = Utc::now();
@@ -318,7 +313,7 @@ impl Resolver {
                     break 'missing;
                 }
             }
-            return Ok(wire::resolve::ResolveKeyValues::V1(kvs));
+            return Ok(kvs);
         };
 
         // Not in cache, find publisher via nodes
@@ -329,7 +324,7 @@ impl Resolver {
                     .0
                     .log
                     .log_with(loga::DEBUG, "No announcement found, returning empty result", ea!(ident = ident));
-                return Ok(wire::resolve::ResolveKeyValues::V1(HashMap::new()));
+                return Ok(HashMap::new());
             },
         };
         let mut publishers;
@@ -342,13 +337,12 @@ impl Resolver {
         publishers.shuffle(&mut thread_rng());
         let mut values = None;
         let mut errs = vec![];
-        let joined_request_keys = join_query_record_keys(&request_keys);
         let resp_max_size = request_keys.len() * 128 * 1024;
         for publisher in publishers {
             let log = self.0.log.fork(ea!(publisher = publisher.addr));
             let log = &log;
             match async {
-                ta_res!(ResolveKeyValues);
+                ta_res!(wire::resolve::v1::ResolveKeyValues);
 
                 // Request values from publisher
                 shed!{
@@ -363,7 +357,7 @@ impl Resolver {
                 }
 
                 // Request values via publisher over internet
-                let url = Uri::from_str(&format!("https://{}/{}?{}", publisher.addr, ident, joined_request_keys)).unwrap();
+                let url = Uri::from_str(&format!("https://{}", publisher.addr)).unwrap();
                 let connect = async {
                     return Ok(
                         HttpsConnectorBuilder::new()
@@ -392,26 +386,23 @@ impl Resolver {
                             .await
                             .context("Error completing http handshake")?,
                     );
-                let pub_resp_bytes =
-                    htreq::send_simple(
+                let resp =
+                    htreq::post_json::<wire::resolve::v1::ResolveResp>(
                         log,
                         &mut conn,
+                        &url,
+                        &HashMap::new(),
+                        &wire::resolve::ResolveRequest::V1(wire::resolve::v1::ResolveRequest {
+                            ident: ident.clone(),
+                            keys: request_keys.clone(),
+                        }),
                         resp_max_size,
-                        Duration::try_seconds(10).unwrap(),
-                        Request::builder()
-                            .method("GET")
-                            .uri(url)
-                            .header(hyper::header::HOST, publisher.addr.to_string())
-                            .body(Empty::<Bytes>::new())
-                            .unwrap(),
                     )
                         .await
-                        .context("Error getting response from publisher")?;
-                return Ok(
-                    serde_json::from_slice::<wire::resolve::ResolveKeyValues>(
-                        &pub_resp_bytes,
-                    ).stack_context(&log, "Couldn't parse response")?,
-                );
+                        .context("Error getting response from publisher")?
+                        .into_iter()
+                        .collect::<wire::resolve::v1::ResolveKeyValues>();
+                return Ok(resp);
             }.await {
                 Ok(v) => {
                     values = Some(v);
@@ -438,18 +429,14 @@ impl Resolver {
             let ident = ident.clone();
             async move {
                 let log = &log;
-                match &resp_kvs {
-                    wire::resolve::ResolveKeyValues::V1(resp_kvs) => {
-                        for (k, v) in resp_kvs {
-                            log.log_with(loga::DEBUG, "Cache store", ea!(ident = ident, key = k.dbg_str()));
-                            cache
-                                .insert(
-                                    (identity.clone(), k.to_owned()),
-                                    (v.expires, v.data.as_ref().map(|v| serde_json::to_string(v).unwrap())),
-                                )
-                                .await;
-                        }
-                    },
+                for (k, v) in resp_kvs {
+                    log.log_with(loga::DEBUG, "Cache store", ea!(ident = ident, key = k.dbg_str()));
+                    cache
+                        .insert(
+                            (identity.clone(), k.to_owned()),
+                            (v.expires, v.data.as_ref().map(|v| serde_json::to_string(v).unwrap())),
+                        )
+                        .await;
                 }
             }
         });
@@ -474,7 +461,7 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter
     let mut r = htserve::PathRouter::default();
     r.insert("/v1", Box::new(htwrap::handler!((state: Arc < Inner >)(args -> htserve:: Body) {
         match async {
-            ta_vis_res!(wire::api::resolve::v1::ResolveValues);
+            ta_vis_res!(wire::api::resolve::v1::ResolveKeyValues);
             let ident_src =
                 args.subpath.strip_prefix("/").context("Missing identity final path element").err_external()?;
             let keys = split_query_record_keys(&args.query);
@@ -489,9 +476,7 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter
                     )
                     .await
                     .err_internal()?;
-            return Ok(wire::api::resolve::v1::ResolveValues(match kvs {
-                wire::resolve::ResolveKeyValues::V1(kvs) => kvs,
-            }));
+            return Ok(wire::api::resolve::v1::ResolveKeyValues(kvs));
         }.await {
             Ok(r) => response_200_json(r),
             Err(VisErr::External(e)) => {

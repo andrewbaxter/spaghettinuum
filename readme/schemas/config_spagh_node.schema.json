@@ -2,43 +2,39 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Config",
   "type": "object",
-  "required": [
-    "identity",
-    "node",
-    "persistent_dir",
-    "publisher"
-  ],
   "properties": {
-    "admin_token": {
-      "description": "HTTP authorization bearer token for accessing publisher admin endpoints. If None, remote admin operations will be disabled (only self-publish on this node will work since there will be no way to register publishing identities).",
+    "api": {
+      "description": "An HTTPS server for all client interaction except DNS: resolving, publishing, and administration. It is disabled if not present or null, but to enable it with defaults you can provide an empty config.",
       "default": null,
       "anyOf": [
         {
-          "$ref": "#/definitions/AdminToken"
+          "$ref": "#/definitions/ApiConfig"
         },
         {
           "type": "null"
         }
       ]
     },
-    "api_bind_addrs": {
-      "description": "Addresses for client interaction - resolver lookups, publishing, and admin. Required for publisher and resolver.  This serves both token-protected and public endpoints.",
-      "default": [],
-      "type": "array",
-      "items": {
-        "$ref": "#/definitions/StrSocketAddr"
-      }
+    "cache_dir": {
+      "description": "Where cache files will be placed. If not specified, uses a default directory based on the `CACHE_DIRECTORY` environment variable.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "content": {
-      "description": "Additionally act as a server for http content (static files or reverse proxy) with a `.s` tls cert.",
-      "default": [],
-      "type": "array",
+      "description": "Additionally serve more HTTP content, using the host cert.",
+      "default": null,
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "$ref": "#/definitions/ContentConfig"
       }
     },
     "global_addrs": {
-      "description": "How to determine the public ip for publisher announcements and self-publishing. Publisher announcements always use the first address.",
+      "description": "How to determine the public ip for publisher announcements and self-publishing. Publisher announcements always use the first address.\n\nIf empty, defaults to using a gobal IPv6 address found on any interface.",
       "default": [],
       "type": "array",
       "items": {
@@ -46,15 +42,23 @@
       }
     },
     "identity": {
-      "description": "A backed identity (by file or card) this server will use for generating a tls cert for the api, and for self-publication if the publisher is enabled.",
-      "allOf": [
+      "description": "An identity secret this server will use for generating a TLS cert for the api, and for self-publication if the publisher is enabled.\n\nIf not specified, an identity will be generated at `host.ident` in the data directory.",
+      "default": null,
+      "anyOf": [
         {
-          "$ref": "#/definitions/BackedIdentityArg"
+          "$ref": "#/definitions/IdentitySecretArg"
+        },
+        {
+          "type": "null"
         }
       ]
     },
     "node": {
-      "description": "Core DHT node config, for publishing and looking up addresses",
+      "description": "Configuration for the core node. The core node is the DHT participant, used by the publisher and resolver (always enabled).",
+      "default": {
+        "bind_addr": null,
+        "bootstrap": null
+      },
       "allOf": [
         {
           "$ref": "#/definitions/NodeConfig"
@@ -62,19 +66,26 @@
       ]
     },
     "persistent_dir": {
-      "description": "Path to a dir for subsystems to store persistent data (mostly sqlite databases). Will be created if it doesn't exist.",
-      "type": "string"
+      "description": "Where persistent files will be placed. You may want to back this up periodically. If not specified, uses a default directory based on the `DATA_DIRECTORY` environment variable.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "publisher": {
-      "description": "Configure publisher - must be enabled because api tls certs refer to the node's address and so the node must self-publish.",
-      "allOf": [
+      "description": "The publisher (as named) allows publishing records.",
+      "default": null,
+      "anyOf": [
         {
           "$ref": "#/definitions/PublisherConfig"
+        },
+        {
+          "type": "null"
         }
       ]
     },
     "resolver": {
-      "description": "Specify to enable resolver functionality.",
+      "description": "The resolver (as named) resolves records for clients. It is exposed on the API server along with other APIs.",
       "default": null,
       "anyOf": [
         {
@@ -115,23 +126,34 @@
         }
       ]
     },
-    "BackedIdentityArg": {
-      "description": "An identity with its associated secret.",
-      "oneOf": [
-        {
-          "description": "A file containing a generated key",
-          "type": "object",
-          "required": [
-            "local"
-          ],
-          "properties": {
-            "local": {
-              "type": "string"
+    "AdnSocketAddr": {
+      "description": "Either just an IP address (and port) as it would appear as in a URL host part (IPv6 surrounded by `[]`), followed by `#` then the ADN (authentication domain name - that will appear on the server's TLS certificate). Default ports may change based on the context and presence of the ADN.",
+      "type": "string"
+    },
+    "ApiConfig": {
+      "type": "object",
+      "properties": {
+        "admin_token": {
+          "description": "HTTP authorization bearer token for accessing publisher admin endpoints.\n\nIf not specified, remote admin operations will be disabled (only self-publish on this node will work since there will be no way to register publishing identities).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AdminToken"
+            },
+            {
+              "type": "null"
             }
-          },
-          "additionalProperties": false
+          ]
+        },
+        "bind_addrs": {
+          "description": "Addresses for the server to listen on for client interaction.\n\nDefaults to `[::]:12434` and `0:12434`.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StrSocketAddr"
+          }
         }
-      ]
+      }
     },
     "BootstrapConfig": {
       "type": "object",
@@ -161,25 +183,22 @@
     "ContentConfig": {
       "type": "object",
       "required": [
-        "bind_addrs"
+        "bind_addrs",
+        "mode"
       ],
       "properties": {
         "bind_addrs": {
-          "description": "Interface IPs and ports to bind to",
+          "description": "Interface IPs and ports to bind to. These always serve HTTPS, regardless of the port. For HTTP traffic you can use some other static file server.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/StrSocketAddr"
           }
         },
         "mode": {
-          "description": "What content to serve",
-          "default": null,
-          "anyOf": [
+          "description": "What content to serve.",
+          "allOf": [
             {
               "$ref": "#/definitions/ServeMode"
-            },
-            {
-              "type": "null"
             }
           ]
         }
@@ -188,20 +207,45 @@
     "DnsBridgeConfig": {
       "type": "object",
       "properties": {
+        "synthetic_self_record": {
+          "description": "Create a synthetic A/AAAA record with this name pointing to this host. This uses the global addresses specified in the root config.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tcp_bind_addrs": {
-          "description": "TCP for DNS over TLS. Please set up your own TLS reverse proxy.",
-          "default": [],
-          "type": "array",
+          "description": "DNS over TLS. Uses a self-provisioned spaghettinuum certificate.\n\nDefaults to `[::]:853` and `0:853` if not specified; set to an empty list to disable.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "$ref": "#/definitions/StrSocketAddr"
           }
         },
         "udp_bind_addrs": {
-          "description": "Normal DNS - typically port 53.",
-          "default": [],
-          "type": "array",
+          "description": "Normal UDP DNS (Do53).\n\nDefaults to `[::]:53` and `0:53` if not specified; set to an empty list to disable.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "$ref": "#/definitions/StrSocketAddr"
+          }
+        },
+        "upstream": {
+          "description": "Upstream resolvers, such as for non-`.s` names. Each address port defaults to port 53 if no ADN, otherwise 853. If not specified, uses system resolvers.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/AdnSocketAddr"
           }
         }
       }
@@ -296,6 +340,24 @@
         }
       }
     },
+    "IdentitySecretArg": {
+      "description": "An identity with its associated secret.",
+      "oneOf": [
+        {
+          "description": "A file containing a generated key",
+          "type": "object",
+          "required": [
+            "local"
+          ],
+          "properties": {
+            "local": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "IpVer": {
       "type": "string",
       "enum": [
@@ -305,22 +367,26 @@
     },
     "NodeConfig": {
       "type": "object",
-      "required": [
-        "bind_addr"
-      ],
       "properties": {
         "bind_addr": {
-          "description": "The address the node will listen on (UDP).",
-          "allOf": [
+          "description": "The address the node will listen on (UDP).\n\nDefaults to `[::]:48390` - any open port on any IPv6 interface.",
+          "default": null,
+          "anyOf": [
             {
               "$ref": "#/definitions/StrSocketAddr"
+            },
+            {
+              "type": "null"
             }
           ]
         },
         "bootstrap": {
-          "description": "A list of peers to use to bootstrap the connection.",
-          "default": [],
-          "type": "array",
+          "description": "A list of peers to use to bootstrap the connection.\n\nDefaults to the current `antipasta` node at time of build.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "$ref": "#/definitions/BootstrapConfig"
           }
@@ -333,12 +399,10 @@
     },
     "PublisherConfig": {
       "type": "object",
-      "required": [
-        "bind_addr"
-      ],
       "properties": {
         "advertise_port": {
           "description": "Port the publisher is externally reachable on, for advertisements (if different from bind port).",
+          "default": null,
           "type": [
             "integer",
             "null"
@@ -347,12 +411,27 @@
           "minimum": 0.0
         },
         "bind_addr": {
-          "description": "Port to bind for serving published data to other nodes",
-          "allOf": [
+          "description": "Port to bind for serving published data to other nodes\n\nDefaults to `[::]:48391` - any open port on any IPv6 interface.",
+          "default": null,
+          "anyOf": [
             {
               "$ref": "#/definitions/StrSocketAddr"
+            },
+            {
+              "type": "null"
             }
           ]
+        },
+        "ssh_host_keys": {
+          "description": "A list of paths to SSH host keys to self-publish for this host.\n\nIf not specified, a default SSH host key location will be used, otherwise no SSH host keys will be published.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -360,7 +439,7 @@
       "type": "object",
       "properties": {
         "dns_bridge": {
-          "description": "Specify to enable the DNS bridge.",
+          "description": "The DNS bridge exposes specific spaghettinuum `dns/` records over DNS.",
           "default": null,
           "anyOf": [
             {
@@ -398,7 +477,7 @@
               ],
               "properties": {
                 "content_dir": {
-                  "description": "Where files to serve are",
+                  "description": "Where files to serve are.",
                   "type": "string"
                 }
               }

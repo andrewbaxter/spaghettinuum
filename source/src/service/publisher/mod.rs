@@ -8,7 +8,6 @@ use {
                 identity::Identity,
                 record::record_utils::{
                     join_record_key,
-                    split_query_record_keys,
                     RecordKey,
                 },
             },
@@ -195,19 +194,26 @@ impl Publisher {
                         match async {
                             ta_vis_res!(Response < htserve:: Body >);
                             log.log_with(loga::DEBUG, "Recieved request", ea!(path = r.head.uri));
-                            let Some(ident) = r.subpath.strip_prefix("/") else {
-                                return Ok(response_400("Missing identity in path"));
-                            };
-                            let ident =
-                                Identity::from_str(&ident).context("Couldn't parse identity").err_external()?;
-                            return Ok(
-                                response_200_json(
-                                    publisher
-                                        .get_values(&ident, split_query_record_keys(&r.query))
-                                        .await
-                                        .err_internal()?,
-                                ),
-                            );
+                            let req_body =
+                                serde_json::from_slice::<wire::resolve::ResolveRequest>(
+                                    &r.body.collect().await.context("Error reading body").err_external()?.to_bytes(),
+                                )
+                                    .context("Request doesn't match schema")
+                                    .err_external()?;
+                            match req_body {
+                                wire::resolve::ResolveRequest::V1(req_body) => {
+                                    let values =
+                                        publisher.get_values(&req_body.ident, req_body.keys).await.err_internal()?;
+                                    return Ok(
+                                        response_200_json(
+                                            values
+                                                .into_iter()
+                                                .map(|(k, v)| (k, v))
+                                                .collect::<wire::resolve::v1::ResolveResp>(),
+                                        ),
+                                    );
+                                },
+                            }
                         }.await {
                             Ok(r) => return r,
                             Err(VisErr::Internal(e)) => {
@@ -440,7 +446,7 @@ impl Publisher {
         &self,
         identity: &Identity,
         keys: Vec<RecordKey>,
-    ) -> Result<wire::resolve::ResolveKeyValues, loga::Error> {
+    ) -> Result<HashMap<RecordKey, wire::resolve::latest::ResolveValue>, loga::Error> {
         let identity = identity.clone();
         return Ok(self.db_pool.tx(move |db| {
             let mut out = HashMap::new();
@@ -467,7 +473,7 @@ impl Publisher {
                     data: data,
                 });
             }
-            return Ok(wire::resolve::ResolveKeyValues::V1(out));
+            return Ok(out);
         }).await?);
     }
 

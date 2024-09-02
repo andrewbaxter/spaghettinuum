@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Delegate",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "v1"
+      ],
+      "properties": {
+        "v1": {
+          "$ref": "#/definitions/Delegate"
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "definitions": {
+    "Delegate": {
+      "description": "A list of other key paths. Delegate records for all prefixes of a query path should be queried as well, with the shortest prefix that has a delegate used. When a delegate record is used, the matched prefix from the delegate record is replaced by the value of the delegate record.\n\nMultiple values are all valid and any single value should be used. They can be used for client-side load balancing (by using a random member) and failover (by trying another value when one value is unusable).",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": [
+          {
+            "$ref": "#/definitions/RecordRoot"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        ],
+        "maxItems": 2,
+        "minItems": 2
+      }
+    },
+    "Identity": {
+      "description": "An identity (zbase32 string)",
+      "type": "string"
+    },
+    "RecordRoot": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "s"
+          ],
+          "properties": {
+            "s": {
+              "$ref": "#/definitions/Identity"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "dns"
+          ],
+          "properties": {
+            "dns": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "ip"
+          ],
+          "properties": {
+            "ip": {
+              "type": "string",
+              "format": "ip"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

@@ -3,13 +3,35 @@
   "title": "Config",
   "type": "object",
   "required": [
-    "global_addrs",
-    "identity",
-    "publishers"
+    "identity"
   ],
   "properties": {
+    "cache_dir": {
+      "description": "Where to put cache files.  If not specified, uses the `CACHE_DIR` environment variable.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cert_dir": {
+      "description": "Where to store TLS certs.  This directory and its parents will be created if they don't already exist.  The certs will be named `pub.pem` and `priv.pem`.",
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "content": {
+      "description": "Content to serve, in addition to keeping certs up to date.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ContentConfig"
+      }
+    },
     "global_addrs": {
       "description": "How to identify and select globally routable IP addresses for this host",
+      "default": [],
       "type": "array",
       "items": {
         "$ref": "#/definitions/GlobalAddrConfig"
@@ -19,71 +41,42 @@
       "description": "Identity to use for publishing",
       "allOf": [
         {
-          "$ref": "#/definitions/BackedIdentityArg"
+          "$ref": "#/definitions/IdentitySecretArg"
         }
       ]
     },
-    "publishers": {
-      "description": "Url of publisher where this identity is authorized to publish",
-      "type": "array",
+    "ssh_host_keys": {
+      "description": "A list of paths to host keys to publish for this host. If not specified, a default SSH host key location will be used, otherwise no SSH host keys will be published.",
+      "default": null,
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "type": "string"
       }
-    },
-    "serve": {
-      "description": "Configure HTTPS serving using certipasta certs",
-      "default": null,
-      "anyOf": [
-        {
-          "$ref": "#/definitions/ServeConfig"
-        },
-        {
-          "type": "null"
-        }
-      ]
     }
   },
   "definitions": {
-    "BackedIdentityArg": {
-      "description": "An identity with its associated secret.",
-      "oneOf": [
-        {
-          "description": "A file containing a generated key",
-          "type": "object",
-          "required": [
-            "local"
-          ],
-          "properties": {
-            "local": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
-        }
-      ]
-    },
     "ContentConfig": {
       "type": "object",
       "required": [
-        "bind_addrs"
+        "bind_addrs",
+        "mode"
       ],
       "properties": {
         "bind_addrs": {
-          "description": "Interface IPs and ports to bind to",
+          "description": "Interface IPs and ports to bind to. These always serve HTTPS, regardless of the port. For HTTP traffic you can use some other static file server.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/StrSocketAddr"
           }
         },
         "mode": {
-          "description": "What content to serve",
-          "default": null,
-          "anyOf": [
+          "description": "What content to serve.",
+          "allOf": [
             {
               "$ref": "#/definitions/ServeMode"
-            },
-            {
-              "type": "null"
             }
           ]
         }
@@ -179,32 +172,30 @@
         }
       }
     },
+    "IdentitySecretArg": {
+      "description": "An identity with its associated secret.",
+      "oneOf": [
+        {
+          "description": "A file containing a generated key",
+          "type": "object",
+          "required": [
+            "local"
+          ],
+          "properties": {
+            "local": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "IpVer": {
       "type": "string",
       "enum": [
         "v4",
         "v6"
       ]
-    },
-    "ServeConfig": {
-      "type": "object",
-      "required": [
-        "cert_dir"
-      ],
-      "properties": {
-        "cert_dir": {
-          "description": "Where to store TLS certs.  This directory and its parents will be created if they don't already exist.  The certs will be named `pub.pem` and `priv.pem`.",
-          "type": "string"
-        },
-        "content": {
-          "description": "How to serve content.  If not specified, just keeps certificates in the cert dir up to date.",
-          "default": [],
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/ContentConfig"
-          }
-        }
-      }
     },
     "ServeMode": {
       "oneOf": [
@@ -221,7 +212,7 @@
               ],
               "properties": {
                 "content_dir": {
-                  "description": "Where files to serve are",
+                  "description": "Where files to serve are.",
                   "type": "string"
                 }
               }

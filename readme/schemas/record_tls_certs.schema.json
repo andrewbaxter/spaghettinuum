@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "DnsCname",
+  "title": "TlsCerts",
   "oneOf": [
     {
       "type": "object",
@@ -9,15 +9,15 @@
       ],
       "properties": {
         "v1": {
-          "$ref": "#/definitions/DnsCname"
+          "$ref": "#/definitions/TlsCerts"
         }
       },
       "additionalProperties": false
     }
   ],
   "definitions": {
-    "DnsCname": {
-      "description": "A list of DNS names",
+    "TlsCerts": {
+      "description": "A list of possible public certs (PEM format) a server could serve. These certs should be accepted regardless of all other properties (including signer status and significant dates within the certificate).",
       "type": "array",
       "items": {
         "type": "string"

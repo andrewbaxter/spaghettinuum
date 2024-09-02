@@ -20,4 +20,4 @@ If you don't want to use the public node or don't trust me to keep it running, y
 
 ## HTTPS
 
-Sites on the spaghettinuum have TLS certificates issued by `[Certipasta](https://github.com/andrewbaxter/certipasta)` so you'll also need to install the Certipasta root certificate. See that link for instructions.
+Sites on the spaghettinuum have TLS certificates issued by [Certipasta](https://github.com/andrewbaxter/certipasta) so you'll also need to install the Certipasta root certificate. See that link for instructions.

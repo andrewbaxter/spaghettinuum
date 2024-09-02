@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "ResolveValues",
+  "title": "ResolveKeyValues",
   "type": "object",
   "additionalProperties": {
     "$ref": "#/definitions/ResolveValue"
@@ -14,6 +14,7 @@
       "properties": {
         "data": true,
         "expires": {
+          "description": "The expiration time per the time on the publisher when the value was retrieved. This should be far enough in the future to ignore when not storing the results.",
           "type": "string",
           "format": "date-time"
         }

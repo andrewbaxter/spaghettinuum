@@ -84,6 +84,6 @@ pub fn main() {
     ).unwrap();
     fs::write(
         out.join("resolve.schema.json"),
-        &serde_json::to_string_pretty(&schema_for!(wire::api::resolve::latest::ResolveValues)).unwrap(),
+        &serde_json::to_string_pretty(&schema_for!(wire::api::resolve::latest::ResolveKeyValues)).unwrap(),
     ).unwrap();
 }

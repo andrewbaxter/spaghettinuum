@@ -17,7 +17,7 @@
   ],
   "definitions": {
     "DnsTxt": {
-      "description": "A list of TXT record strings",
+      "description": "A list of TXT record strings. Each entry is a separate TXT record, there can be no multi-string single-record values.",
       "type": "array",
       "items": {
         "type": "string"

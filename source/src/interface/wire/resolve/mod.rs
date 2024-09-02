@@ -1,8 +1,8 @@
-//! Interface across time, no non-self users.
-use std::collections::HashMap;
-use serde::{
-    Deserialize,
-    Serialize,
+use {
+    serde::{
+        Deserialize,
+        Serialize,
+    },
 };
 
 pub const DNS_SUFFIX: &str = "s";
@@ -11,16 +11,9 @@ pub const DNS_DOT_SUFFIX: &str = ".s";
 pub mod v1;
 
 pub use v1 as latest;
-use crate::interface::stored::record::record_utils::RecordKey;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ResolveKeyValues {
-    V1(HashMap<RecordKey, v1::ResolveValue>),
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResolveValue {
-    V1(v1::ResolveValue),
+pub enum ResolveRequest {
+    V1(v1::ResolveRequest),
 }

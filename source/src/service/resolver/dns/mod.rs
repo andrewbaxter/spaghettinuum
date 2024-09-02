@@ -21,9 +21,6 @@ use {
                     },
                 },
             },
-            wire::{
-                self,
-            },
         },
         ta_res,
         ta_vis_res,
@@ -222,9 +219,7 @@ pub async fn start_dns_bridge(
                             request_keys.extend(explicit_request_keys);
 
                             // Make request, filter out empty results
-                            let mut res = match self1.resolver.get(&ident, request_keys).await.err_internal()? {
-                                wire::resolve::ResolveKeyValues::V1(v) => v,
-                            }.into_iter().filter_map(|(k, v)| {
+                            let mut res = self1.resolver.get(&ident, request_keys).await.err_internal()?.into_iter().filter_map(|(k, v)| {
                                 return match v.data {
                                     Some(d) => Some(
                                         (

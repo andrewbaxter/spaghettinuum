@@ -321,7 +321,7 @@ pub async fn resolve(
             'done _;
             let mut errs = vec![];
             for resolver_url in resolvers {
-                match htreq::get_json::<wire::api::resolve::v1::ResolveValues>(
+                match htreq::get_json::<wire::api::resolve::v1::ResolveKeyValues>(
                     log,
                     &mut connect_resolver_node(&resolver_url).await?,
                     &resolver_url.url.join(&query_path),

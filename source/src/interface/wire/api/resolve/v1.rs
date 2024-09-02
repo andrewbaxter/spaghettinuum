@@ -10,4 +10,4 @@ use crate::interface::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ResolveValues(pub HashMap<RecordKey, wire::resolve::v1::ResolveValue>);
+pub struct ResolveKeyValues(pub HashMap<RecordKey, wire::resolve::v1::ResolveValue>);
