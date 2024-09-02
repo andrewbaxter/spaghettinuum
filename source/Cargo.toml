@@ -88,6 +88,7 @@ hickory-resolver = { version = "0.24", features = [
     "tokio",
     "dns-over-rustls",
     "system-config",
+    "native-certs",
 ] }
 rustls-pemfile = "2"
 constant_time_eq = "0.3"
@@ -118,9 +119,9 @@ russh-config = "0.7"
 russh-keys = "0.43"
 shell-escape = "0.1"
 russh-sftp = "2"
-dirs-next = "2.0.0"
-flowcontrol = "0.2.2"
-idna = "1.0.2"
+dirs-next = "2"
+flowcontrol = "0.2"
+idna = "1"
 
 [target.'cfg(target_env = "musl")'.dependencies]
 # Add feature to transitive dep of rusqlite, working around crates.io obstructive nannying

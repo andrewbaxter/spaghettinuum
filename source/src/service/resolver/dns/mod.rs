@@ -147,45 +147,53 @@ pub async fn start_dns_bridge(
             match async {
                 ta_vis_res!(ResponseInfo);
                 let name = request.query().name();
+
+                // First check + handle the syntetic name
                 shed!{
-                    if Some(name) == self1.synthetic_self_record.as_ref() {
-                        let mut answers = vec![];
-                        match request.query().query_type() {
-                            hickory_proto::rr::RecordType::A => {
-                                for n in &self1.global_ipv4 {
-                                    answers.push(
-                                        Record::from_rdata(request.query().name().into(), 60, RData::A(A(*n))),
-                                    );
-                                }
-                            },
-                            hickory_proto::rr::RecordType::AAAA => {
-                                for n in &self1.global_ipv6 {
-                                    answers.push(
-                                        Record::from_rdata(request.query().name().into(), 60, RData::AAAA(AAAA(*n))),
-                                    );
-                                }
-                            },
-                            _ => break,
-                        }
-                        return Ok(
-                            response_handle
-                                .send_response(
-                                    MessageResponseBuilder::from_message_request(
-                                        request,
-                                    ).build(
-                                        Header::response_from_request(request.header()),
-                                        answers.iter().map(|r| r),
-                                        &[],
-                                        &[],
-                                        &[],
-                                    ),
-                                )
-                                .await
-                                .context("Error sending response")
-                                .err_internal()?,
-                        );
+                    let Some(synthetic_name) = self1.synthetic_self_record.as_ref() else {
+                        break;
+                    };
+                    if name != synthetic_name {
+                        break;
                     }
+                    let mut answers = vec![];
+                    match request.query().query_type() {
+                        hickory_proto::rr::RecordType::A => {
+                            for n in &self1.global_ipv4 {
+                                answers.push(
+                                    Record::from_rdata(request.query().name().into(), 60, RData::A(A(*n))),
+                                );
+                            }
+                        },
+                        hickory_proto::rr::RecordType::AAAA => {
+                            for n in &self1.global_ipv6 {
+                                answers.push(
+                                    Record::from_rdata(request.query().name().into(), 60, RData::AAAA(AAAA(*n))),
+                                );
+                            }
+                        },
+                        _ => { },
+                    }
+                    return Ok(
+                        response_handle
+                            .send_response(
+                                MessageResponseBuilder::from_message_request(
+                                    request,
+                                ).build(
+                                    Header::response_from_request(request.header()),
+                                    answers.iter().map(|r| r),
+                                    &[],
+                                    &[],
+                                    &[],
+                                ),
+                            )
+                            .await
+                            .context("Error sending response")
+                            .err_internal()?,
+                    );
                 }
+
+                // Spagh + upstream DNS
                 let (root, path) = split_dns_name(name).err_external()?;
                 match root {
                     stored::record::record_utils::RecordRoot::S(ident) => {
@@ -606,7 +614,7 @@ pub async fn start_dns_bridge(
 
     let upstream = {
         let mut upstream_servers = NameServerConfigGroup::new();
-        let upstream_opts;
+        let mut upstream_opts;
         if let Some(dns_config_upstream) = &dns_config.upstream {
             for n in dns_config_upstream {
                 let mut upstream;
@@ -630,6 +638,7 @@ pub async fn start_dns_bridge(
                 upstream_servers.push(upstream);
             }
             upstream_opts = ResolverOpts::default();
+            upstream_opts.shuffle_dns_servers = true;
         } else {
             let (config, options) =
                 hickory_resolver

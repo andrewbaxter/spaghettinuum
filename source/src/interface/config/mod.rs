@@ -38,10 +38,6 @@ pub enum DebugFlag {
     Publish,
     Resolve,
     Dns,
-    DnsS,
-    DnsNonS,
     SelfTls,
-    Htreq,
-    Htserve,
-    Other,
+    Api,
 }

@@ -3,7 +3,14 @@ use {
         stored::identity::Identity,
         wire::resolve::DNS_SUFFIX,
     },
-    idna::punycode,
+    idna::{
+        uts46::{
+            DnsLength,
+            Hyphens,
+            Uts46,
+        },
+        AsciiDenyList,
+    },
     loga::{
         ea,
         DebugDisplay,
@@ -100,12 +107,24 @@ pub fn split_query_record_keys(keys: &str) -> Vec<RecordKey> {
     }).collect();
 }
 
+fn domain_part_raw_to_string(part: &str) -> Result<String, loga::Error> {
+    let (part1, e) = Uts46::new().to_unicode(part.as_bytes(), AsciiDenyList::URL, Hyphens::Check);
+    e.context_with("DNS name part isn't valid international domain segment", ea!(part = part))?;
+    return Ok(part1.to_string());
+}
+
+fn domain_part_string_to_raw(part: &str) -> Result<String, loga::Error> {
+    let part1 =
+        Uts46::new()
+            .to_ascii(part.as_bytes(), AsciiDenyList::URL, Hyphens::Check, DnsLength::Ignore)
+            .context_with("DNS name part isn't valid international domain segment", ea!(part = part))?;
+    return Ok(part1.to_string());
+}
+
 pub fn split_dns_path(name: &str) -> Result<RecordKey, loga::Error> {
     let mut path = vec![];
     for part in name.split(".") {
-        path.push(
-            punycode::decode_to_string(&part).context_with("DNS name part isn't valid punycode", ea!(part = part))?,
-        );
+        path.push(domain_part_raw_to_string(part).context_with("DNS name part isn't valid", ea!(full = name))?);
     }
     path.reverse();
     return Ok(path);
@@ -119,9 +138,7 @@ pub fn split_dns_name(name: impl Into<hickory_resolver::Name>) -> Result<(Record
             String::from_utf8(
                 part.to_vec(),
             ).context_with("DNS name part isn't valid utf-8", ea!(part = String::from_utf8_lossy(part)))?;
-        path.push(
-            punycode::decode_to_string(&part).context_with("DNS name part isn't valid punycode", ea!(part = part))?,
-        );
+        path.push(domain_part_raw_to_string(&part).context_with("DNS name part isn't valid", ea!(full = name))?);
     }
     let root = path.pop().context("DNS name is empty")?;
     let root = if match root.as_str() {
@@ -146,6 +163,28 @@ pub fn split_dns_name(name: impl Into<hickory_resolver::Name>) -> Result<(Record
     };
     path.reverse();
     return Ok((root, path));
+}
+
+#[cfg(test)]
+mod test_split_dns_name {
+    use {
+        super::{
+            split_dns_name,
+            RecordRoot,
+        },
+        hickory_proto::rr::LowerName,
+        std::str::FromStr,
+    };
+
+    #[test]
+    fn test_wild1() {
+        let (root, key) = split_dns_name(LowerName::from_str("1.something.other").unwrap()).unwrap();
+        let RecordRoot::Dns(root) = root else {
+            panic!();
+        };
+        assert_eq!(root, "other");
+        assert_eq!(key, vec!["something".to_string(), "1".to_string()]);
+    }
 }
 
 pub fn join_dns_name(root: RecordRoot, path: RecordKey) -> Result<String, loga::Error> {
@@ -173,9 +212,12 @@ pub fn join_dns_name(root: RecordRoot, path: RecordKey) -> Result<String, loga::
     parts.reserve(parts.len() + path.len());
     for e in path {
         parts.push(
-            punycode::encode_str(
+            domain_part_string_to_raw(
                 &e,
-            ).context_with("Error converting spagh record key to DNS name, incompatible segment", ea!(segment = e))?,
+            ).context_with(
+                "Error converting spagh record key to DNS name, incompatible part",
+                ea!(parts = parts.dbg_str()),
+            )?,
         );
     }
     parts.reverse();

@@ -280,7 +280,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     // Get own tls cert
     let Some((certs, r21_certs)) =
         self_tls::htserve_certs(
-            log,
+            &log.fork_with_log_from(debug_level(DebugFlag::SelfTls), ea!(sys = "self_tls")),
             &cache_dir,
             None,
             tm,
@@ -313,7 +313,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 .stack_context(log, "Error setting up resolver")?;
         if let Some(dns_config) = resolver_config.dns_bridge {
             resolver::dns::start_dns_bridge(
-                &log.fork_with_log_from(debug_level(DebugFlag::Resolve), ea!(sys = "resolver_dns")),
+                &log.fork_with_log_from(debug_level(DebugFlag::Dns), ea!(sys = "resolver_dns")),
                 &tm,
                 &resolver,
                 r21_certs,
@@ -333,7 +333,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     }
 
     // Start http api
-    let log = log.fork_with_log_from(debug_level(DebugFlag::Htserve), ea!(sys = "api_http"));
+    let log = log.fork_with_log_from(debug_level(DebugFlag::Api), ea!(sys = "api_http"));
     if let Some(api) = config.api {
         if let Some(admin_token) = api.admin_token {
             let admin_token = hash_auth_token(&match admin_token {
