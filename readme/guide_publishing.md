@@ -59,10 +59,10 @@ Spaghettinuum key/value pairs that match the format expected by the DNS bridge w
 The easy way to publish DNS equivalent records is using the command line like:
 
 ```
-$ spagh publish set-common local my.ident --subdomain c.b.a --dns-a 203.0.113.111 --dns-aaaa 2001:db8::8a2e:370:7334
+$ spagh publish set-common local my.ident --path a b c --dns-a 203.0.113.111 --dns-aaaa 2001:db8::8a2e:370:7334
 ```
 
-This would resolve `A` and `AAAA` queries for the DNS name `c.b.a.IDENT.s` (note the subdomain order).
+This would resolve `A` and `AAAA` queries for the DNS name `c.b.a.IDENT.s` (note the path vs subdomain order).
 
 You can also do it using the normal `set` command. In that case, the keys must be like `a.b.c.dns/a` (note the path here is top-level-down, and the final segment is `dns/a` corresponding to the record type).
 

@@ -17,7 +17,6 @@ use {
                     },
                     record_utils::{
                         split_dns_name,
-                        split_dns_path,
                         split_record_key,
                     },
                 },
@@ -90,10 +89,10 @@ pub mod args {
         /// Identity to publish
         pub identity: IdentitySecretArg,
         /// Dotted list of subdomains to publish under in DNS order (ex: 'a.b.c').
-        pub subdomain: String,
+        pub path: Vec<NotFlag>,
         /// TTL for hits and misses, in minutes
         pub ttl: u32,
-        /// A list of other DNS names.
+        /// A list of other DNS names (`.s` spaghettinuum names or non-spaghettinuum names).
         pub delegate: Option<Vec<NotFlag>>,
         /// A list of Ipv4 addresses
         pub dns_a: Option<Vec<NotFlag>>,
@@ -177,7 +176,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
             ).await?;
         },
         args::Publish::SetCommon(config) => {
-            let path = split_dns_path(&config.subdomain)?;
+            let path = config.path.into_iter().map(|x| x.0).collect::<Vec<_>>();
 
             fn rec_val(ttl: u32, data: impl Serialize) -> stored::record::RecordValue {
                 return stored::record::RecordValue::latest(stored::record::latest::RecordValue {
