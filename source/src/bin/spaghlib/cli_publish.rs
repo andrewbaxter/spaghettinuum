@@ -19,7 +19,6 @@ use {
                         split_dns_name,
                         split_dns_path,
                         split_record_key,
-                        RecordRoot,
                     },
                 },
             },
@@ -35,7 +34,6 @@ use {
     std::{
         collections::HashMap,
         net::{
-            IpAddr,
             Ipv4Addr,
             Ipv6Addr,
         },
@@ -46,13 +44,14 @@ use {
 pub mod args {
     use {
         aargvark::{
+            traits_impls::{
+                AargvarkJson,
+                NotFlag,
+            },
             Aargvark,
-            AargvarkJson,
         },
         spaghettinuum::interface::{
-            config::{
-                shared::IdentitySecretArg,
-            },
+            config::shared::IdentitySecretArg,
             stored,
         },
         std::{
@@ -87,25 +86,24 @@ pub mod args {
     }
 
     #[derive(Aargvark)]
-    pub struct SetDns {
+    pub struct SetCommon {
         /// Identity to publish
         pub identity: IdentitySecretArg,
-        /// Dotted list of subdomains to publish under (ex: `a.b.c` will publish
-        /// `a.b.c.IDENT.s`).
+        /// Dotted list of subdomains to publish under in DNS order (ex: 'a.b.c').
         pub subdomain: String,
         /// TTL for hits and misses, in minutes
         pub ttl: u32,
         /// A list of other DNS names.
-        pub delegate: Vec<String>,
+        pub delegate: Option<Vec<NotFlag>>,
         /// A list of Ipv4 addresses
-        pub dns_a: Vec<String>,
+        pub dns_a: Option<Vec<NotFlag>>,
         /// A list of Ipv6 addresses
-        pub dns_aaaa: Vec<String>,
+        pub dns_aaaa: Option<Vec<NotFlag>>,
         /// A list of valid TXT record strings
-        pub dns_txt: Vec<String>,
+        pub dns_txt: Option<Vec<NotFlag>>,
         /// Mail server names. These are automatically prioritized, with the first having
         /// priority 0, second 1, etc.
-        pub dns_mx: Vec<String>,
+        pub dns_mx: Option<Vec<NotFlag>>,
     }
 
     #[derive(Aargvark)]
@@ -136,8 +134,9 @@ pub mod args {
         Announce(Announce),
         /// Create or replace existing publish data for an identity on a publisher server
         Set(Set),
-        /// A shortcut for publishing DNS data, generating the key values for you
-        SetDns(SetDns),
+        /// A shortcut for publishing common data, generating the appropriate key-values
+        /// for you
+        SetCommon(SetCommon),
         /// Stop publishing specific records
         Unset(Unset),
         /// Stop publishing all records for an identity
@@ -177,7 +176,7 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 },
             ).await?;
         },
-        args::Publish::SetDns(config) => {
+        args::Publish::SetCommon(config) => {
             let path = split_dns_path(&config.subdomain)?;
 
             fn rec_val(ttl: u32, data: impl Serialize) -> stored::record::RecordValue {
@@ -188,18 +187,15 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
             }
 
             let mut kvs = HashMap::new();
-            if !config.delegate.is_empty() {
+            let config_delegate = config.delegate.unwrap_or_default();
+            if !config_delegate.is_empty() {
                 let mut values = vec![];
-                for v in config.delegate {
-                    if let Ok(ip) = IpAddr::from_str(&v) {
-                        values.push((RecordRoot::Ip(ip), vec![]));
-                    } else {
-                        values.push(
-                            split_dns_name(
-                                hickory_resolver::Name::from_utf8(&v).context("Invalid DNS name for delegation")?,
-                            ).context_with("Invalid delegation", ea!(value = v))?,
-                        );
-                    }
+                for v in config_delegate {
+                    values.push(
+                        split_dns_name(
+                            hickory_resolver::Name::from_utf8(&v.0).context("Invalid DNS name for delegation")?,
+                        ).context_with("Invalid delegation", ea!(value = v))?,
+                    );
                 }
                 kvs.insert(
                     build_delegate_key(path.clone()),
@@ -211,10 +207,11 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                     ),
                 );
             }
-            if !config.dns_a.is_empty() {
+            let config_dns_a = config.dns_a.unwrap_or_default();
+            if !config_dns_a.is_empty() {
                 let mut v = vec![];
-                for r in config.dns_a {
-                    v.push(Ipv4Addr::from_str(&r).context("Invalid IP address for A record")?);
+                for r in config_dns_a {
+                    v.push(Ipv4Addr::from_str(&r.0).context("Invalid IP address for A record")?);
                 }
                 kvs.insert(
                     build_dns_key(path.clone(), RecordType::A),
@@ -224,10 +221,11 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                     ),
                 );
             }
-            if !config.dns_aaaa.is_empty() {
+            let config_dns_aaaa = config.dns_aaaa.unwrap_or_default();
+            if !config_dns_aaaa.is_empty() {
                 let mut v = vec![];
-                for r in config.dns_aaaa {
-                    v.push(Ipv6Addr::from_str(&r).context("Invalid IP address for AAAA record")?);
+                for r in config_dns_aaaa {
+                    v.push(Ipv6Addr::from_str(&r.0).context("Invalid IP address for AAAA record")?);
                 }
                 kvs.insert(
                     build_dns_key(path.clone(), RecordType::Aaaa),
@@ -237,24 +235,30 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                     ),
                 );
             }
-            if !config.dns_txt.is_empty() {
+            let config_dns_txt = config.dns_txt.unwrap_or_default();
+            if !config_dns_txt.is_empty() {
                 kvs.insert(
                     build_dns_key(path.clone(), RecordType::Txt),
                     rec_val(
                         config.ttl,
                         &stored::record::dns_record::DnsTxt::V1(
-                            stored::record::dns_record::latest::DnsTxt(config.dns_txt),
+                            stored::record::dns_record::latest::DnsTxt(
+                                config_dns_txt.into_iter().map(|x| x.into()).collect(),
+                            ),
                         ),
                     ),
                 );
             }
-            if !config.dns_mx.is_empty() {
+            let config_dns_mx = config.dns_mx.unwrap_or_default();
+            if !config_dns_mx.is_empty() {
                 kvs.insert(
                     build_dns_key(path.clone(), RecordType::Mx),
                     rec_val(
                         config.ttl,
                         &stored::record::dns_record::DnsMx::V1(
-                            stored::record::dns_record::latest::DnsMx(config.dns_mx),
+                            stored::record::dns_record::latest::DnsMx(
+                                config_dns_mx.into_iter().map(|x| x.into()).collect(),
+                            ),
                         ),
                     ),
                 );

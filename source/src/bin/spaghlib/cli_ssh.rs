@@ -41,80 +41,21 @@ pub mod args {
     use {
         aargvark::{
             Aargvark,
-            AargvarkFromStr,
-            HelpPattern,
-            HelpPatternElement,
         },
         std::path::PathBuf,
     };
 
-    #[derive(Clone)]
-    pub struct StrSocketAddr {
-        pub host: String,
-        pub port: Option<u16>,
-    }
-
-    impl AargvarkFromStr for StrSocketAddr {
-        fn from_str(mut host: &str) -> Result<Self, String> {
-            let port;
-            if let Some((host1, port1)) = host.rsplit_once(":") {
-                let port1 = u16::from_str(port1).map_err(|s| format!("Couldn't parse port as number: {}", s))?;
-                port = Some(port1);
-                host = host1;
-            } else {
-                port = None;
-            }
-            return Ok(Self {
-                host: host.to_string(),
-                port: port,
-            });
-        }
-
-        fn build_help_pattern(_state: &mut aargvark::HelpState) -> HelpPattern {
-            return HelpPattern(vec![HelpPatternElement::Type("HOST[:PORT]".to_string())]);
-        }
-    }
-
-    #[derive(Clone)]
-    pub struct StrUserSocketAddr {
-        pub user: Option<String>,
-        pub host: String,
-        pub port: Option<u16>,
-    }
-
-    impl AargvarkFromStr for StrUserSocketAddr {
-        fn from_str(mut host: &str) -> Result<Self, String> {
-            let user;
-            if let Some((user1, host1)) = host.split_once("@") {
-                user = Some(user1.to_string());
-                host = host1;
-            } else {
-                user = None;
-            }
-            let port;
-            if let Some((host1, port1)) = host.rsplit_once(":") {
-                let port1 = u16::from_str(port1).map_err(|s| format!("Couldn't parse port as number: {}", s))?;
-                port = Some(port1);
-                host = host1;
-            } else {
-                port = None;
-            }
-            return Ok(Self {
-                user: user,
-                host: host.to_string(),
-                port: port,
-            });
-        }
-
-        fn build_help_pattern(_state: &mut aargvark::HelpState) -> HelpPattern {
-            return HelpPattern(vec![HelpPatternElement::Type("[USER@]HOST[:PORT]".to_string())]);
-        }
-    }
-
     #[derive(Aargvark)]
     pub struct SshShell {
-        pub host: StrUserSocketAddr,
+        // User, defaults to root.
+        #[vark(flag = "-u", flag = "--user")]
+        pub user: Option<String>,
+        pub host: String,
+        // Ssh port, defaults to 22.
+        #[vark(flag = "-p", flag = "--port")]
+        pub port: Option<u16>,
         /// Use a specific key file instead of whatever's automatically detected.
+        #[vark(flag = "-i", flag = "--keyfile")]
         pub key: Option<PathBuf>,
         pub command: Option<Vec<String>>,
     }
@@ -133,8 +74,15 @@ pub mod args {
 
     #[derive(Aargvark)]
     pub struct SshDownload {
-        pub host: StrUserSocketAddr,
+        // User, defaults to root.
+        #[vark(flag = "-u", flag = "--user")]
+        pub user: Option<String>,
+        pub host: String,
+        #[vark(flag = "-p", flag = "--port")]
+        // Ssh port, defaults to 22.
+        pub port: Option<u16>,
         /// Use a specific key file instead of whatever's automatically detected.
+        #[vark(flag = "-i", flag = "--keyfile")]
         pub key: Option<PathBuf>,
         /// Absolute path to a file or directory to download.
         pub remote: PathBuf,
@@ -153,8 +101,15 @@ pub mod args {
 
     #[derive(Aargvark)]
     pub struct SshUpload {
-        pub host: StrUserSocketAddr,
+        // User, defaults to root.
+        #[vark(flag = "-u", flag = "--user")]
+        pub user: Option<String>,
+        pub host: String,
+        #[vark(flag = "-p", flag = "--port")]
+        // Ssh port, defaults to 22.
+        pub port: Option<u16>,
         /// Use a specific key file instead of whatever's automatically detected.
+        #[vark(flag = "-i", flag = "--keyfile")]
         pub key: Option<PathBuf>,
         /// Path to a file or directory to upload.
         pub local: PathBuf,
@@ -260,9 +215,9 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
 
             ssh_connect(
                 log,
-                config.host.user.clone(),
-                config.host.host.clone(),
-                config.host.port,
+                config.user.clone(),
+                format!("{}.s", config.host),
+                config.port,
                 config.key.clone(),
                 Inner(config),
             ).await?;
@@ -339,9 +294,9 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
 
             ssh_connect(
                 log,
-                config.host.user.clone(),
-                config.host.host.clone(),
-                config.host.port,
+                config.user.clone(),
+                format!("{}.s", config.host),
+                config.port,
                 config.key.clone(),
                 Inner(config),
             ).await?;
@@ -424,9 +379,9 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
 
             ssh_connect(
                 log,
-                config.host.user.clone(),
-                config.host.host.clone(),
-                config.host.port,
+                config.user.clone(),
+                format!("{}.s", config.host),
+                config.port,
                 config.key.clone(),
                 Inner(config),
             ).await?;

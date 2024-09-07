@@ -142,6 +142,8 @@ pub fn split_dns_path(name: &str) -> Result<RecordKey, loga::Error> {
     return Ok(path);
 }
 
+/// Splits a DNS name into an enumerated root (spaghettinuum or dns) and the key
+/// from the subdomain.
 pub fn split_dns_name(name: impl Into<hickory_resolver::Name>) -> Result<(RecordRoot, RecordKey), loga::Error> {
     let name = name.into();
     let mut path = vec![];

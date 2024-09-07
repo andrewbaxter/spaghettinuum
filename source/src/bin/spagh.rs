@@ -42,6 +42,7 @@ mod args {
         Admin(crate::spaghlib::cli_admin::args::Admin),
     }
 
+    /// A small CLI for querying, publishing, and administrating spaghettinuum.
     #[derive(Aargvark)]
     pub struct Args {
         pub debug: Option<()>,

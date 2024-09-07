@@ -1,7 +1,7 @@
 use {
     aargvark::{
+        traits_impls::AargvarkJson,
         Aargvark,
-        AargvarkJson,
     },
     flowcontrol::shed,
     htwrap::htserve::{

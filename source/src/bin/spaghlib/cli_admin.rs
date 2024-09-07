@@ -41,8 +41,8 @@ use {
 pub mod args {
     use {
         aargvark::{
+            traits_impls::AargvarkJson,
             Aargvark,
-            AargvarkJson,
         },
         spaghettinuum::interface::stored,
         std::{

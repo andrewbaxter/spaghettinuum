@@ -50,7 +50,7 @@ $ spagh get yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r serial
 }
 ```
 
-### Publishing DNS bridge records
+### Publishing DNS bridge and other common records
 
 The DNS bridge allows accessing keys and values with a specific format via DNS, so you can (for example) type an identity into your browser address bar and access an IP published for that identity in Spaghettinuum.
 
@@ -59,14 +59,14 @@ Spaghettinuum key/value pairs that match the format expected by the DNS bridge w
 The easy way to publish DNS equivalent records is using the command line like:
 
 ```
-$ spagh publish set-dns local my.ident --subdomain c.b.a --a 203.0.113.111 --aaaa 2001:db8::8a2e:370:7334
+$ spagh publish set-common local my.ident --subdomain c.b.a --dns-a 203.0.113.111 --dns-aaaa 2001:db8::8a2e:370:7334
 ```
 
 This would resolve `A` and `AAAA` queries for the DNS name `c.b.a.IDENT.s` (note the subdomain order).
 
 You can also do it using the normal `set` command. In that case, the keys must be like `a.b.c.dns/a` (note the path here is top-level-down, and the final segment is `dns/a` corresponding to the record type).
 
-DNS record types each have different JSON structures that must be mapped to and from JSON, with only a subset supported at the moment. See [the guide to records](./guide_records.md) for more information.
+DNS record types each have different JSON structures that must be mapped to and from JSON, with only a subset supported at the moment. See [the guide to records](./guide_records.md) for more information about those and other common records.
 
 ## Setting up a static file server
 
