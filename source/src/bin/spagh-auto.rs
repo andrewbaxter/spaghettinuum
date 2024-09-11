@@ -17,14 +17,13 @@ use {
                 DebugFlag,
                 ENV_CONFIG,
             },
-            wire,
         },
         publishing::{
             system_publisher_url_pairs,
             Publisher,
             RemotePublisher,
         },
-        resolving::system_resolver_url_pairs,
+        resolving::default_resolver_url_pairs,
         self_tls::{
             self,
             RequestCertOptions,
@@ -38,6 +37,7 @@ use {
                 self,
                 add_ip_record,
                 add_ssh_host_key_records,
+                PublishArgs,
             },
             system_addr::resolve_global_ip,
         },
@@ -83,7 +83,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
     };
     let identity_signer =
         get_identity_signer(config.identity.clone()).await.stack_context(log, "Error loading identity")?;
-    let resolvers = system_resolver_url_pairs(&log)?;
+    let resolvers = default_resolver_url_pairs(&log)?;
     let publishers = system_publisher_url_pairs(&log)?;
 
     // Publish global ips, ssh certs
@@ -109,17 +109,11 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             match async {
                 ta_res!(());
                 publish_util::announce(log, &resolvers, &publishers, &identity_signer).await?;
-                publish_util::publish(
-                    log,
-                    &resolvers,
-                    &publishers,
-                    &identity_signer,
-                    wire::api::publish::v1::PublishRequestContent {
-                        clear_all: true,
-                        set: publish_data.clone(),
-                        ..Default::default()
-                    },
-                ).await?;
+                publish_util::publish(log, &resolvers, &publishers, &identity_signer, PublishArgs {
+                    clear_all: true,
+                    set: publish_data.clone(),
+                    ..Default::default()
+                }).await?;
                 return Ok(());
             }.await {
                 Ok(_) => break,

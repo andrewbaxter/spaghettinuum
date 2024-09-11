@@ -32,6 +32,7 @@ use {
                 DbTx,
             },
             identity_secret::IdentitySigner,
+            publish_util,
             signed::IdentSignatureMethods,
             tls_util::{
                 cert_der_hash,
@@ -84,6 +85,7 @@ use {
         collections::HashMap,
         net::SocketAddr,
         path::Path,
+        str::FromStr,
         sync::{
             Arc,
             Mutex,
@@ -419,7 +421,7 @@ impl Publisher {
     pub async fn modify_values(
         &self,
         identity: &Identity,
-        args: wire::api::publish::latest::PublishRequestContent,
+        args: publish_util::PublishArgs,
     ) -> Result<(), loga::Error> {
         self.db_pool.tx({
             let identity = identity.clone();
@@ -500,7 +502,7 @@ impl crate::publishing::Publisher for Publisher {
         &self,
         _log: &Log,
         identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-        content: wire::api::publish::latest::PublishRequestContent,
+        content: publish_util::PublishArgs,
     ) -> Result<(), loga::Error> {
         let identity = identity_signer.lock().unwrap().identity()?;
         self.modify_values(&identity, content).await?;
@@ -642,7 +644,12 @@ pub async fn build_api_endpoints_with_authorizer(
                     }
 
                     // Publish it
-                    state.publisher.modify_values(&req.identity, body).await?;
+                    state.publisher.modify_values(&req.identity, publish_util::PublishArgs {
+                        missing_ttl: body.missing_ttl,
+                        clear_all: body.clear_all,
+                        clear: body.clear,
+                        set: body.set.into_iter().collect(),
+                    }).await?;
                     return Ok(response_200());
                 }.await {
                     Ok(r) => {

@@ -24,7 +24,7 @@ use {
         publishing::system_publisher_url_pairs,
         resolving::{
             connect_publisher_node,
-            system_resolver_url_pairs,
+            default_resolver_url_pairs,
             UrlPair,
         },
         ta_res,
@@ -157,7 +157,7 @@ async fn api_list<
 }
 
 pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
-    let resolvers = system_resolver_url_pairs(log)?;
+    let resolvers = default_resolver_url_pairs(log)?;
     let publishers = system_publisher_url_pairs(log)?;
     match config {
         args::Admin::HealthDetail => {

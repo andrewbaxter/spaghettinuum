@@ -1,4 +1,10 @@
-use std::fmt::Display;
+use std::{
+    fmt::Display,
+    str::FromStr,
+};
+use aargvark::{
+    traits_impls::AargvarkFromStr,
+};
 use good_ormning_runtime::sqlite::{
     GoodOrmningCustomString,
 };
@@ -33,7 +39,9 @@ versioned!(
     Eq,
     Clone,
     Copy,
-    Hash;
+    Hash,
+    PartialOrd,
+    Ord;
     (V1, 1, v1::Identity)
 );
 
@@ -72,19 +80,31 @@ impl GoodOrmningCustomString<Identity> for Identity {
     }
 
     fn from_sql(value: String) -> Result<Identity, String> {
-        return Self::from_str(&value).map_err(|e| e.to_string());
+        return <Self as FromStr>::from_str(&value).map_err(|e| e.to_string());
     }
 }
 
-impl Identity {
-    pub fn from_str(data: &str) -> Result<Self, loga::Error> {
+impl FromStr for Identity {
+    type Err = loga::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         return Ok(
             Self::from_bytes(
                 &zbase32::decode_full_bytes_str(
-                    data,
+                    s,
                 ).map_err(|e| loga::err_with("Failed to decode zbase32 for identity", ea!(err = e)))?,
             )?,
         );
+    }
+}
+
+impl AargvarkFromStr for Identity {
+    fn from_str(s: &str) -> Result<Self, String> {
+        return <Identity as FromStr>::from_str(s).map_err(|e| e.to_string());
+    }
+
+    fn build_help_pattern(state: &mut aargvark::help::HelpState) -> aargvark::help::HelpPattern {
+        return String::build_help_pattern(state);
     }
 }
 

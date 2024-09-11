@@ -35,7 +35,6 @@ use {
             },
             wire::{
                 self,
-                api::publish::v1::PublishRequestContent,
                 resolve::DNS_DOT_SUFFIX,
             },
         },
@@ -49,6 +48,7 @@ use {
             },
             fs_util::write,
             identity_secret::IdentitySigner,
+            publish_util,
             time_util::ToInstant,
             tls_util::{
                 create_leaf_cert_der_local,
@@ -326,7 +326,7 @@ pub async fn htserve_certs(
         identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
         state: &stored::self_tls::latest::SelfTlsState,
     ) -> Result<(), loga::Error> {
-        publisher.publish(log, identity_signer, PublishRequestContent {
+        publisher.publish(log, identity_signer, publish_util::PublishArgs {
             set: {
                 let mut m = HashMap::new();
                 let mut certs = vec![state.current.pub_pem.clone()];

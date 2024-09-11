@@ -14,7 +14,7 @@ use {
     spaghettinuum::{
         resolving::{
             resolve_for_tls,
-            system_resolver_url_pairs,
+            default_resolver_url_pairs,
             ResolveTlsRes,
         },
         utils::tls_util::{
@@ -125,7 +125,7 @@ pub async fn run(log: &Log, config: args::Http) -> Result<(), loga::Error> {
     }
 
     // Resolve destination
-    let ResolveTlsRes { ips, certs: certs0 } = resolve_for_tls(log, &system_resolver_url_pairs(log)?, &host).await?;
+    let ResolveTlsRes { ips, certs: certs0 } = resolve_for_tls(log, &default_resolver_url_pairs(log)?, &host).await?;
     let mut certs = HashSet::new();
     for c in certs0 {
         match cert_pem_hash(&c) {

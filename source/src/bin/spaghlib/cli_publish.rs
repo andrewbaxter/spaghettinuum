@@ -21,13 +21,15 @@ use {
                     },
                 },
             },
-            wire,
         },
         publishing::system_publisher_url_pairs,
-        resolving::system_resolver_url_pairs,
+        resolving::default_resolver_url_pairs,
         utils::{
             identity_secret::get_identity_signer,
-            publish_util,
+            publish_util::{
+                self,
+                PublishArgs,
+            },
         },
     },
     std::{
@@ -144,7 +146,7 @@ pub mod args {
 }
 
 pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
-    let resolvers = system_resolver_url_pairs(log)?;
+    let resolvers = default_resolver_url_pairs(log)?;
     let publishers = system_publisher_url_pairs(log)?;
     match config {
         args::Publish::Announce(config) => {
@@ -159,21 +161,15 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(
-                log,
-                &resolvers,
-                &publishers,
-                &signer,
-                wire::api::publish::latest::PublishRequestContent {
-                    set: config
-                        .data
-                        .value
-                        .into_iter()
-                        .map(|(k, v)| (split_record_key(&k), stored::record::RecordValue::V1(v)))
-                        .collect(),
-                    ..Default::default()
-                },
-            ).await?;
+            publish_util::publish(log, &resolvers, &publishers, &signer, PublishArgs {
+                set: config
+                    .data
+                    .value
+                    .into_iter()
+                    .map(|(k, v)| (split_record_key(&k), stored::record::RecordValue::V1(v)))
+                    .collect(),
+                ..Default::default()
+            }).await?;
         },
         args::Publish::SetCommon(config) => {
             let path = config.path.into_iter().map(|x| x.0).collect::<Vec<_>>();
@@ -266,48 +262,30 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(
-                log,
-                &resolvers,
-                &publishers,
-                &signer,
-                wire::api::publish::latest::PublishRequestContent {
-                    set: kvs,
-                    ..Default::default()
-                },
-            ).await?;
+            publish_util::publish(log, &resolvers, &publishers, &signer, PublishArgs {
+                set: kvs,
+                ..Default::default()
+            }).await?;
         },
         args::Publish::Unset(config) => {
             let signer =
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(
-                log,
-                &resolvers,
-                &publishers,
-                &signer,
-                wire::api::publish::latest::PublishRequestContent {
-                    clear: config.keys.into_iter().map(|k| split_record_key(&k)).collect(),
-                    ..Default::default()
-                },
-            ).await?;
+            publish_util::publish(log, &resolvers, &publishers, &signer, PublishArgs {
+                clear: config.keys.into_iter().map(|k| split_record_key(&k)).collect(),
+                ..Default::default()
+            }).await?;
         },
         args::Publish::UnsetAll(config) => {
             let signer =
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(
-                log,
-                &resolvers,
-                &publishers,
-                &signer,
-                wire::api::publish::latest::PublishRequestContent {
-                    clear_all: true,
-                    ..Default::default()
-                },
-            ).await?;
+            publish_util::publish(log, &resolvers, &publishers, &signer, PublishArgs {
+                clear_all: true,
+                ..Default::default()
+            }).await?;
         },
     }
     return Ok(());

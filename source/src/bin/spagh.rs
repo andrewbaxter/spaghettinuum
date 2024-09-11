@@ -6,7 +6,7 @@ use {
         resolving::{
             connect_publisher_node,
             connect_resolver_node,
-            system_resolver_url_pairs,
+            default_resolver_url_pairs,
         },
     },
     std::collections::HashMap,
@@ -61,7 +61,7 @@ async fn main() {
         let log = &log;
         match args.command {
             args::Command::Ping(args) => {
-                let resolvers = system_resolver_url_pairs(log)?;
+                let resolvers = default_resolver_url_pairs(log)?;
                 if args.publisher.is_none() {
                     for pair in resolvers {
                         let pair = pair.join("health");

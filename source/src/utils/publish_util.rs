@@ -17,6 +17,7 @@ use {
                         RecordType,
                     },
                     record_utils::RecordKey,
+                    RecordValue,
                 },
                 shared::SerialAddr,
             },
@@ -40,7 +41,10 @@ use {
         ResultContext,
     },
     std::{
-        collections::HashMap,
+        collections::{
+            HashMap,
+            HashSet,
+        },
         path::PathBuf,
         sync::{
             Arc,
@@ -128,17 +132,35 @@ pub async fn announce(
     return Ok(());
 }
 
+#[derive(Default)]
+pub struct PublishArgs {
+    /// Update TTL for negative responses (in minutes). Defaults to 0 (don't cache
+    /// missing responses).
+    pub missing_ttl: Option<u32>,
+    /// Stop publishing all keys
+    pub clear_all: bool,
+    /// Stop publishing keys
+    pub clear: HashSet<RecordKey>,
+    /// Start publishing values for keys
+    pub set: HashMap<RecordKey, RecordValue>,
+}
+
 pub async fn publish(
     log: &Log,
     resolvers: &[UrlPair],
     publishers: &[UrlPair],
     identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-    args: wire::api::publish::latest::PublishRequestContent,
+    args: PublishArgs,
 ) -> Result<(), loga::Error> {
     let (identity, signed_request_content) =
         wire::api::publish::v1::JsonSignature::sign(
             &mut *identity_signer.lock().unwrap(),
-            args,
+            wire::api::publish::latest::PublishRequestContent {
+                missing_ttl: args.missing_ttl,
+                clear_all: args.clear_all,
+                clear: args.clear,
+                set: args.set.into_iter().collect(),
+            },
         ).stack_context(&log, "Failed to sign publish request content")?;
     let request = wire::api::publish::latest::PublishRequest {
         identity: identity,

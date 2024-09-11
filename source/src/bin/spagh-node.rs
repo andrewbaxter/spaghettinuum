@@ -42,7 +42,6 @@ use {
             },
             stored::shared::SerialAddr,
             wire::{
-                self,
                 api::publish::latest::InfoResponse,
                 node::latest::NodeInfo,
             },
@@ -80,6 +79,7 @@ use {
                 add_ip_record,
                 add_ssh_host_key_records,
                 generate_publish_announce,
+                PublishArgs,
             },
             system_addr::resolve_global_ip,
             ResultVisErr,
@@ -267,7 +267,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             add_ip_record(&mut publish_data, vec![], *ip);
         }
         add_ssh_host_key_records(&mut publish_data, vec![], publisher_config.ssh_host_keys).await?;
-        publisher1.modify_values(&identity, wire::api::publish::v1::PublishRequestContent {
+        publisher1.modify_values(&identity, PublishArgs {
             clear_all: true,
             set: publish_data,
             ..Default::default()

@@ -3,7 +3,7 @@ use {
         interface::stored::record,
         resolving::{
             resolve,
-            system_resolver_url_pairs,
+            default_resolver_url_pairs,
         },
     },
     flowcontrol::{
@@ -98,7 +98,7 @@ pub async fn ssh_connect(
 ) -> Result<(), loga::Error> {
     let hostkey_key = vec![record::ssh_record::KEY_SUFFIX_SSH_HOSTKEYS.to_string()];
     let (ips, mut additional_records) =
-        resolve(log, &system_resolver_url_pairs(log)?, &host, &[hostkey_key.clone()])
+        resolve(log, &default_resolver_url_pairs(log)?, &host, &[hostkey_key.clone()])
             .await
             .context("Error resolving host")?;
     let mut host_keys = vec![];

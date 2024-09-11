@@ -21,7 +21,10 @@ use {
         Deserialize,
         Serialize,
     },
-    std::net::IpAddr,
+    std::{
+        net::IpAddr,
+        str::FromStr,
+    },
 };
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
@@ -34,7 +37,7 @@ pub enum RecordRoot {
 
 pub type RecordKey = Vec<String>;
 const KEY_DELIM: char = '.';
-const KEY_ESCAPE: char = '/';
+const KEY_ESCAPE: char = '\\';
 
 pub fn join_record_key(key: &RecordKey) -> String {
     let mut total_len = 0usize;
@@ -102,6 +105,18 @@ pub fn split_record_key(key: &str) -> RecordKey {
         out.push(current);
     }
     return out;
+}
+
+#[cfg(test)]
+mod test_split_record_key {
+    use {
+        super::split_record_key,
+    };
+
+    #[test]
+    fn test_dns() {
+        assert_eq!(split_record_key("dns/aaaa"), vec!["dns/aaaa"]);
+    }
 }
 
 pub fn join_query_record_keys(keys: &[RecordKey]) -> String {

@@ -114,7 +114,7 @@ impl std::fmt::Display for UrlPair {
 }
 
 /// This returns a list of ip address/url pairs of resolvers on the system.
-pub fn system_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error> {
+pub fn default_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error> {
     let mut out = vec![];
     if let Ok(pairs) = env::var(ENV_RESOLVER_PAIRS) {
         for pair in pairs.split(',') {
@@ -173,6 +173,9 @@ pub fn system_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error>
                 });
             }
         }
+    }
+    if out.is_empty() {
+        return Err(loga::err("Couldn't identify any default resolvers by scanning the system"));
     }
     return Ok(out);
 }
@@ -282,16 +285,23 @@ pub async fn resolve(
     name: &str,
     additional_keys: &[RecordKey],
 ) -> Result<(htreq::Ips, HashMap<RecordKey, wire::resolve::v1::ResolveValue>), loga::Error> {
+    let log = log.fork(ea!(name = name));
+    if resolvers.is_empty() { }
     let (root, mut path) =
         split_dns_name(
-            hickory_resolver::Name::from_str(
-                name,
-            ).context_with("Error parsing name to resolve as DNS name", ea!(name = name))?,
+            hickory_resolver::Name::from_str(name).stack_context(&log, "Error parsing name to resolve as DNS name")?,
         )?;
     let mut root = match root {
         RecordRoot::S(i) => i,
         RecordRoot::Dns(name) => {
-            return Ok((htreq::resolve(&htreq::Host::Name(name.to_string())).await?, HashMap::new()));
+            return Ok(
+                (
+                    htreq::resolve(&htreq::Host::Name(name.to_string()))
+                        .await
+                        .stack_context(&log, "Error resolving normal DNS name")?,
+                    HashMap::new(),
+                ),
+            );
         },
         RecordRoot::Ip(ip) => {
             return Ok((htreq::Ips::from(ip), HashMap::new()));
@@ -322,7 +332,7 @@ pub async fn resolve(
             let mut errs = vec![];
             for resolver_url in resolvers {
                 match htreq::get_json::<wire::api::resolve::v1::ResolveResp>(
-                    log,
+                    &log,
                     &mut connect_resolver_node(&resolver_url).await?,
                     &resolver_url.url.join(&query_path),
                     &HashMap::new(),
@@ -332,11 +342,13 @@ pub async fn resolve(
                         break 'done r;
                     },
                     Err(e) => {
-                        errs.push(e.context_with("Error reaching resolver", ea!(resolver = resolver_url)));
+                        errs.push(
+                            e.stack_context_with(&log, "Error reaching resolver", ea!(resolver = resolver_url)),
+                        );
                     },
                 }
             }
-            return Err(loga::agg_err("Error making requests to any resolver", errs));
+            return Err(log.agg_err("Error making requests to any resolver", errs));
         }.into_iter().collect::<ResolveKeyValues>();
 
         // Check if delegated, repeat
@@ -374,7 +386,8 @@ pub async fn resolve(
                                         dns_path.push(
                                             punycode::encode_str(
                                                 e,
-                                            ).context_with(
+                                            ).stack_context_with(
+                                                &log,
                                                 "Delegation to DNS root produces invalid DNS name from segment",
                                                 ea!(segment = e),
                                             )?,
@@ -437,8 +450,9 @@ pub async fn resolve(
                     Err(e) => {
                         log.log_err(
                             loga::DEBUG,
-                            e.context(
+                            e.context_with(
                                 "Couldn't parse A record into expected JSON format, treating as no IPv6 addresses",
+                                ea!(name = name),
                             ),
                         );
                         break vec![];
@@ -451,6 +465,9 @@ pub async fn resolve(
                 }
             },
         };
+        if ips.ipv4s.is_empty() && ips.ipv6s.is_empty() {
+            return Err(log.err("Couldn't resolve name to any IP addresses"));
+        }
         return Ok((ips, resolved.into_iter().filter_map(|(mut k, v)| {
             if !k.starts_with(&path) {
                 return None;

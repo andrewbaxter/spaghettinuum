@@ -9,7 +9,7 @@ use {
     spaghettinuum::{
         resolving::{
             connect_resolver_node,
-            system_resolver_url_pairs,
+            default_resolver_url_pairs,
         },
         service::resolver::API_ROUTE_RESOLVE,
         ta_res,
@@ -33,7 +33,7 @@ pub mod args {
 
 pub async fn run_get(log: &Log, config: args::Query) -> Result<(), loga::Error> {
     let mut errs = vec![];
-    for pair in system_resolver_url_pairs(log)? {
+    for pair in default_resolver_url_pairs(log)? {
         match async {
             ta_res!(());
             let pair =

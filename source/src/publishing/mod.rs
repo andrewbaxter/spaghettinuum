@@ -2,10 +2,9 @@ use {
     crate::{
         interface::{
             config::ENV_PUBLISHER_URLS,
-            wire,
         },
         resolving::{
-            system_resolver_url_pairs,
+            default_resolver_url_pairs,
             UrlPair,
         },
         utils::{
@@ -62,7 +61,7 @@ pub fn system_publisher_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
         }
         return Ok(publishers);
     };
-    return Ok(system_resolver_url_pairs(log)?);
+    return Ok(default_resolver_url_pairs(log)?);
 }
 
 #[async_trait]
@@ -71,7 +70,7 @@ pub trait Publisher: Send + Sync {
         &self,
         log: &Log,
         identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-        content: wire::api::publish::latest::PublishRequestContent,
+        content: publish_util::PublishArgs,
     ) -> Result<(), loga::Error>;
 }
 
@@ -86,7 +85,7 @@ impl Publisher for RemotePublisher {
         &self,
         log: &Log,
         identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-        content: wire::api::publish::latest::PublishRequestContent,
+        content: publish_util::PublishArgs,
     ) -> Result<(), loga::Error> {
         publish_util::publish(log, &self.resolver_urls, &self.publisher_urls, identity_signer, content).await?;
         return Ok(());

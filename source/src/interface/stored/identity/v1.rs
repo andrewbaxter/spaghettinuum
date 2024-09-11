@@ -57,6 +57,18 @@ impl Debug for Ed25519Identity {
     }
 }
 
+impl PartialOrd for Ed25519Identity {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        return self.0.as_bytes().partial_cmp(&other.0.as_bytes());
+    }
+}
+
+impl Ord for Ed25519Identity {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        return self.0.as_bytes().cmp(other.0.as_bytes());
+    }
+}
+
 impl Ed25519Identity {
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), &'static str> {
         let sig_obj = match Signature::from_slice(signature) {
@@ -76,7 +88,7 @@ impl Ed25519Identity {
 }
 
 // Aggregates
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 pub enum Identity {
     Ed25519(Ed25519Identity),
 }

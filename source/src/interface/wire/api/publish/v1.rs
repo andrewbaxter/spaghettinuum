@@ -1,6 +1,5 @@
 use std::{
     collections::{
-        HashMap,
         HashSet,
     },
     marker::PhantomData,
@@ -76,7 +75,7 @@ pub struct PublishRequestContent {
     /// Stop publishing keys
     pub clear: HashSet<RecordKey>,
     /// Start publishing values for keys
-    pub set: HashMap<RecordKey, RecordValue>,
+    pub set: Vec<(RecordKey, RecordValue)>,
 }
 
 #[derive(Serialize, Deserialize)]
