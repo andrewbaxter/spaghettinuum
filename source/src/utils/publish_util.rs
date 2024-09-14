@@ -250,7 +250,7 @@ pub async fn add_ssh_host_key_records(
     let mut key = head;
     key.push(stored::record::ssh_record::KEY_SUFFIX_SSH_HOSTKEYS.to_string());
     publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
-        ttl: 60,
+        ttl: 3,
         data: Some(
             serde_json::to_value(
                 &stored::record::ssh_record::SshHostKeys::latest(
