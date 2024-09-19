@@ -102,9 +102,9 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         }
         for a in global_addrs {
             let ip = resolve_global_ip(log, a).await?;
-            add_ip_record(&mut publish_data, vec![], ip);
+            add_ip_record(&mut publish_data, vec![], 5, ip);
         }
-        add_ssh_host_key_records(&mut publish_data, vec![], config.ssh_host_keys).await?;
+        add_ssh_host_key_records(&mut publish_data, vec![], 1, config.ssh_host_keys).await?;
         loop {
             match async {
                 ta_res!(());

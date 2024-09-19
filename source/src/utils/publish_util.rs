@@ -191,6 +191,7 @@ pub async fn publish(
 pub fn add_ip_record(
     publish_data: &mut HashMap<RecordKey, stored::record::RecordValue>,
     head: Vec<String>,
+    ttl: i32,
     ip: std::net::IpAddr,
 ) {
     let key;
@@ -213,7 +214,7 @@ pub fn add_ip_record(
     }
     let key = build_dns_key(head, key);
     publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
-        ttl: 60,
+        ttl: ttl,
         data: Some(data),
     }));
 }
@@ -224,6 +225,7 @@ pub fn add_ip_record(
 pub async fn add_ssh_host_key_records(
     publish_data: &mut HashMap<RecordKey, stored::record::RecordValue>,
     head: RecordKey,
+    ttl: i32,
     paths: Option<Vec<PathBuf>>,
 ) -> Result<(), loga::Error> {
     let paths = paths.unwrap_or_else(|| {
@@ -250,7 +252,7 @@ pub async fn add_ssh_host_key_records(
     let mut key = head;
     key.push(stored::record::ssh_record::KEY_SUFFIX_SSH_HOSTKEYS.to_string());
     publish_data.insert(key, stored::record::RecordValue::latest(stored::record::latest::RecordValue {
-        ttl: 3,
+        ttl: ttl,
         data: Some(
             serde_json::to_value(
                 &stored::record::ssh_record::SshHostKeys::latest(
