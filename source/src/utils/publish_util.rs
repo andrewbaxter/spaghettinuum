@@ -132,7 +132,7 @@ pub async fn announce(
     return Ok(());
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct PublishArgs {
     /// Update TTL for negative responses (in minutes). Defaults to 0 (don't cache
     /// missing responses).
