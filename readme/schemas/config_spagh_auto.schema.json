@@ -61,26 +61,21 @@
     "ContentConfig": {
       "type": "object",
       "required": [
-        "bind_addrs",
-        "mode"
+        "items"
       ],
       "properties": {
-        "bind_addrs": {
-          "description": "Interface IPs and ports to bind to. These always serve HTTPS, regardless of the port. For HTTP traffic you can use some other static file server.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/StrSocketAddr"
-          }
-        },
-        "mode": {
-          "description": "What content to serve.",
-          "allOf": [
-            {
+        "items": {
+          "description": "Mapping of interface IPs and ports to bind to to subpaths to content to serve.\n\nRegardless of port this always serves HTTPS. For HTTP traffic you can use some other static file server.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
               "$ref": "#/definitions/ServeMode"
             }
-          ]
+          }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "GlobalAddrConfig": {
       "oneOf": [
@@ -215,7 +210,8 @@
                   "description": "Where files to serve are.",
                   "type": "string"
                 }
-              }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -236,16 +232,13 @@
                   "description": "Base url of upstream HTTP server. The request path is appended.",
                   "type": "string"
                 }
-              }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
         }
       ]
-    },
-    "StrSocketAddr": {
-      "description": "An ip address or domain (ex: \"localhost\") which resolves to an address",
-      "type": "string"
     }
   }
 }
