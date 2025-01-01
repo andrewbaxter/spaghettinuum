@@ -7,7 +7,6 @@ use {
         GlobalAddrConfig,
         IpVer,
     },
-    chrono::Duration,
     http_body_util::Full,
     htwrap::htreq::{
         default_tls,
@@ -31,6 +30,7 @@ use {
     std::{
         net::IpAddr,
         str::FromStr,
+        time::Duration,
     },
     tokio::time::sleep,
 };
@@ -143,7 +143,7 @@ pub async fn remote_resolve_global_ip(
             log,
             &mut conn,
             1024,
-            Duration::try_seconds(10).unwrap(),
+            Duration::from_secs(10),
             Request::builder()
                 .uri(lookup)
                 .header(hyper::header::HOST, lookup_host.to_string())
@@ -169,7 +169,7 @@ pub async fn resolve_global_ip(log: &Log, config: GlobalAddrConfig) -> Result<Ip
                     break res;
                 }
                 log.log_with(loga::INFO, "Waiting for public ip address on interface", ea!());
-                sleep(Duration::try_seconds(10).unwrap().to_std().unwrap()).await;
+                sleep(Duration::from_secs(10)).await;
             };
             log.log_with(loga::INFO, "Identified public ip address via interface", ea!(addr = res));
             res
@@ -185,7 +185,7 @@ pub async fn resolve_global_ip(log: &Log, config: GlobalAddrConfig) -> Result<Ip
                         );
                     },
                 }
-                sleep(Duration::try_seconds(10).unwrap().to_std().unwrap()).await;
+                sleep(Duration::from_secs(10)).await;
             };
             log.log_with(loga::INFO, "Identified public ip address via external lookup", ea!(addr = res));
             res

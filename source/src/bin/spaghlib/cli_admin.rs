@@ -4,7 +4,7 @@ use {
             self,
             Conn,
         },
-        UriJoin,
+        url::UriJoin,
     },
     loga::{
         ea,

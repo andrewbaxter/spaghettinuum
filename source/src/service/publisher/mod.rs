@@ -60,14 +60,18 @@ use {
     http_body_util::BodyExt,
     htwrap::htserve::{
         self,
-        check_auth_token_hash,
-        response_200,
-        response_200_json,
-        response_400,
-        response_401,
-        response_404,
-        response_503,
-        AuthTokenHash,
+        responses::{
+            response_200,
+            response_200_json,
+            response_400,
+            response_401,
+            response_404,
+            response_503,
+        },
+        auth::{
+            check_auth_token_hash,
+            AuthTokenHash,
+        },
     },
     loga::{
         ea,
@@ -192,41 +196,52 @@ impl Publisher {
                 let handler = {
                     let log = log.clone();
                     let publisher = publisher.clone();
-                    Arc::new(htwrap::handler!((publisher: Arc < Publisher >, log: Log)(r -> htserve:: Body) {
-                        match async {
-                            ta_vis_res!(Response < htserve:: Body >);
-                            log.log_with(loga::DEBUG, "Recieved request", ea!(path = r.head.uri));
-                            let req_body =
-                                serde_json::from_slice::<wire::resolve::ResolveRequest>(
-                                    &r.body.collect().await.context("Error reading body").err_external()?.to_bytes(),
-                                )
-                                    .context("Request doesn't match schema")
-                                    .err_external()?;
-                            match req_body {
-                                wire::resolve::ResolveRequest::V1(req_body) => {
-                                    let values =
-                                        publisher.get_values(&req_body.ident, req_body.keys).await.err_internal()?;
-                                    return Ok(
-                                        response_200_json(
-                                            values
-                                                .into_iter()
-                                                .map(|(k, v)| (k, v))
-                                                .collect::<wire::resolve::v1::ResolveResp>(),
-                                        ),
-                                    );
+                    Arc::new(
+                        htwrap::handler!((publisher: Arc < Publisher >, log: Log)(r -> htserve:: responses:: Body) {
+                            match async {
+                                ta_vis_res!(Response < htserve:: responses:: Body >);
+                                log.log_with(loga::DEBUG, "Recieved request", ea!(path = r.head.uri));
+                                let req_body =
+                                    serde_json::from_slice::<wire::resolve::ResolveRequest>(
+                                        &r
+                                            .body
+                                            .collect()
+                                            .await
+                                            .context("Error reading body")
+                                            .err_external()?
+                                            .to_bytes(),
+                                    )
+                                        .context("Request doesn't match schema")
+                                        .err_external()?;
+                                match req_body {
+                                    wire::resolve::ResolveRequest::V1(req_body) => {
+                                        let values =
+                                            publisher
+                                                .get_values(&req_body.ident, req_body.keys)
+                                                .await
+                                                .err_internal()?;
+                                        return Ok(
+                                            response_200_json(
+                                                values
+                                                    .into_iter()
+                                                    .map(|(k, v)| (k, v))
+                                                    .collect::<wire::resolve::v1::ResolveResp>(),
+                                            ),
+                                        );
+                                    },
+                                }
+                            }.await {
+                                Ok(r) => return r,
+                                Err(VisErr::Internal(e)) => {
+                                    log.log_err(loga::WARN, e.context("Error processing request"));
+                                    return response_503();
+                                },
+                                Err(VisErr::External(e)) => {
+                                    return response_400(e);
                                 },
                             }
-                        }.await {
-                            Ok(r) => return r,
-                            Err(VisErr::Internal(e)) => {
-                                log.log_err(loga::WARN, e.context("Error processing request"));
-                                return response_503();
-                            },
-                            Err(VisErr::External(e)) => {
-                                return response_400(e);
-                            },
-                        }
-                    }))
+                        }),
+                    )
                 };
                 let tls_acceptor = {
                     let mut server_config =
@@ -247,7 +262,7 @@ impl Publisher {
                     async move {
                         match async {
                             ta_res!(());
-                            htserve::root_handle_https(&log, tls_acceptor, handler, stream?).await?;
+                            htserve::handler::root_handle_https(&log, tls_acceptor, handler, stream?).await?;
                             return Ok(());
                         }.await {
                             Ok(_) => { },
@@ -521,7 +536,7 @@ pub async fn build_api_endpoints_with_authorizer(
     log: &Log,
     publisher: &Arc<Publisher>,
     authorizer: Arc<dyn PublisherAuthorizer>,
-) -> Result<htserve::PathRouter<htserve::Body>, loga::Error> {
+) -> Result<htserve::handler::PathRouter<htserve::responses::Body>, loga::Error> {
     struct State {
         log: Log,
         publisher: Arc<Publisher>,
@@ -533,14 +548,14 @@ pub async fn build_api_endpoints_with_authorizer(
         publisher: publisher.clone(),
         authorizer: authorizer,
     });
-    let mut routes = htserve::PathRouter::default();
+    let mut routes = htserve::handler::PathRouter::default();
     routes.insert("/v1", {
-        let mut routes = htserve::PathRouter::default();
+        let mut routes = htserve::handler::PathRouter::default();
         routes.insert("/announce", {
             let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: responses:: Body) {
                 match async {
-                    ta_res!(Response < htserve:: Body >);
+                    ta_res!(Response < htserve:: responses:: Body >);
 
                     // Params
                     let req =
@@ -578,12 +593,12 @@ pub async fn build_api_endpoints_with_authorizer(
                     },
                 }
             }))
-        });
+        }).unwrap();
         routes.insert("/clear_identity", {
             let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: responses:: Body) {
                 match async {
-                    ta_res!(Response < htserve:: Body >);
+                    ta_res!(Response < htserve:: responses:: Body >);
 
                     // Params
                     let req =
@@ -617,12 +632,12 @@ pub async fn build_api_endpoints_with_authorizer(
                     },
                 }
             }))
-        });
+        }).unwrap();
         routes.insert("/publish", {
             let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: responses:: Body) {
                 match async {
-                    ta_res!(Response < htserve:: Body >);
+                    ta_res!(Response < htserve:: responses:: Body >);
 
                     // Params
                     let req =
@@ -661,18 +676,18 @@ pub async fn build_api_endpoints_with_authorizer(
                     },
                 }
             }))
-        });
+        }).unwrap();
         routes.insert("/info", {
             let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc < State >)(_r -> htserve:: Body) {
+            Box::new(htwrap::handler!((state: Arc < State >)(_r -> htserve:: responses:: Body) {
                 return response_200_json(wire::api::publish::v1::InfoResponse {
                     advertise_addr: state.publisher.advertise_addr,
                     cert_pub_hash: state.publisher.cert_pub_hash.clone(),
                 });
             }))
-        });
+        }).unwrap();
         Box::new(routes)
-    });
+    }).unwrap();
     return Ok(routes);
 }
 
@@ -681,7 +696,7 @@ pub async fn build_api_endpoints(
     publisher: &Arc<Publisher>,
     admin_token: &AuthTokenHash,
     persist_dir: &Path,
-) -> Result<htserve::PathRouter<htserve::Body>, loga::Error> {
+) -> Result<htserve::handler::PathRouter<htserve::responses::Body>, loga::Error> {
     let db_pool =
         setup_db(&persist_dir.join("publisher_admin.sqlite3"), admin_db::migrate)
             .await
@@ -754,180 +769,188 @@ pub async fn build_api_endpoints(
     let mut routes = build_api_endpoints_with_authorizer(log, publisher, state.clone()).await?;
     let admin_token = admin_token.clone();
     routes.insert("/admin", {
-        let mut routes = htserve::PathRouter::default();
+        let mut routes = htserve::handler::PathRouter::default();
         routes.insert("/allowed_identities", {
             let state = state.clone();
             let admin_token = admin_token.clone();
-            Box::new(htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: Body) {
-                match async {
-                    ta_vis_res!(Response < htserve:: Body >);
-                    if !check_auth_token_hash(
-                        &admin_token,
-                        &htserve::get_auth_token(&r.head.headers).err_external()?,
-                    ) {
-                        return Ok(response_401());
-                    }
-                    match r.head.method {
-                        Method::GET => {
-                            #[derive(Debug, Deserialize)]
-                            struct Params {
-                                after: Option<String>,
-                            }
+            Box::new(
+                htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
+                    match async {
+                        ta_vis_res!(Response < htserve:: responses:: Body >);
+                        if !check_auth_token_hash(
+                            &admin_token,
+                            &htserve::auth::get_auth_token(&r.head.headers).err_external()?,
+                        ) {
+                            return Ok(response_401());
+                        }
+                        match r.head.method {
+                            Method::GET => {
+                                #[derive(Debug, Deserialize)]
+                                struct Params {
+                                    after: Option<String>,
+                                }
 
-                            let query = match serde_urlencoded::from_str::<Params>(&r.query) {
-                                Ok(q) => q,
-                                Err(e) => {
-                                    return Ok(response_400(format!("Invalid query parameters: {}", e)));
-                                },
-                            };
-                            let after = match &query.after {
-                                Some(i) => {
-                                    Some(Identity::from_str(i).err_external()?)
-                                },
-                                None => None,
-                            };
-                            return Ok(
-                                response_200_json(
-                                    state.list_allowed_identities(after.as_ref()).await.err_internal()?,
-                                ),
-                            );
+                                let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                                    Ok(q) => q,
+                                    Err(e) => {
+                                        return Ok(response_400(format!("Invalid query parameters: {}", e)));
+                                    },
+                                };
+                                let after = match &query.after {
+                                    Some(i) => {
+                                        Some(Identity::from_str(i).err_external()?)
+                                    },
+                                    None => None,
+                                };
+                                return Ok(
+                                    response_200_json(
+                                        state.list_allowed_identities(after.as_ref()).await.err_internal()?,
+                                    ),
+                                );
+                            },
+                            Method::POST => {
+                                let Some(identity) = r.subpath.strip_prefix("/") else {
+                                    return Ok(response_400("Missing identity in path"));
+                                };
+                                let identity = Identity::from_str(&identity).err_external()?;
+                                let body =
+                                    serde_json::from_slice::<AdminAllowIdentityBody>(
+                                        &r.body.collect().await.err_external()?.to_bytes(),
+                                    )
+                                        .context("Bad request body")
+                                        .err_external()?;
+                                return Ok(
+                                    response_200_json(
+                                        state.allow_identity(&identity, body.group).await.err_internal()?,
+                                    ),
+                                );
+                            },
+                            Method::DELETE => {
+                                let Some(identity) = r.subpath.strip_prefix("/") else {
+                                    return Ok(response_400("Missing identity in path"));
+                                };
+                                let identity = Identity::from_str(&identity).err_external()?;
+                                state.disallow_identity(&identity).await.err_internal()?;
+                                state.publisher.clear_identity(&identity).await.err_internal()?;
+                                return Ok(response_200());
+                            },
+                            _ => return Ok(response_404()),
+                        }
+                    }.await {
+                        Ok(d) => {
+                            return d;
                         },
-                        Method::POST => {
-                            let Some(identity) = r.subpath.strip_prefix("/") else {
-                                return Ok(response_400("Missing identity in path"));
-                            };
-                            let identity = Identity::from_str(&identity).err_external()?;
-                            let body =
-                                serde_json::from_slice::<AdminAllowIdentityBody>(
-                                    &r.body.collect().await.err_external()?.to_bytes(),
-                                )
-                                    .context("Bad request body")
-                                    .err_external()?;
-                            return Ok(
-                                response_200_json(state.allow_identity(&identity, body.group).await.err_internal()?),
-                            );
+                        Err(e) => match e {
+                            VisErr::Internal(e) => {
+                                state.log.log_err(loga::WARN, e.context("Error getting published identities"));
+                                return response_503();
+                            },
+                            VisErr::External(e) => {
+                                return response_400(e);
+                            },
                         },
-                        Method::DELETE => {
-                            let Some(identity) = r.subpath.strip_prefix("/") else {
-                                return Ok(response_400("Missing identity in path"));
-                            };
-                            let identity = Identity::from_str(&identity).err_external()?;
-                            state.disallow_identity(&identity).await.err_internal()?;
-                            state.publisher.clear_identity(&identity).await.err_internal()?;
-                            return Ok(response_200());
-                        },
-                        _ => return Ok(response_404()),
                     }
-                }.await {
-                    Ok(d) => {
-                        return d;
-                    },
-                    Err(e) => match e {
-                        VisErr::Internal(e) => {
-                            state.log.log_err(loga::WARN, e.context("Error getting published identities"));
-                            return response_503();
-                        },
-                        VisErr::External(e) => {
-                            return response_400(e);
-                        },
-                    },
-                }
-            }))
-        });
+                }),
+            )
+        }).unwrap();
         routes.insert("/keys", {
             let state = state.clone();
             let admin_token = admin_token.clone();
-            Box::new(htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: Body) {
-                match async {
-                    ta_res!(Response < htserve:: Body >);
-                    if !check_auth_token_hash(&admin_token, &htserve::get_auth_token(&r.head.headers)?) {
-                        return Ok(response_401());
-                    }
-                    let Some(identity) = r.subpath.strip_prefix("/") else {
-                        return Ok(response_400("Missing identity in path"));
-                    };
-                    let identity = Identity::from_str(&identity)?;
+            Box::new(
+                htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
+                    match async {
+                        ta_res!(Response < htserve:: responses:: Body >);
+                        if !check_auth_token_hash(&admin_token, &htserve::auth::get_auth_token(&r.head.headers)?) {
+                            return Ok(response_401());
+                        }
+                        let Some(identity) = r.subpath.strip_prefix("/") else {
+                            return Ok(response_400("Missing identity in path"));
+                        };
+                        let identity = Identity::from_str(&identity)?;
 
-                    #[derive(Debug, Deserialize)]
-                    struct Params {
-                        after: Option<String>,
-                    }
+                        #[derive(Debug, Deserialize)]
+                        struct Params {
+                            after: Option<String>,
+                        }
 
-                    let query = match serde_urlencoded::from_str::<Params>(&r.query) {
-                        Ok(q) => q,
-                        Err(e) => {
-                            return Ok(response_400(format!("Invalid query parameters: {}", e)));
+                        let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                            Ok(q) => q,
+                            Err(e) => {
+                                return Ok(response_400(format!("Invalid query parameters: {}", e)));
+                            },
+                        };
+
+                        // Respond
+                        return Ok(response_200_json(state.publisher.list_value_keys(&identity, query.after).await?));
+                    }.await {
+                        Ok(d) => {
+                            return d;
                         },
-                    };
-
-                    // Respond
-                    return Ok(response_200_json(state.publisher.list_value_keys(&identity, query.after).await?));
-                }.await {
-                    Ok(d) => {
-                        return d;
-                    },
-                    Err(e) => {
-                        state
-                            .publisher
-                            .log
-                            .log_err(loga::WARN, e.context("Error getting published keys for identity"));
-                        return response_503();
-                    },
-                }
-            }))
-        });
+                        Err(e) => {
+                            state
+                                .publisher
+                                .log
+                                .log_err(loga::WARN, e.context("Error getting published keys for identity"));
+                            return response_503();
+                        },
+                    }
+                }),
+            )
+        }).unwrap();
         routes.insert("/announcements", {
             let state = state.clone();
             let admin_token = admin_token.clone();
-            Box::new(htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: Body) {
-                match async {
-                    ta_res!(Response < htserve:: Body >);
-                    if !check_auth_token_hash(&admin_token, &htserve::get_auth_token(&r.head.headers)?) {
-                        return Ok(response_401());
-                    }
+            Box::new(
+                htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
+                    match async {
+                        ta_res!(Response < htserve:: responses:: Body >);
+                        if !check_auth_token_hash(&admin_token, &htserve::auth::get_auth_token(&r.head.headers)?) {
+                            return Ok(response_401());
+                        }
 
-                    #[derive(Debug, Deserialize)]
-                    struct Params {
-                        after: Option<String>,
-                    }
+                        #[derive(Debug, Deserialize)]
+                        struct Params {
+                            after: Option<String>,
+                        }
 
-                    let query = match serde_urlencoded::from_str::<Params>(&r.query) {
-                        Ok(q) => q,
+                        let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                            Ok(q) => q,
+                            Err(e) => {
+                                return Ok(response_400(format!("Invalid query parameters: {}", e)));
+                            },
+                        };
+                        let after = match query.after {
+                            Some(i) => {
+                                Some(Identity::from_str(&i)?)
+                            },
+                            None => None,
+                        };
+
+                        // Respond
+                        return Ok(
+                            response_200_json(
+                                state
+                                    .publisher
+                                    .list_announcements(after.as_ref())
+                                    .await?
+                                    .into_iter()
+                                    .map(|e| e.0)
+                                    .collect::<Vec<_>>(),
+                            ),
+                        );
+                    }.await {
+                        Ok(d) => {
+                            return d;
+                        },
                         Err(e) => {
-                            return Ok(response_400(format!("Invalid query parameters: {}", e)));
+                            state.log.log_err(loga::WARN, e.context("Error getting published identities"));
+                            return response_503();
                         },
-                    };
-                    let after = match query.after {
-                        Some(i) => {
-                            Some(Identity::from_str(&i)?)
-                        },
-                        None => None,
-                    };
-
-                    // Respond
-                    return Ok(
-                        response_200_json(
-                            state
-                                .publisher
-                                .list_announcements(after.as_ref())
-                                .await?
-                                .into_iter()
-                                .map(|e| e.0)
-                                .collect::<Vec<_>>(),
-                        ),
-                    );
-                }.await {
-                    Ok(d) => {
-                        return d;
-                    },
-                    Err(e) => {
-                        state.log.log_err(loga::WARN, e.context("Error getting published identities"));
-                        return response_503();
-                    },
-                }
-            }))
-        });
+                    }
+                }),
+            )
+        }).unwrap();
         Box::new(routes)
-    });
+    }).unwrap();
     return Ok(routes);
 }

@@ -43,9 +43,11 @@ use {
         },
         htserve::{
             self,
-            response_200_json,
-            response_400,
-            response_503,
+            responses::{
+                response_200_json,
+                response_400,
+                response_503,
+            },
         },
     },
     hyper::{
@@ -448,7 +450,7 @@ pub const API_ROUTE_RESOLVE: &str = "resolve";
 
 /// Launch a publisher into the task manager and return the API endpoints for
 /// attaching to the user-facing HTTP servers.
-pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter<htserve::Body> {
+pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::handler::PathRouter<htserve::responses::Body> {
     struct Inner {
         resolver: Resolver,
         log: Log,
@@ -458,8 +460,8 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter
         resolver: resolver.clone(),
         log: log,
     });
-    let mut r = htserve::PathRouter::default();
-    r.insert("/v1", Box::new(htwrap::handler!((state: Arc < Inner >)(args -> htserve:: Body) {
+    let mut r = htserve::handler::PathRouter::default();
+    r.insert("/v1", Box::new(htwrap::handler!((state: Arc < Inner >)(args -> htserve:: responses:: Body) {
         match async {
             ta_vis_res!(wire::api::resolve::v1::ResolveResp);
             let ident_src =
@@ -487,6 +489,6 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::PathRouter
                 return response_503();
             },
         }
-    })));
+    }))).unwrap();
     return r;
 }

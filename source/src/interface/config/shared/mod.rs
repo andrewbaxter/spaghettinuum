@@ -1,6 +1,6 @@
 use {
     aargvark::Aargvark,
-    htwrap::IpUrl,
+    htwrap::url::IpUrl,
     loga::{
         ea,
         ResultContext,
@@ -18,6 +18,7 @@ use {
         Serialize,
     },
     std::{
+        hash::Hash,
         net::{
             IpAddr,
             Ipv4Addr,
@@ -40,6 +41,20 @@ use {
 /// keeping the original name when being displayed.
 #[derive(Clone)]
 pub struct StrSocketAddr(pub String, Arc<Mutex<Option<SocketAddr>>>);
+
+impl Eq for StrSocketAddr { }
+
+impl PartialEq for StrSocketAddr {
+    fn eq(&self, other: &Self) -> bool {
+        return self.0 == other.0;
+    }
+}
+
+impl Hash for StrSocketAddr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
 
 impl StrSocketAddr {
     /// Only for serialization, dummy socketaddr with no lookup

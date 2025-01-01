@@ -2,12 +2,9 @@ use {
     crate::{
         cap_block,
         cap_fn,
-        interface::config::{
-            content::{
-                ContentConfig,
-                ServeMode,
-            },
-            shared::StrSocketAddr,
+        interface::config::content::{
+            ContentConfig,
+            ServeMode,
         },
         ta_res,
         utils::fs_util::maybe_read,
@@ -21,15 +18,16 @@ use {
         Response,
         Uri,
     },
-    http_body::Body,
     http_body_util::{
         combinators::BoxBody,
         BodyExt,
-        Full,
     },
     htwrap::{
         htreq,
-        htserve,
+        htserve::{
+            self,
+            handler::Handler,
+        },
     },
     hyper::body::Bytes,
     loga::{
@@ -44,6 +42,7 @@ use {
         ServerConfig,
     },
     std::{
+        collections::BTreeMap,
         path::PathBuf,
         str::FromStr,
         sync::Arc,
@@ -63,10 +62,10 @@ struct StaticFilesHandler {
 }
 
 #[async_trait]
-impl htserve::Handler<Full<Bytes>> for StaticFilesHandler {
-    async fn handle(&self, args: htserve::HandlerArgs<'_>) -> Response<Full<Bytes>> {
+impl htserve::handler::Handler<BoxBody<Bytes, RespErr>> for StaticFilesHandler {
+    async fn handle(&self, args: htserve::handler::HandlerArgs<'_>) -> Response<BoxBody<Bytes, RespErr>> {
         match async {
-            ta_res!(Response < Full < Bytes >>);
+            ta_res!(Response < BoxBody < Bytes, RespErr >>);
             shed!{
                 if args.head.method != Method::GET {
                     break;
@@ -86,16 +85,32 @@ impl htserve::Handler<Full<Bytes>> for StaticFilesHandler {
                     Response::builder()
                         .status(200)
                         .header("Content-type", mime_guess::from_path(&path).first_or_text_plain().to_string())
-                        .body(http_body_util::Full::new(Bytes::from(body)))
+                        .body(
+                            BoxBody::new(
+                                http_body_util::Full::new(Bytes::from(body)).map_err(|e| RespErr(e.to_string())),
+                            ),
+                        )
                         .unwrap(),
                 );
             };
-            return Ok(Response::builder().status(404).body(http_body_util::Full::new(Bytes::new())).unwrap());
+            return Ok(
+                Response::builder()
+                    .status(404)
+                    .body(
+                        BoxBody::new(http_body_util::Full::new(Bytes::new()).map_err(|e| RespErr(e.to_string()))),
+                    )
+                    .unwrap(),
+            );
         }.await {
             Ok(r) => r,
             Err(e) => {
                 self.log.log_err(loga::WARN, e.context_with("Error serving response", ea!(url = args.head.uri)));
-                return Response::builder().status(503).body(http_body_util::Full::new(Bytes::new())).unwrap();
+                return Response::builder()
+                    .status(503)
+                    .body(
+                        BoxBody::new(http_body_util::Full::new(Bytes::new()).map_err(|e| RespErr(e.to_string()))),
+                    )
+                    .unwrap();
             },
         }
     }
@@ -107,8 +122,8 @@ struct ReverseProxyHandler {
 }
 
 #[async_trait]
-impl htserve::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler {
-    async fn handle(&self, args: htserve::HandlerArgs<'_>) -> Response<BoxBody<Bytes, RespErr>> {
+impl htserve::handler::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler {
+    async fn handle(&self, args: htserve::handler::HandlerArgs<'_>) -> Response<BoxBody<Bytes, RespErr>> {
         match async {
             ta_res!(Response < BoxBody < Bytes, RespErr >>);
             let (mut sender, conn) = htreq::connect(&self.upstream_url).await?.inner.unwrap();
@@ -133,31 +148,19 @@ impl htserve::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler {
                         );
                 }
                 req_parts.uri = Uri::from_parts(uri_parts).unwrap();
-                let mut forwarded_for = vec![];
-                const HEADER_FORWARDED_FOR: &'static str = "X-Forwarded-For";
-                shed!{
-                    let Some(old_forwarded_for) = req_parts.headers.get(HEADER_FORWARDED_FOR) else {
-                        break;
-                    };
-                    let old_forwarded_for = match old_forwarded_for.to_str() {
-                        Ok(f) => f,
-                        Err(e) => {
-                            self
-                                .log
-                                .log(
-                                    loga::DEBUG,
-                                    e.context_with(
-                                        "Couldn't parse received header as utf-8",
-                                        ea!(header = HEADER_FORWARDED_FOR),
-                                    ),
-                                );
-                            break;
-                        },
-                    };
-                    forwarded_for.extend(old_forwarded_for.split("/").map(|x| x.to_string()));
+                let mut forwarded =
+                    htserve::forwarded::parse_all_forwarded(&mut req_parts.headers)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|x| x.to_owned())
+                        .collect::<Vec<_>>();
+                forwarded.push(htserve::forwarded::parse_forwarded_current(&req_parts.uri, args.peer_addr));
+                if let Err(e) = htserve::forwarded::add_forwarded(&mut req_parts.headers, &forwarded) {
+                    self.log.log_err(loga::DEBUG, loga::err(e));
                 }
-                forwarded_for.push(args.peer_addr.to_string());
-                req_parts.headers.insert(HEADER_FORWARDED_FOR, forwarded_for.join(", ").try_into().unwrap());
+                if let Err(e) = htserve::forwarded::add_x_forwarded(&mut req_parts.headers, &forwarded) {
+                    self.log.log_err(loga::DEBUG, loga::err(e));
+                }
                 Request::from_parts(req_parts, args.body)
             };
 
@@ -209,20 +212,51 @@ impl std::fmt::Display for RespErr {
 
 impl std::error::Error for RespErr { }
 
-async fn serve<
-    E: 'static + Send + Sync + std::error::Error,
-    B: 'static + Send + hyper::body::Buf,
-    R: 'static + Send + Body<Data = B, Error = E>,
->(
+pub async fn start_serving_content(
     log: &Log,
     tm: &TaskManager,
-    tls_acceptor: &TlsAcceptor,
-    bind_addrs: &[StrSocketAddr],
-    handler: Arc<dyn htserve::Handler<R>>,
+    resolves_cert: Arc<dyn ResolvesServerCert>,
+    content: ContentConfig,
 ) -> Result<(), loga::Error> {
-    ta_res!(());
-    for addr in bind_addrs {
+    let tls_acceptor = TlsAcceptor::from(Arc::new({
+        let mut server_config = ServerConfig::builder().with_no_client_auth().with_cert_resolver(resolves_cert);
+        server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
+        server_config
+    }));
+    for (addr, subpaths) in content.items {
+        let mut routes = BTreeMap::new();
+        for (subpath, mode) in subpaths {
+            let handler: Box<dyn Handler<BoxBody<Bytes, RespErr>>>;
+            match mode {
+                ServeMode::StaticFiles { content_dir } => {
+                    handler = Box::new(StaticFilesHandler {
+                        log: log.clone(),
+                        content_dir: content_dir,
+                    });
+                },
+                ServeMode::ReverseProxy { upstream_url } => {
+                    handler = Box::new(ReverseProxyHandler {
+                        log: log.clone(),
+                        upstream_url: Uri::from_str(
+                            &upstream_url,
+                        ).stack_context(log, "Unable to parse upstream address as url")?,
+                    });
+                },
+            }
+            routes.insert(subpath, handler);
+        }
         let log = log.fork(ea!(sys = "serve", bind_addr = addr));
+        let handler =
+            Arc::new(
+                htserve::handler::PathRouter::new(
+                    routes,
+                ).map_err(
+                    |e| loga::agg_err(
+                        "One or more errors setting up content router",
+                        e.into_iter().map(loga::err).collect(),
+                    ),
+                )?,
+            );
         tm.stream(
             format!("Serve - content ({})", addr),
             TcpListenerStream::new(
@@ -238,41 +272,11 @@ async fn serve<
                         return;
                     },
                 };
-                htserve::root_handle_https(&log, tls_acceptor, handler, stream)
+                htserve::handler::root_handle_https(&log, tls_acceptor, handler, stream)
                     .await
                     .log(&log, loga::DEBUG, "Error initiating request handling");
             }),
         );
-    }
-    return Ok(());
-}
-
-pub async fn start_serving_content(
-    log: &Log,
-    tm: &TaskManager,
-    resolves_cert: Arc<dyn ResolvesServerCert>,
-    content: ContentConfig,
-) -> Result<(), loga::Error> {
-    let tls_acceptor = TlsAcceptor::from(Arc::new({
-        let mut server_config = ServerConfig::builder().with_no_client_auth().with_cert_resolver(resolves_cert);
-        server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
-        server_config
-    }));
-    match content.mode {
-        ServeMode::StaticFiles { content_dir } => {
-            serve(&log, &tm, &tls_acceptor, &content.bind_addrs, Arc::new(StaticFilesHandler {
-                log: log.clone(),
-                content_dir: content_dir,
-            })).await?;
-        },
-        ServeMode::ReverseProxy { upstream_url } => {
-            serve(&log, &tm, &tls_acceptor, &content.bind_addrs, Arc::new(ReverseProxyHandler {
-                log: log.clone(),
-                upstream_url: Uri::from_str(
-                    &upstream_url,
-                ).stack_context(log, "Unable to parse upstream address as url")?,
-            })).await?;
-        },
     }
     return Ok(());
 }

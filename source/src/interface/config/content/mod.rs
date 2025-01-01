@@ -5,11 +5,14 @@ use {
         Deserialize,
         Serialize,
     },
-    std::path::PathBuf,
+    std::{
+        collections::HashMap,
+        path::PathBuf,
+    },
 };
 
 #[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServeMode {
     StaticFiles {
         /// Where files to serve are.
@@ -22,11 +25,11 @@ pub enum ServeMode {
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ContentConfig {
-    /// Interface IPs and ports to bind to. These always serve HTTPS, regardless of the
-    /// port. For HTTP traffic you can use some other static file server.
-    pub bind_addrs: Vec<StrSocketAddr>,
-    /// What content to serve.
-    pub mode: ServeMode,
+    /// Mapping of interface IPs and ports to bind to to subpaths to content to serve.
+    ///
+    /// Regardless of port this always serves HTTPS. For HTTP traffic you can use some
+    /// other static file server.
+    pub items: HashMap<StrSocketAddr, HashMap<String, ServeMode>>,
 }

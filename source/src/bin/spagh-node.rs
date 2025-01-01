@@ -6,16 +6,20 @@ use {
     flowcontrol::shed,
     htwrap::htserve::{
         self,
-        check_auth_token_hash,
-        get_auth_token,
-        hash_auth_token,
-        response_200,
-        response_200_json,
-        response_400,
-        response_401,
-        response_503,
-        tls_acceptor,
-        AuthTokenHash,
+        auth::{
+            check_auth_token_hash,
+            get_auth_token,
+            hash_auth_token,
+            AuthTokenHash,
+        },
+        handler::tls_acceptor,
+        responses::{
+            response_200,
+            response_200_json,
+            response_400,
+            response_401,
+            response_503,
+        },
     },
     loga::{
         ea,
@@ -191,10 +195,10 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         get_identity_signer(identity_secret.clone()).await.stack_context(log, "Error loading identity")?;
 
     // Prep for api
-    let mut router = htserve::PathRouter::default();
-    router.insert("/health", Box::new(htwrap::handler!(()(_r -> htserve:: Body) {
+    let mut router = htserve::handler::PathRouter::default();
+    router.insert("/health", Box::new(htwrap::handler!(()(_r -> htserve:: responses:: Body) {
         return response_200();
-    })));
+    }))).unwrap();
 
     // Start node
     let node = {
@@ -325,10 +329,9 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
         }
         {
             let log = log.fork_with_log_from(debug_level(DebugFlag::Resolve), ea!(sys = "resolver"));
-            router.insert(
-                format!("/{}", API_ROUTE_RESOLVE),
-                Box::new(resolver::build_api_endpoints(log, &resolver)),
-            );
+            router
+                .insert(format!("/{}", API_ROUTE_RESOLVE), Box::new(resolver::build_api_endpoints(log, &resolver)))
+                .unwrap();
         }
     }
 
@@ -342,41 +345,52 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 ).map_err(|_| loga::err_with("Admin token isn't valid utf8", ea!(path = p.to_string_lossy())))?,
                 config::node::api_config::AdminToken::Inline(p) => p,
             });
-            router.insert(
-                "/admin/health",
-                Box::new(htwrap::handler!((log: Log, node: Node, admin_token: AuthTokenHash)(r -> htserve:: Body) {
-                    match async {
-                        ta_vis_res!(http:: Response < htserve:: Body >);
-                        if !check_auth_token_hash(&admin_token, &get_auth_token(&r.head.headers).err_external()?) {
-                            return Ok(response_401());
-                        }
-                        return Ok(response_200_json(node.health_detail()));
-                    }.await {
-                        Ok(r) => return r,
-                        Err(VisErr::External(e)) => {
-                            return response_400(e);
-                        },
-                        Err(VisErr::Internal(e)) => {
-                            log.log_err(loga::DEBUG, e.context("Error serving admin health endpoint"));
-                            return response_503();
-                        },
-                    }
-                })),
-            );
-            if let Some(publisher) = &publisher {
-                router.insert(
-                    format!("/{}", API_ROUTE_PUBLISH),
+            router
+                .insert(
+                    "/admin/health",
                     Box::new(
-                        publisher::build_api_endpoints(
-                            &log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher")),
-                            &publisher,
-                            &admin_token,
-                            &data_dir,
-                        )
-                            .await
-                            .stack_context(&log, "Error building publisher endpoints")?,
+                        htwrap::handler!(
+                            (log: Log, node: Node, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
+                                match async {
+                                    ta_vis_res!(http:: Response < htserve:: responses:: Body >);
+                                    if !check_auth_token_hash(
+                                        &admin_token,
+                                        &get_auth_token(&r.head.headers).err_external()?,
+                                    ) {
+                                        return Ok(response_401());
+                                    }
+                                    return Ok(response_200_json(node.health_detail()));
+                                }.await {
+                                    Ok(r) => return r,
+                                    Err(VisErr::External(e)) => {
+                                        return response_400(e);
+                                    },
+                                    Err(VisErr::Internal(e)) => {
+                                        log.log_err(loga::DEBUG, e.context("Error serving admin health endpoint"));
+                                        return response_503();
+                                    },
+                                }
+                            }
+                        ),
                     ),
-                );
+                )
+                .unwrap();
+            if let Some(publisher) = &publisher {
+                router
+                    .insert(
+                        format!("/{}", API_ROUTE_PUBLISH),
+                        Box::new(
+                            publisher::build_api_endpoints(
+                                &log.fork_with_log_from(debug_level(DebugFlag::Publish), ea!(sys = "publisher")),
+                                &publisher,
+                                &admin_token,
+                                &data_dir,
+                            )
+                                .await
+                                .stack_context(&log, "Error building publisher endpoints")?,
+                        ),
+                    )
+                    .unwrap();
             }
         }
         let router = Arc::new(router);
@@ -408,7 +422,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                     async move {
                         match async {
                             ta_res!(());
-                            htserve::root_handle_https(&log, tls_acceptor, routes, stream?).await?;
+                            htserve::handler::root_handle_https(&log, tls_acceptor, routes, stream?).await?;
                             return Ok(());
                         }.await {
                             Ok(_) => (),

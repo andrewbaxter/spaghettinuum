@@ -1,5 +1,4 @@
 use {
-    chrono::Duration,
     http::Method,
     http_body_util::Full,
     htwrap::htreq,
@@ -22,9 +21,12 @@ use {
             SpaghTlsClientVerifier,
         },
     },
-    std::collections::{
-        HashMap,
-        HashSet,
+    std::{
+        collections::{
+            HashMap,
+            HashSet,
+        },
+        time::Duration,
     },
     tokio::{
         fs::File,
@@ -153,7 +155,7 @@ pub async fn run(log: &Log, config: args::Http) -> Result<(), loga::Error> {
             host,
             port,
         ).await?;
-    let (status, headers, continue_send) = htreq::send(log, &mut conn, Duration::max_value(), final_req).await?;
+    let (status, headers, continue_send) = htreq::send(log, &mut conn, Duration::MAX, final_req).await?;
     log.log_with(loga::DEBUG, "Received header", ea!(status = status, headers = headers.dbg_str()));
     match config.output {
         Some(p) => {

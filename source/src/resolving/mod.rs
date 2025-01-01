@@ -46,8 +46,10 @@ use {
             Conn,
             Ips,
         },
-        IpUrl,
-        UriJoin,
+        url::{
+            IpUrl,
+            UriJoin,
+        },
     },
     idna::punycode,
     loga::{
