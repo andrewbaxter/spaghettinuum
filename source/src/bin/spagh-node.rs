@@ -294,7 +294,7 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
                 .as_ref(),
             &identity_signer,
             RequestCertOptions {
-                certifier: false,
+                certifier: !config.no_certifier,
                 signature: true,
             },
         ).await? else {

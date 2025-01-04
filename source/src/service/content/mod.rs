@@ -128,11 +128,29 @@ impl htserve::handler::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler 
             ta_res!(Response < BoxBody < Bytes, RespErr >>);
             let (mut sender, conn) = htreq::connect(&self.upstream_url).await?.inner.unwrap();
 
-            // Adjust request - merge base path, forwarding headers
+            // # Adjust request - merge base path, forwarding headers
             let req = {
                 let mut req_parts = args.head.clone();
+
+                // ## Replace forwarded - spaghettinuum should be at the edge so any other values are
+                let forwarded = vec![htserve::forwarded::get_forwarded_current(&req_parts.uri, args.peer_addr)];
+                htserve::forwarded::strip_all_forwarded(&mut req_parts.headers);
+                if let Err(e) = htserve::forwarded::render_to_forwarded(&mut req_parts.headers, &forwarded) {
+                    self.log.log_err(loga::DEBUG, loga::err(e));
+                }
+                if let Err(e) = htserve::forwarded::render_to_x_forwarded(&mut req_parts.headers, &forwarded) {
+                    self.log.log_err(loga::DEBUG, loga::err(e));
+                }
+
+                // ## Build new path
+                let mut base_path = self.upstream_url.path();
+
+                // Work around uri nonsense.  "!has_path" => "", but path_and_query.path() if ""
+                // => "/"
+                if base_path == "/" {
+                    base_path = "";
+                }
                 let mut uri_parts = req_parts.uri.into_parts();
-                let base_path = self.upstream_url.path();
                 if args.subpath.is_empty() {
                     uri_parts.path_and_query = Some(PathAndQuery::try_from(base_path).unwrap());
                 } else {
@@ -148,19 +166,8 @@ impl htserve::handler::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler 
                         );
                 }
                 req_parts.uri = Uri::from_parts(uri_parts).unwrap();
-                let mut forwarded =
-                    htserve::forwarded::parse_all_forwarded(&mut req_parts.headers)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|x| x.to_owned())
-                        .collect::<Vec<_>>();
-                forwarded.push(htserve::forwarded::parse_forwarded_current(&req_parts.uri, args.peer_addr));
-                if let Err(e) = htserve::forwarded::add_forwarded(&mut req_parts.headers, &forwarded) {
-                    self.log.log_err(loga::DEBUG, loga::err(e));
-                }
-                if let Err(e) = htserve::forwarded::add_x_forwarded(&mut req_parts.headers, &forwarded) {
-                    self.log.log_err(loga::DEBUG, loga::err(e));
-                }
+
+                // ## Assemble uri
                 Request::from_parts(req_parts, args.body)
             };
 
@@ -179,9 +186,9 @@ impl htserve::handler::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler 
                         );
                 }));
             }
+            let resp = sender.send_request(req).await?;
 
             // Forward body back
-            let resp = sender.send_request(req).await?;
             let (parts, body) = resp.into_parts();
             return Ok(Response::from_parts(parts, body.map_err(|e| RespErr(e.to_string())).boxed()));
         }.await {
@@ -257,7 +264,7 @@ pub async fn start_serving_content(
                     ),
                 )?,
             );
-        tm.stream(
+        tm.critical_stream(
             format!("Serve - content ({})", addr),
             TcpListenerStream::new(
                 TcpListener::bind(addr.resolve().stack_context(&log, "Error resolving bind address for server")?)
@@ -269,12 +276,13 @@ pub async fn start_serving_content(
                     Ok(s) => s,
                     Err(e) => {
                         log.log_err(loga::DEBUG, e.context("Error opening peer stream"));
-                        return;
+                        return Ok(());
                     },
                 };
                 htserve::handler::root_handle_https(&log, tls_acceptor, handler, stream)
                     .await
                     .log(&log, loga::DEBUG, "Error initiating request handling");
+                return Ok(());
             }),
         );
     }

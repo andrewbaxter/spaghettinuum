@@ -442,7 +442,11 @@ pub async fn htserve_certs(
     }
 
     // Start refresh loop
-    tm.critical_task("API - process new certs", {
+    let mut cert_stream =
+        WatchStream::new(
+            request_cert_stream(&log, &tm, identity_signer.clone(), options, state.current.clone()).await?,
+        );
+    tm.critical_task("API - Process new certs", {
         let cache_dir = cache_dir.to_path_buf();
         let tm = tm.clone();
         let log = log.clone();
@@ -451,10 +455,6 @@ pub async fn htserve_certs(
         let latest_certs = latest_certs.clone();
         let r21_latest_certs = r21_latest_certs.clone();
         async move {
-            let mut cert_stream =
-                WatchStream::new(
-                    request_cert_stream(&log, &tm, identity_signer.clone(), options, state.current.clone()).await?,
-                );
             loop {
                 // Wait for pending certs and swap
                 if let Some(pending) = state.pending.take() {

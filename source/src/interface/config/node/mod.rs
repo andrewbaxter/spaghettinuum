@@ -61,4 +61,7 @@ pub struct Config {
     /// Additionally serve more HTTP content, using the host cert.
     #[serde(default)]
     pub content: Option<Vec<ContentConfig>>,
+    /// Disable certifier signature of certs (still verifiable via spagh record)
+    #[serde(default)]
+    pub no_certifier: bool,
 }

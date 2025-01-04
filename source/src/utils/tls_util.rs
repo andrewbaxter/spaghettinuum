@@ -2,35 +2,49 @@ use {
     super::blob::{
         Blob,
         ToBlob,
-    }, crate::interface::{
-            stored::{
-                self,
-                cert::X509_EXT_SPAGH_OID,
-                identity::Identity,
-            },
-            wire::resolve::DNS_SUFFIX,
-        }, chrono::{
+    },
+    crate::interface::{
+        stored::{
+            self,
+            cert::X509_EXT_SPAGH_OID,
+            identity::Identity,
+        },
+        wire::resolve::DNS_SUFFIX,
+    },
+    chrono::{
         DateTime,
         Datelike,
         Duration,
         Utc,
-    }, der::{
+    },
+    der::{
         oid::AssociatedOid,
         Decode,
         DecodePem,
         Encode,
-    }, flowcontrol::shed, futures::Future, loga::ResultContext, p256::ecdsa::DerSignature, pem::Pem, rand::RngCore, rustls::client::WebPkiServerVerifier, sha2::{
+    },
+    flowcontrol::shed,
+    futures::Future,
+    loga::ResultContext,
+    p256::ecdsa::DerSignature,
+    pem::Pem,
+    rand::RngCore,
+    rustls::client::WebPkiServerVerifier,
+    sha2::{
         Digest,
         Sha256,
-    }, signature::SignerMut, std::{
+    },
+    signature::SignerMut,
+    std::{
         collections::HashSet,
         str::FromStr,
         sync::Arc,
-    }, x509_cert::{
+    },
+    x509_cert::{
         builder::Builder,
         ext::AsExtension,
         Certificate,
-    }
+    },
 };
 
 pub fn encode_pub_pem(der: &[u8]) -> String {
@@ -232,7 +246,9 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
         ocsp_response: &[u8],
         now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        // Validate via out of band info
+        // Validate via out of band info - this is hashes provided by records for the
+        // identity (retrieved via spaghettinuum). Zero conf. Can be revoked, but requires
+        // network access + setup.
         if self
             .hashes
             .contains(
@@ -243,7 +259,8 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
             return Ok(rustls::client::danger::ServerCertVerified::assertion());
         }
 
-        // Validate based on signature extension
+        // Validate based on signature extension - the extension contains the SPKI signed
+        // by the identity itself. Zero conf. This is not revokable.
         shed!{
             // Get signature
             let Ok(cert) = x509_cert::Certificate::from_der(&end_entity) else {
@@ -291,7 +308,8 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
             }
         }
 
-        // Fall back to centralized methods
+        // Verify via chain/local CA certs - centralized and requires client configuration
+        // for extra certs.
         if let Some(inner) = &self.inner {
             return inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now);
         }

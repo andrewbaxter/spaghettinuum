@@ -34,6 +34,7 @@ tokio = { version = "1", features = [
     "signal",
     "fs",
     "sync",
+    "io-std",
 ] }
 der = "0.7"
 # For hickory ssl
@@ -109,7 +110,7 @@ tokio-rustls = "0.25"
 path-absolutize = "3"
 mime_guess = "2"
 jsonschema = "0.17"
-htwrap = { version = "0.9" }
+htwrap = { version = "0.11" }
 async-trait = "0.1"
 http = "1"
 rustls-native-certs = "0.7"
