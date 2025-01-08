@@ -90,6 +90,7 @@ Try using it to host a site, send email, or do service discovery.
 - [`spagh-auto`](./readme/reference_spagh_auto.md) - a small static file server/reverse proxy
 - [API reference](./readme/reference_api.md)
 - [Architecture](./readme/architecture.md)
+- [TLS](./readme/tls.md)
 
 # Comparisons with other DNS alternatives
 
