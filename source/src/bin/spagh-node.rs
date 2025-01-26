@@ -120,6 +120,8 @@ struct Args {
     /// Enable default debug logging, or specific log levels
     #[vark(break_help)]
     pub debug: Option<Vec<DebugFlag>>,
+    /// Validate config then exit (with error code if config is invalid).
+    pub validate: Option<()>,
 }
 
 async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Error> {
@@ -158,6 +160,9 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             ),
         );
     };
+    if args.validate.is_some() {
+        return Ok(());
+    }
     let data_dir = config.persistent_dir.unwrap_or_else(|| fs_util::data_dir());
     let cache_dir = config.cache_dir.unwrap_or_else(|| fs_util::cache_dir());
     create_dir_all(&data_dir)

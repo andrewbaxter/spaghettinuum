@@ -2551,9 +2551,9 @@ checksum = "04cbf5b083de1c7e0222a7a51dbfdba1cbe1c6ab0b15e29fff3f6c077fd9cd9f"
 
 [[package]]
 name = "loga"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31bdf6b974ea638cdc5b6a443283a27df11ecb9337861c4bb96f8a647a4f3658"
+checksum = "2406a845867192f00f1a69d97396ce1c4a76d6481f5b784dc0bdc5cefbe3fb97"
 dependencies = [
  "chrono",
  "console",

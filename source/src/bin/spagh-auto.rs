@@ -60,6 +60,8 @@ struct Args {
     /// Enable debug logging
     #[vark(break_help)]
     pub debug: Option<Vec<DebugFlag>>,
+    /// Validate config then exit (with error code if config is invalid).
+    pub validate: Option<()>,
 }
 
 async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Error> {
@@ -81,6 +83,9 @@ async fn inner(log: &Log, tm: &TaskManager, args: Args) -> Result<(), loga::Erro
             log.err_with("No config passed on command line, and no config set in env var", ea!(env = ENV_CONFIG)),
         );
     };
+    if args.validate.is_some() {
+        return Ok(());
+    }
     let identity_signer =
         get_identity_signer(config.identity.clone()).await.stack_context(log, "Error loading identity")?;
     let resolvers = default_resolver_url_pairs(&log)?;
