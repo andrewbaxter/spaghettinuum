@@ -1,22 +1,22 @@
 use good_ormning::sqlite::{
-    Version,
-    Query,
     new_delete,
+    new_insert,
+    new_select,
+    query::{
+        expr::{
+            BinOp,
+            Expr,
+        },
+        helpers::set_field,
+        select_body::Order,
+    },
     schema::field::{
         field_str,
         field_utctime_ms,
     },
+    Query,
     QueryResCount,
-    query::{
-        helpers::set_field,
-        expr::{
-            Expr,
-            BinOp,
-        },
-        select::Order,
-    },
-    new_select,
-    new_insert,
+    Version,
 };
 use crate::buildlib::db_shared::field_ident;
 
@@ -46,14 +46,14 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             new_select(&persist)
                 .return_fields(&[&persist_row, &persist_ident, &persist_key, &persist_expires, &persist_value])
                 .where_(Expr::BinOp {
-                    left: Box::new(Expr::Field(persist_row.clone())),
+                    left: Box::new(Expr::field(&persist_row)),
                     op: BinOp::LessThan,
                     right: Box::new(Expr::Param {
                         name: "row".to_string(),
                         type_: persist_row.type_.type_.clone(),
                     }),
                 })
-                .order(Expr::Field(persist_row.clone()), Order::Desc)
+                .order(Expr::field(&persist_row), Order::Desc)
                 .limit(Expr::LitI32(50))
                 .build_query("cache_list", QueryResCount::Many),
         );

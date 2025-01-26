@@ -29,10 +29,7 @@ use {
     tokio::{
         fs::create_dir_all,
         io::{
-            stdin,
-            stdout,
-            AsyncReadExt,
-            AsyncWriteExt,
+            stdin, stdout, AsyncReadExt, AsyncWriteExt
         },
     },
 };

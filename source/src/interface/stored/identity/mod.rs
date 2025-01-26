@@ -75,7 +75,7 @@ impl std::fmt::Debug for Identity {
 }
 
 impl GoodOrmningCustomString<Identity> for Identity {
-    fn to_sql<'a>(value: &'a Identity) -> std::borrow::Cow<'a, str> {
+    fn to_sql<'a>(value: &'a Identity) -> String {
         return value.to_string().into();
     }
 

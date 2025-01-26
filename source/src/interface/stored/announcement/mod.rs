@@ -15,7 +15,7 @@ pub enum Announcement {
 }
 
 impl GoodOrmningCustomString<Announcement> for Announcement {
-    fn to_sql<'a>(value: &'a Announcement) -> std::borrow::Cow<'a, str> {
+    fn to_sql<'a>(value: &'a Announcement) -> String {
         return serde_json::to_string(value).unwrap().into();
     }
 

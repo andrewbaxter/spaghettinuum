@@ -23,7 +23,7 @@ impl SelfTlsState {
 }
 
 impl GoodOrmningCustomString<SelfTlsState> for SelfTlsState {
-    fn to_sql<'a>(value: &'a SelfTlsState) -> std::borrow::Cow<'a, str> {
+    fn to_sql<'a>(value: &'a SelfTlsState) -> String {
         return serde_json::to_string(value).unwrap().into();
     }
 

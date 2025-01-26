@@ -22,7 +22,7 @@ pub enum NodeState {
 }
 
 impl GoodOrmningCustomString<NodeState> for NodeState {
-    fn to_sql<'a>(value: &'a NodeState) -> std::borrow::Cow<'a, str> {
+    fn to_sql<'a>(value: &'a NodeState) -> String {
         return serde_json::to_string(value).unwrap().into();
     }
 

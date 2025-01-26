@@ -68,7 +68,7 @@ urlencoding = "2"
 ipnet = "2"
 structre = "0.1"
 rpassword = "7"
-good-ormning-runtime = { version = "0.1", features = ["sqlite", "chrono"] }
+good-ormning-runtime = { version = "0.3", features = ["sqlite", "chrono"] }
 network-interface = "1"
 schemars = { version = "0.8", features = ["chrono"] }
 signature = "2"
@@ -129,7 +129,7 @@ idna = "1"
 libsqlite3-sys = { version = ">=0", features = ["bundled"] }
 
 [build-dependencies]
-good-ormning = { version = "0.1", features = ["sqlite", "chrono"] }
+good-ormning = { version = "0.3", features = ["sqlite", "chrono"] }
 
 [package.metadata.docs.rs]
 features = ["docsrs"]

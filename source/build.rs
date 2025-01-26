@@ -9,7 +9,7 @@ fn main() {
     #[cfg(not(docsrs))]
     {
         println!("cargo:rerun-if-changed=build.rs");
-        let root = PathBuf::from(&env::var("CARGO_MANIFEST_DIR").unwrap());
+        let root = PathBuf::from(&env::var("OUT_DIR").unwrap());
         buildlib::self_tls::build(&root);
         buildlib::node::build(&root);
         buildlib::publisher::build(&root);

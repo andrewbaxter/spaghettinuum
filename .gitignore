@@ -6,5 +6,3 @@
 /*.sh
 /*.py
 /*.txt
-db.rs
-admin_db.rs

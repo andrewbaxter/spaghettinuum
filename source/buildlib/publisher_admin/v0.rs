@@ -5,12 +5,12 @@ use good_ormning::sqlite::{
     query::{
         expr::Expr,
         helpers::{
-            eq_field,
-            gt_field,
+            expr_field_eq,
+            expr_field_gt,
             set_field,
         },
         insert::InsertConflict,
-        select::Order,
+        select_body::Order,
     },
     schema::{
         constraint::{
@@ -47,12 +47,12 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
         );
         queries.push(
             new_delete(&table)
-                .where_(eq_field("ident", &ident))
+                .where_(expr_field_eq("ident", &ident))
                 .build_query("disallow_identity", QueryResCount::None),
         );
         queries.push(
             new_select(&table)
-                .where_(eq_field("ident", &ident))
+                .where_(expr_field_eq("ident", &ident))
                 .return_named("found", Expr::LitI32(0))
                 .limit(Expr::LitI32(1))
                 .build_query("is_identity_allowed", QueryResCount::MaybeOne),
@@ -60,15 +60,15 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
         queries.push(
             new_select(&table)
                 .return_fields(&[&ident, &group])
-                .order(Expr::Field(ident.clone()), Order::Asc)
+                .order(Expr::field(&ident), Order::Asc)
                 .limit(Expr::LitI32(50))
                 .build_query("list_allowed_identities_start", QueryResCount::Many),
         );
         queries.push(
             new_select(&table)
                 .return_fields(&[&ident, &group])
-                .where_(gt_field("ident", &ident))
-                .order(Expr::Field(ident.clone()), Order::Asc)
+                .where_(expr_field_gt("ident", &ident))
+                .order(Expr::field(&ident), Order::Asc)
                 .limit(Expr::LitI32(50))
                 .build_query("list_allowed_identities_after", QueryResCount::Many),
         );

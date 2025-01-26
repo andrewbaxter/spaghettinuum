@@ -122,7 +122,7 @@ impl NodeSecretMethods for NodeSecret {
 }
 
 impl GoodOrmningCustomString<NodeSecret> for NodeSecret {
-    fn to_sql<'a>(value: &'a NodeSecret) -> std::borrow::Cow<'a, str> {
+    fn to_sql<'a>(value: &'a NodeSecret) -> String {
         return zbase32::encode_full_bytes(&bincode::serialize(&value).unwrap()).into();
     }
 

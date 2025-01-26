@@ -12,8 +12,8 @@ use {
     serde_json::json,
     spaghettinuum::{
         resolving::{
-            resolve_for_tls,
             default_resolver_url_pairs,
+            resolve_for_tls,
             ResolveTlsRes,
         },
         utils::tls_util::{

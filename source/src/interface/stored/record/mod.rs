@@ -29,7 +29,7 @@ impl RecordValue {
 }
 
 impl GoodOrmningCustomString<RecordValue> for RecordValue {
-    fn to_sql<'a>(value: &'a RecordValue) -> std::borrow::Cow<'a, str> {
+    fn to_sql<'a>(value: &'a RecordValue) -> String {
         return serde_json::to_string(value).unwrap().into();
     }
 

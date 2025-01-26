@@ -15,7 +15,7 @@ pub enum Certs {
 }
 
 impl GoodOrmningCustomString<Certs> for Certs {
-    fn to_sql<'a>(value: &'a Certs) -> std::borrow::Cow<'a, str> {
+    fn to_sql<'a>(value: &'a Certs) -> String {
         return serde_json::to_string(value).unwrap().into();
     }
 

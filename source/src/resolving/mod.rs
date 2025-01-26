@@ -5,20 +5,18 @@ use {
                 node::api_config::DEFAULT_API_PORT,
                 ENV_RESOLVER_PAIRS,
             },
-            stored::{
-                record::{
-                    self,
-                    delegate_record::{
-                        build_delegate_key,
-                        Delegate,
-                    },
-                    dns_record::build_dns_key,
-                    record_utils::{
-                        join_query_record_keys,
-                        split_dns_name,
-                        RecordKey,
-                        RecordRoot,
-                    },
+            stored::record::{
+                self,
+                delegate_record::{
+                    build_delegate_key,
+                    Delegate,
+                },
+                dns_record::build_dns_key,
+                record_utils::{
+                    join_query_record_keys,
+                    split_dns_name,
+                    RecordKey,
+                    RecordRoot,
                 },
             },
             wire::{

@@ -1,32 +1,32 @@
 use good_ormning::sqlite::{
-    Query,
-    Version,
+    new_delete,
+    new_insert,
+    new_select,
     query::{
+        expr::Expr,
         helpers::{
-            eq_field,
             expr_and,
-            gt_field,
+            expr_field_eq,
+            expr_field_gt,
             set_field,
         },
-        expr::Expr,
-        select::Order,
         insert::InsertConflict,
+        select_body::Order,
     },
-    new_delete,
     schema::{
+        constraint::{
+            ConstraintType,
+            PrimaryKeyDef,
+        },
         field::{
             field_i32,
             field_i64,
             field_str,
         },
-        constraint::{
-            PrimaryKeyDef,
-            ConstraintType,
-        },
     },
+    Query,
     QueryResCount,
-    new_insert,
-    new_select,
+    Version,
 };
 use crate::buildlib::db_shared::field_ident;
 
@@ -82,27 +82,27 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
         );
         queries.push(
             new_delete(&announce)
-                .where_(eq_field("ident", &announce_ident))
+                .where_(expr_field_eq("ident", &announce_ident))
                 .build_query("announcements_delete", QueryResCount::None),
         );
         queries.push(
             new_select(&announce)
-                .where_(eq_field("ident", &announce_ident))
+                .where_(expr_field_eq("ident", &announce_ident))
                 .return_field(&announce_value)
                 .build_query("announcements_get", QueryResCount::MaybeOne),
         );
         queries.push(
             new_select(&announce)
                 .return_fields(&[&announce_ident, &announce_value])
-                .order(Expr::Field(announce_ident.clone()), Order::Asc)
+                .order(Expr::field(&announce_ident), Order::Asc)
                 .limit(Expr::LitI32(50))
                 .build_query("announcements_list_start", QueryResCount::Many),
         );
         queries.push(
             new_select(&announce)
                 .return_fields(&[&announce_ident, &announce_value])
-                .where_(gt_field("ident", &announce_ident))
-                .order(Expr::Field(announce_ident.clone()), Order::Asc)
+                .where_(expr_field_gt("ident", &announce_ident))
+                .order(Expr::field(&announce_ident), Order::Asc)
                 .limit(Expr::LitI32(50))
                 .build_query("announcements_list_after", QueryResCount::Many),
         );
@@ -123,7 +123,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             queries.push(
                 new_select(&t)
                     .return_fields(&[&f_missing_ttl])
-                    .where_(eq_field("ident", &f_ident))
+                    .where_(expr_field_eq("ident", &f_ident))
                     .build_query_named_res("ident_get", QueryResCount::MaybeOne, "PublishedIdentMeta"),
             );
             queries.push(
@@ -132,7 +132,9 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
                     .build_query("ident_set", QueryResCount::None),
             );
             queries.push(
-                new_delete(&t).where_(eq_field("ident", &f_ident)).build_query("ident_delete", QueryResCount::None),
+                new_delete(&t)
+                    .where_(expr_field_eq("ident", &f_ident))
+                    .build_query("ident_delete", QueryResCount::None),
             );
         }
     }
@@ -171,17 +173,19 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             queries.push(
                 new_select(&publish)
                     .return_fields(&[&publish_value])
-                    .where_(expr_and(vec![eq_field("ident", &publish_ident), eq_field("key", &publish_key)]))
+                    .where_(
+                        expr_and(vec![expr_field_eq("ident", &publish_ident), expr_field_eq("key", &publish_key)]),
+                    )
                     .build_query("values_get", QueryResCount::MaybeOne),
             );
             queries.push(
                 new_select(&publish)
                     .return_fields(&[&publish_key])
-                    .where_(eq_field("ident", &publish_ident))
+                    .where_(expr_field_eq("ident", &publish_ident))
                     .order_from_iter(
                         [
-                            (Expr::Field(publish_ident.clone()), Order::Asc),
-                            (Expr::Field(publish_key.clone()), Order::Asc),
+                            (Expr::field(&publish_ident), Order::Asc),
+                            (Expr::field(&publish_key), Order::Asc),
                         ].into_iter(),
                     )
                     .limit(Expr::LitI32(50))
@@ -190,11 +194,13 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             queries.push(
                 new_select(&publish)
                     .return_fields(&[&publish_key])
-                    .where_(expr_and(vec![eq_field("ident", &publish_ident), gt_field("after", &publish_key)]))
+                    .where_(
+                        expr_and(vec![expr_field_eq("ident", &publish_ident), expr_field_gt("after", &publish_key)]),
+                    )
                     .order_from_iter(
                         [
-                            (Expr::Field(publish_ident.clone()), Order::Asc),
-                            (Expr::Field(publish_key.clone()), Order::Asc),
+                            (Expr::field(&publish_ident), Order::Asc),
+                            (Expr::field(&publish_key), Order::Asc),
                         ].into_iter(),
                     )
                     .limit(Expr::LitI32(50))
@@ -202,12 +208,14 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             );
             queries.push(
                 new_delete(&publish)
-                    .where_(expr_and(vec![eq_field("ident", &publish_ident), eq_field("key", &publish_key)]))
+                    .where_(
+                        expr_and(vec![expr_field_eq("ident", &publish_ident), expr_field_eq("key", &publish_key)]),
+                    )
                     .build_query("values_delete", QueryResCount::None),
             );
             queries.push(
                 new_delete(&publish)
-                    .where_(eq_field("ident", &publish_ident))
+                    .where_(expr_field_eq("ident", &publish_ident))
                     .build_query("values_delete_all", QueryResCount::None),
             );
         }
