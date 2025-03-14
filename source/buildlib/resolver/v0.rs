@@ -11,8 +11,8 @@ use good_ormning::sqlite::{
         select_body::Order,
     },
     schema::field::{
+        field_i64,
         field_str,
-        field_utctime_ms,
     },
     Query,
     QueryResCount,
@@ -27,7 +27,8 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
     let persist_row = persist.rowid_field(v, None);
     let persist_ident = persist.field(v, "zUS446K3I", "identity", field_ident());
     let persist_key = persist.field(v, "zKMLG4285", "key", field_str().build());
-    let persist_expires = persist.field(v, "z4NGKQ5LL", "expires", field_utctime_ms().build());
+    let persist_expires =
+        persist.field(v, "z4NGKQ5LL", "expires", field_i64().custom("crate::utils::time_util::UtcSecs").build());
     let persist_value = persist.field(v, "zZJ7T4VPM", "value", field_str().opt().build());
     if let Some(queries) = &mut queries {
         queries.push(new_delete(&persist).build_query("cache_clear", QueryResCount::None));

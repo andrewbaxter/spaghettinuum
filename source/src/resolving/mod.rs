@@ -2,7 +2,7 @@ use {
     crate::{
         interface::{
             config::{
-                node::api_config::DEFAULT_API_PORT,
+                spagh::DEFAULT_API_PORT,
                 ENV_RESOLVER_PAIRS,
             },
             stored::record::{
@@ -266,9 +266,7 @@ pub async fn connect_resolver_node(pair: &UrlPair) -> Result<Conn, loga::Error> 
             scheme,
             host,
             port,
-        )
-            .await
-            .context("Failed to establish connection")?,
+        ).await?,
     );
 }
 

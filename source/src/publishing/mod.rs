@@ -87,7 +87,13 @@ impl Publisher for RemotePublisher {
         identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
         content: publish_util::PublishArgs,
     ) -> Result<(), loga::Error> {
-        publish_util::publish(log, &self.resolver_urls, &self.publisher_urls, identity_signer, content).await?;
+        publish_util::remote_publish(
+            log,
+            &self.resolver_urls,
+            &self.publisher_urls,
+            identity_signer,
+            content,
+        ).await?;
         return Ok(());
     }
 }

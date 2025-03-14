@@ -2,9 +2,7 @@ use {
     super::Resolver,
     crate::{
         interface::{
-            config::{
-                node::resolver_config::DnsBridgeConfig,
-            },
+            config::spagh::FunctionResolverDns,
             stored::{
                 self,
                 identity::Identity,
@@ -25,15 +23,12 @@ use {
         ta_res,
         ta_vis_res,
         utils::{
+            time_util::UtcSecs,
             ResultVisErr,
             VisErr,
         },
     },
     async_trait::async_trait,
-    chrono::{
-        Duration,
-        Utc,
-    },
     flowcontrol::shed,
     futures::StreamExt,
     hickory_proto::{
@@ -101,6 +96,10 @@ use {
         },
         str::FromStr,
         sync::Arc,
+        time::{
+            Duration,
+            SystemTime,
+        },
     },
     taskmanager::TaskManager,
     tokio::{
@@ -118,7 +117,7 @@ pub async fn start_dns_bridge(
     resolver: &Resolver,
     certs: Arc<dyn rustls_21::server::ResolvesServerCert>,
     global_ips: &[IpAddr],
-    dns_config: DnsBridgeConfig,
+    dns_config: FunctionResolverDns,
 ) -> Result<(), loga::Error> {
     struct HandlerInner {
         log: Log,
@@ -221,20 +220,12 @@ pub async fn start_dns_bridge(
                             // Make request, filter out empty results
                             let mut res = self1.resolver.get(&ident, request_keys).await.err_internal()?.into_iter().filter_map(|(k, v)| {
                                 return match v.data {
-                                    Some(d) => Some(
-                                        (
-                                            k,
-                                            (
-                                                v
-                                                    .expires
-                                                    .signed_duration_since(Utc::now())
-                                                    .num_seconds()
-                                                    .try_into()
-                                                    .unwrap_or(i32::MAX as u32),
-                                                d,
-                                            ),
-                                        ),
-                                    ),
+                                    Some(d) => Some((k, (
+                                        // Convert abs expiration into relative expiration from now
+                                        <UtcSecs as Into<SystemTime>>::into(v.expires).duration_since(SystemTime::now()).unwrap_or_default().as_secs() as
+                                            u32,
+                                        d,
+                                    ))),
                                     None => None,
                                 };
                             }).collect::<HashMap<_, _>>();
@@ -720,7 +711,7 @@ pub async fn start_dns_bridge(
                 TcpListener::bind(&bind_addr)
                     .await
                     .stack_context_with(&log, "Opening TCP listener failed", ea!(socket = bind_addr))?,
-                Duration::try_seconds(10).unwrap().to_std().unwrap(),
+                Duration::from_secs(10),
                 Arc::new(
                     rustls_21::ServerConfig::builder()
                         .with_safe_defaults()

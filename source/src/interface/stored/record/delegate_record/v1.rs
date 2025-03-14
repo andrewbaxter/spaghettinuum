@@ -21,5 +21,5 @@ use {
 /// used for client-side load balancing (by using a random member) and failover (by
 /// trying another value when one value is unusable).
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Delegate(pub Vec<(RecordRoot, RecordKey)>);

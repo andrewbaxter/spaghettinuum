@@ -2,9 +2,9 @@ use {
     crate::{
         cap_block,
         cap_fn,
-        interface::config::content::{
-            ContentConfig,
-            ServeMode,
+        interface::config::spagh::{
+            ContentSource,
+            FunctionServeContent,
         },
         ta_res,
         utils::fs_util::maybe_read,
@@ -223,25 +223,25 @@ pub async fn start_serving_content(
     log: &Log,
     tm: &TaskManager,
     resolves_cert: Arc<dyn ResolvesServerCert>,
-    content: ContentConfig,
+    content: FunctionServeContent,
 ) -> Result<(), loga::Error> {
     let tls_acceptor = TlsAcceptor::from(Arc::new({
         let mut server_config = ServerConfig::builder().with_no_client_auth().with_cert_resolver(resolves_cert);
         server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
         server_config
     }));
-    for (addr, subpaths) in content.items {
+    for (addr, subpaths) in content {
         let mut routes = BTreeMap::new();
         for (subpath, mode) in subpaths {
             let handler: Box<dyn Handler<BoxBody<Bytes, RespErr>>>;
             match mode {
-                ServeMode::StaticFiles { content_dir } => {
+                ContentSource::StaticFiles { content_dir } => {
                     handler = Box::new(StaticFilesHandler {
                         log: log.clone(),
                         content_dir: content_dir,
                     });
                 },
-                ServeMode::ReverseProxy { upstream_url } => {
+                ContentSource::ReverseProxy { upstream_url } => {
                     handler = Box::new(ReverseProxyHandler {
                         log: log.clone(),
                         upstream_url: Uri::from_str(

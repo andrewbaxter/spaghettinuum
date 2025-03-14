@@ -13,7 +13,7 @@ pub use v1 as latest;
 pub const KEY_SUFFIX_TLS: &'static str = "tls";
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum TlsCerts {
     V1(v1::TlsCerts),
 }

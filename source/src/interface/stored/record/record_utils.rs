@@ -28,7 +28,7 @@ use {
 };
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RecordRoot {
     S(Identity),
     Dns(String),

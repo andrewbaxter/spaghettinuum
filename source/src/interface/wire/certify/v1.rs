@@ -1,28 +1,29 @@
-use chrono::{
-    DateTime,
-    Utc,
-};
-use serde::{
-    Serialize,
-    Deserialize,
-};
-use crate::{
-    interface::stored::{
-        cert::v1::X509ExtSpagh,
-        identity::Identity,
+use {
+    serde::{
+        Serialize,
+        Deserialize,
     },
-    utils::blob::Blob,
+    crate::{
+        interface::stored::{
+            cert::v1::X509ExtSpagh,
+            identity::Identity,
+        },
+        utils::{
+            blob::Blob,
+            time_util::UtcSecs,
+        },
+    },
 };
 
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CertRequest {
     pub identity: Identity,
     pub params: SignedCertRequestParams,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct SignedCertRequestParams {
     pub sig: Blob,
     pub text: Blob,
@@ -40,15 +41,15 @@ impl SignedCertRequestParams {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CertRequestParams {
-    pub stamp: DateTime<Utc>,
+    pub stamp: UtcSecs,
     pub spki_der: Blob,
     pub sig_ext: Option<X509ExtSpagh>,
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CertResponse {
     pub pub_pem: String,
 }

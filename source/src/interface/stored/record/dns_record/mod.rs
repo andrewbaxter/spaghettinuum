@@ -38,25 +38,25 @@ pub fn build_dns_key(head: RecordKey, record_type: RecordType) -> RecordKey {
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DnsA {
     V1(v1::DnsA),
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DnsAaaa {
     V1(v1::DnsAaaa),
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DnsTxt {
     V1(v1::DnsTxt),
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DnsMx {
     V1(v1::DnsMx),
 }

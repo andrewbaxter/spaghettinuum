@@ -105,7 +105,7 @@ impl NodeSecretMethods for Ed25519NodeSecret {
 
 // Aggregates
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeIdentity {
     Ed25519(Ed25519NodeIdentity),
 }
@@ -135,7 +135,7 @@ impl NodeIdentityMethods for NodeIdentity {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeSecret {
     Ed25519(Ed25519NodeSecret),
 }

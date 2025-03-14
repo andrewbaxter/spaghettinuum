@@ -4,3 +4,4 @@ pub mod cli_admin;
 pub mod cli_publish;
 pub mod cli_resolve;
 pub mod cli_identity;
+pub mod demon;

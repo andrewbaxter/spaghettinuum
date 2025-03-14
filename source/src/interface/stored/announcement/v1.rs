@@ -1,31 +1,34 @@
-use std::{
-    marker::PhantomData,
+use {
+    std::{
+        marker::PhantomData,
+    },
+    serde::{
+        de::DeserializeOwned,
+        Deserialize,
+        Serialize,
+    },
+    crate::interface::stored::identity::Identity,
+    crate::interface::stored::shared::SerialAddr,
+    crate::utils::blob::Blob,
+    crate::utils::time_util::UtcSecs,
 };
-use serde::{
-    de::DeserializeOwned,
-    Deserialize,
-    Serialize,
-};
-use crate::interface::stored::identity::Identity;
-use crate::interface::stored::shared::SerialAddr;
-use crate::utils::blob::Blob;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AnnouncementPublisher {
     pub addr: SerialAddr,
     pub cert_hash: Blob,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AnnouncementContent {
     pub publishers: Vec<AnnouncementPublisher>,
-    pub announced: chrono::DateTime<chrono::Utc>,
+    pub announced: UtcSecs,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct BincodeSignature<T: Serialize + DeserializeOwned, I> {
     pub message: Blob,
     pub signature: Blob,

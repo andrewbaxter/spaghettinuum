@@ -4,6 +4,7 @@ use {
         fs_util,
         identity_secret::IdentitySigner,
         signed::IdentSignatureMethods,
+        time_util::UtcSecs,
     },
     crate::{
         interface::{
@@ -32,7 +33,6 @@ use {
         },
         service::publisher::API_ROUTE_PUBLISH,
     },
-    chrono::Utc,
     htwrap::htreq,
     loga::{
         ea,
@@ -50,6 +50,7 @@ use {
             Arc,
             Mutex,
         },
+        time::SystemTime,
     },
 };
 
@@ -62,7 +63,7 @@ pub fn generate_publish_announce(
             addr: SerialAddr(info.advertise_addr),
             cert_hash: info.cert_pub_hash,
         }).collect(),
-        announced: Utc::now(),
+        announced: UtcSecs::from(SystemTime::now()),
     }).unwrap().blob();
     let (identity, request_message_sig) =
         signer.lock().unwrap().sign(&announce_message).map_err(|e| e.to_string())?;
@@ -145,7 +146,7 @@ pub struct PublishArgs {
     pub set: HashMap<RecordKey, RecordValue>,
 }
 
-pub async fn publish(
+pub async fn remote_publish(
     log: &Log,
     resolvers: &[UrlPair],
     publishers: &[UrlPair],
@@ -191,7 +192,7 @@ pub async fn publish(
 pub fn add_ip_record(
     publish_data: &mut HashMap<RecordKey, stored::record::RecordValue>,
     head: Vec<String>,
-    ttl: i32,
+    ttl: u64,
     ip: std::net::IpAddr,
 ) {
     let key;
@@ -225,16 +226,15 @@ pub fn add_ip_record(
 pub async fn add_ssh_host_key_records(
     publish_data: &mut HashMap<RecordKey, stored::record::RecordValue>,
     head: RecordKey,
-    ttl: i32,
-    paths: Option<Vec<PathBuf>>,
+    ttl: u64,
+    paths: &Vec<PathBuf>,
 ) -> Result<(), loga::Error> {
-    let paths = paths.unwrap_or_else(|| {
-        let mut paths = vec![];
+    let mut paths = paths.clone();
+    if paths.is_empty() {
         for algo in ["rsa", "ed25519", "dsa", "ecdsa"] {
             paths.push(PathBuf::from(format!("/etc/ssh/ssh_host_{}_key.pub", algo)));
         }
-        return paths;
-    });
+    }
     let mut host_keys = vec![];
     for key_path in &paths {
         let Some(key) = fs_util::maybe_read(&key_path).await? else {

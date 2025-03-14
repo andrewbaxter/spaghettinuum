@@ -1,9 +1,4 @@
 use {
-    crate::interface::stored::identity::Identity,
-    chrono::{
-        DateTime,
-        Utc,
-    },
     serde::{
         Deserialize,
         Serialize,
@@ -11,7 +6,7 @@ use {
 };
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CertPair {
     /// X509 public cert, signed by certipasta CA key
     pub pub_pem: String,
@@ -20,16 +15,8 @@ pub struct CertPair {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "snake_case")]
-pub struct SelfTlsStatePending {
-    pub after: DateTime<Utc>,
-    pub identity: Identity,
-    pub pair: CertPair,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "snake_case")]
-pub struct SelfTlsState {
-    pub pending: Option<SelfTlsStatePending>,
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RefreshTlsState {
+    pub pending: Option<CertPair>,
     pub current: CertPair,
 }

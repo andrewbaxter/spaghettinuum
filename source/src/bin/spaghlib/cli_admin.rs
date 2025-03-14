@@ -1,4 +1,8 @@
 use {
+    aargvark::{
+        traits_impls::AargvarkJson,
+        Aargvark,
+    },
     htwrap::{
         htreq::{
             self,
@@ -15,7 +19,10 @@ use {
     spaghettinuum::{
         interface::{
             config::ENV_API_ADMIN_TOKEN,
-            stored::identity::Identity,
+            stored::{
+                self,
+                identity::Identity,
+            },
             wire::api::admin::v1::{
                 AdminAllowIdentityBody,
                 AdminIdentity,
@@ -35,72 +42,56 @@ use {
             HashSet,
         },
         env,
+        path::PathBuf,
     },
 };
 
-pub mod args {
-    use {
-        aargvark::{
-            traits_impls::AargvarkJson,
-            Aargvark,
-        },
-        spaghettinuum::interface::stored,
-        std::{
-            collections::{
-                HashMap,
-                HashSet,
-            },
-            path::PathBuf,
-        },
-    };
+#[derive(Aargvark)]
+pub struct NewLocalIdentity {
+    /// Store the new id and secret in a file at this path
+    pub path: PathBuf,
+}
 
-    #[derive(Aargvark)]
-    pub struct NewLocalIdentity {
-        /// Store the new id and secret in a file at this path
-        pub path: PathBuf,
-    }
+#[derive(Aargvark)]
+pub struct AllowIdentity {
+    pub identity_id: String,
+    /// Associate the identity with a tag for easier management
+    pub group: Option<String>,
+}
 
-    #[derive(Aargvark)]
-    pub struct AllowIdentity {
-        pub identity_id: String,
-        /// Associate the identity with a tag for easier management
-        pub group: Option<String>,
-    }
+#[derive(Aargvark)]
+pub struct DisallowIdentity {
+    pub identity_id: String,
+}
 
-    #[derive(Aargvark)]
-    pub struct DisallowIdentity {
-        pub identity_id: String,
-    }
+#[derive(Aargvark)]
+pub struct ListKeys {
+    pub identity: String,
+}
 
-    #[derive(Aargvark)]
-    pub struct ListKeys {
-        pub identity: String,
-    }
-
-    #[derive(Aargvark)]
-    #[vark(break_help)]
-    pub enum Admin {
-        /// Get detailed node health information
-        HealthDetail,
-        /// List identities allowed to publish
-        ListAllowedIdentities,
-        /// Register an identity with the publisher, allowing it to publish
-        AllowIdentity(AllowIdentity),
-        /// Unregister an identity with the publisher, disallowing it from publishing
-        DisallowIdentity(DisallowIdentity),
-        /// List announced identities
-        ListAnnouncements,
-        /// List keys published here for an identity
-        ListKeys(ListKeys),
-        /// Register and unregister identities.
-        ///
-        /// The JSON is an object with groups as keys, and lists of identity ids as values.
-        ///
-        /// Any groups not in the JSON won't be synced - deleting a group won't remove all
-        /// entries in the group.  In order to clear a group, you must specify an empty
-        /// list for that group in the JSON.
-        SyncAllowedIdentities(AargvarkJson<HashMap<String, HashSet<stored::identity::Identity>>>),
-    }
+#[derive(Aargvark)]
+#[vark(break_help)]
+pub enum Args {
+    /// Get detailed node health information
+    HealthDetail,
+    /// List identities allowed to publish
+    ListAllowedIdentities,
+    /// Register an identity with the publisher, allowing it to publish
+    AllowIdentity(AllowIdentity),
+    /// Unregister an identity with the publisher, disallowing it from publishing
+    DisallowIdentity(DisallowIdentity),
+    /// List announced identities
+    ListAnnouncements,
+    /// List keys published here for an identity
+    ListKeys(ListKeys),
+    /// Register and unregister identities.
+    ///
+    /// The JSON is an object with groups as keys, and lists of identity ids as values.
+    ///
+    /// Any groups not in the JSON won't be synced - deleting a group won't remove all
+    /// entries in the group.  In order to clear a group, you must specify an empty
+    /// list for that group in the JSON.
+    SyncAllowedIdentities(AargvarkJson<HashMap<String, HashSet<stored::identity::Identity>>>),
 }
 
 fn admin_headers() -> Result<HashMap<String, String>, loga::Error> {
@@ -156,11 +147,11 @@ async fn api_list<
     return Ok(out);
 }
 
-pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
+pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
     let resolvers = default_resolver_url_pairs(log)?;
     let publishers = system_publisher_url_pairs(log)?;
     match config {
-        args::Admin::HealthDetail => {
+        Args::HealthDetail => {
             for pair in publishers {
                 let pair = pair.join("admin/health");
                 log.log_with(loga::DEBUG, "Sending health detail request (GET)", ea!(url = pair));
@@ -173,7 +164,7 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
                 ).await?;
             }
         },
-        args::Admin::AllowIdentity(config) => {
+        Args::AllowIdentity(config) => {
             for pair in publishers {
                 let pair = pair.join(format!("publish/admin/allowed_identities/{}", config.identity_id));
                 log.log_with(loga::DEBUG, "Sending register request (POST)", ea!(url = pair));
@@ -187,7 +178,7 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
                 ).await?;
             }
         },
-        args::Admin::DisallowIdentity(config) => {
+        Args::DisallowIdentity(config) => {
             for pair in publishers {
                 let pair = pair.join(format!("publish/admin/allowed_identities/{}", config.identity_id));
                 log.log_with(loga::DEBUG, "Sending unregister request (POST)", ea!(url = pair));
@@ -200,7 +191,7 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
                 ).await?;
             }
         },
-        args::Admin::ListAllowedIdentities => {
+        Args::ListAllowedIdentities => {
             let mut errs = vec![];
             for pair in publishers {
                 match async {
@@ -230,7 +221,7 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
             }
             return Err(loga::agg_err("Error making request", errs));
         },
-        args::Admin::ListAnnouncements => {
+        Args::ListAnnouncements => {
             let mut errs = vec![];
             for pair in publishers {
                 match async {
@@ -260,7 +251,7 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
             }
             return Err(loga::agg_err("Error making request", errs));
         },
-        args::Admin::ListKeys(config) => {
+        Args::ListKeys(config) => {
             let mut errs = vec![];
             for pair in publishers {
                 let pair = pair.join(format!("publish/admin/keys/{}", config.identity));
@@ -288,7 +279,7 @@ pub async fn run(log: &Log, config: args::Admin) -> Result<(), loga::Error> {
             }
             return Err(loga::agg_err("Error making request", errs));
         },
-        args::Admin::SyncAllowedIdentities(sync) => {
+        Args::SyncAllowedIdentities(sync) => {
             for pair in publishers {
                 let mut conn =
                     connect_publisher_node(log, &resolvers, &pair).await.context("Error connecting to server")?;

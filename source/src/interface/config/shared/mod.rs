@@ -309,7 +309,7 @@ impl JsonSchema for AdnSocketAddr {
 
 /// An identity with its associated secret.
 #[derive(Clone, Aargvark, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum IdentitySecretArg {
     /// A file containing a generated key
     Local(PathBuf),
@@ -324,14 +324,14 @@ pub enum IdentitySecretArg {
 }
 
 #[derive(Deserialize, Serialize, JsonSchema, Aargvark, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum IpVer {
     V4,
     V6,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema, Aargvark)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct GlobalAddrLookupConfig {
     /// Host to look up address on.
     pub lookup: String,
@@ -342,7 +342,7 @@ pub struct GlobalAddrLookupConfig {
 }
 
 #[derive(Deserialize, Serialize, JsonSchema, Aargvark)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum GlobalAddrConfig {
     /// Use this if you know the IP address beforehand (ex: in terraform, if you
     /// allocate a floating ip before provisioning this host) and it's not the address

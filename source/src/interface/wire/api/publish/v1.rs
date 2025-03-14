@@ -24,7 +24,7 @@ use crate::{
 };
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct JsonSignature<T: Serialize + DeserializeOwned, I> {
     pub message: String,
     pub signature: Blob,
@@ -43,28 +43,28 @@ impl<T: Serialize + DeserializeOwned, I> std::fmt::Debug for JsonSignature<T, I>
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AnnounceRequest {
     pub identity: Identity,
     pub announcement: stored::announcement::Announcement,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct DeleteAnnouncementRequest {
     pub identity: Identity,
     pub challenge: JsonSignature<(), Identity>,
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct InfoResponse {
     pub advertise_addr: SocketAddr,
     pub cert_pub_hash: Blob,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct PublishRequestContent {
     /// Update TTL for negative responses (in minutes). Defaults to 0 (don't cache
     /// missing responses).
@@ -79,7 +79,7 @@ pub struct PublishRequestContent {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct PublishRequest {
     pub identity: Identity,
     pub content: JsonSignature<PublishRequestContent, Identity>,

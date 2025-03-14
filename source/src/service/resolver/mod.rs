@@ -30,11 +30,6 @@ use {
             VisErr,
         },
     },
-    chrono::{
-        DateTime,
-        Duration,
-        Utc,
-    },
     flowcontrol::shed,
     htwrap::{
         htreq::{
@@ -50,9 +45,7 @@ use {
             },
         },
     },
-    hyper::{
-        Uri,
-    },
+    hyper::Uri,
     hyper_rustls::HttpsConnectorBuilder,
     loga::{
         ea,
@@ -73,6 +66,10 @@ use {
         path::Path,
         str::FromStr,
         sync::Arc,
+        time::{
+            Duration,
+            SystemTime,
+        },
     },
     taskmanager::TaskManager,
     tokio::{
@@ -155,7 +152,7 @@ impl rustls::client::danger::ServerCertVerifier for SingleKeyVerifier {
 struct Resolver_ {
     node: Node,
     log: Log,
-    cache: Cache<(Identity, RecordKey), (DateTime<Utc>, Option<String>)>,
+    cache: Cache<(Identity, RecordKey), (SystemTime, Option<String>)>,
     publisher: Option<Arc<Publisher>>,
     global_addrs: Vec<IpAddr>,
 }
@@ -187,7 +184,7 @@ impl Resolver {
             setup_db(&cache_dir.join("resolver.sqlite3"), db::migrate)
                 .await
                 .stack_context(log, "Error initializing database")?;
-        let cache = Cache::builder().weigher(|_key, pair: &(DateTime<Utc>, Option<String>)| -> u32 {
+        let cache = Cache::builder().weigher(|_key, pair: &(SystemTime, Option<String>)| -> u32 {
             match &pair.1 {
                 Some(v) => v.len().try_into().unwrap_or(u32::MAX),
                 None => 1,
@@ -209,7 +206,10 @@ impl Resolver {
                         .await?? {
                         edge = Some(row.rowid);
                         cache
-                            .insert((row.identity.clone(), split_record_key(&row.key)), (row.expires, row.value))
+                            .insert(
+                                (row.identity.clone(), split_record_key(&row.key)),
+                                (row.expires.into(), row.value),
+                            )
                             .await;
                     }
                 }
@@ -249,7 +249,7 @@ impl Resolver {
                                     db,
                                     &k.0,
                                     &join_record_key(&k.1),
-                                    v.0,
+                                    &v.0.into(),
                                     v.1.as_ref().map(|v| v.as_str()),
                                 )?;
                             }
@@ -275,7 +275,7 @@ impl Resolver {
     ) -> Result<wire::resolve::v1::ResolveKeyValues, loga::Error> {
         // First check cache. Only respond with cache answers if all keys are in cache
         // (will be making a request anyway, might as well get fresh data).
-        let now = Utc::now();
+        let now = SystemTime::now();
         shed!{
             'missing _;
             let mut kvs = HashMap::new();
@@ -307,7 +307,7 @@ impl Resolver {
                         None => None,
                     };
                     kvs.insert(k.clone(), wire::resolve::v1::ResolveValue {
-                        expires: expiry,
+                        expires: expiry.into(),
                         data: v,
                     });
                 } else {
@@ -380,9 +380,7 @@ impl Resolver {
                 let mut conn =
                     Conn::new(
                         hyper::client::conn::http1::handshake(select!{
-                            _ = sleep(
-                                Duration::try_seconds(10).unwrap().to_std().unwrap()
-                            ) => Err(loga::err("Timeout connecting")),
+                            _ = sleep(Duration::from_secs(10)) => Err(loga::err("Timeout connecting")),
                             res = connect => res,
                         }.context_with("Error connecting to publisher", ea!(url = url))?)
                             .await
@@ -436,7 +434,7 @@ impl Resolver {
                     cache
                         .insert(
                             (identity.clone(), k.to_owned()),
-                            (v.expires, v.data.as_ref().map(|v| serde_json::to_string(v).unwrap())),
+                            (v.expires.into(), v.data.as_ref().map(|v| serde_json::to_string(v).unwrap())),
                         )
                         .await;
                 }

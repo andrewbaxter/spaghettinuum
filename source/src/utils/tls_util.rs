@@ -1,7 +1,9 @@
 use {
-    super::blob::{
-        Blob,
-        ToBlob,
+    super::{
+        blob::{
+            Blob,
+            ToBlob,
+        },
     },
     crate::interface::{
         stored::{
@@ -11,12 +13,6 @@ use {
         },
         wire::resolve::DNS_SUFFIX,
     },
-    chrono::{
-        DateTime,
-        Datelike,
-        Duration,
-        Utc,
-    },
     der::{
         oid::AssociatedOid,
         Decode,
@@ -25,7 +21,10 @@ use {
     },
     flowcontrol::shed,
     futures::Future,
-    loga::ResultContext,
+    loga::{
+        conversion::ResultIgnore,
+        ResultContext,
+    },
     p256::ecdsa::DerSignature,
     pem::Pem,
     rand::RngCore,
@@ -39,6 +38,9 @@ use {
         collections::HashSet,
         str::FromStr,
         sync::Arc,
+        time::{
+            SystemTime,
+        },
     },
     x509_cert::{
         builder::Builder,
@@ -55,23 +57,16 @@ pub fn encode_priv_pem(der: &[u8]) -> String {
     return Pem::new("PRIVATE KEY", der).to_string();
 }
 
-pub fn extract_expiry(pub_pem: &[u8]) -> Result<DateTime<Utc>, loga::Error> {
+pub fn extract_expiry(pub_pem: &[u8]) -> Result<SystemTime, loga::Error> {
     return Ok(
-        DateTime::<Utc>::UNIX_EPOCH +
-            Duration::try_seconds(
-                Certificate::load_pem_chain(pub_pem)
-                    .context("Received invalid pub cert pem from certifier")?
-                    .first()
-                    .context("No certs in received pem")?
-                    .tbs_certificate
-                    .validity
-                    .not_after
-                    .to_system_time()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as
-                    i64,
-            ).context("Expiry out of range")?,
+        Certificate::load_pem_chain(pub_pem)
+            .context("Received invalid pub cert pem from certifier")?
+            .first()
+            .context("No certs in received pem")?
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_system_time(),
     );
 }
 
@@ -352,12 +347,8 @@ pub fn rand_serial() -> x509_cert::serial_number::SerialNumber {
 }
 
 /// Convert time from chrono into x509 time format (day granularity)
-pub fn to_x509_time(t: DateTime<Utc>) -> x509_cert::time::Time {
-    return x509_cert::time::Time::GeneralTime(
-        der::asn1::GeneralizedTime::from_date_time(
-            der::DateTime::new(t.year() as u16, t.month() as u8, t.day() as u8, 0, 0, 0).unwrap(),
-        ),
-    );
+pub fn to_x509_time(t: SystemTime) -> x509_cert::time::Time {
+    return x509_cert::time::Time::GeneralTime(der::asn1::GeneralizedTime::from_system_time(t).unwrap());
 }
 
 pub async fn create_leaf_cert_der<
@@ -368,8 +359,8 @@ pub async fn create_leaf_cert_der<
     requester_key_info: x509_cert::spki::SubjectPublicKeyInfoOwned,
     fqdn: &str,
     signature_ext: Option<stored::cert::v1::X509ExtSpagh>,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
+    start: SystemTime,
+    end: SystemTime,
     issuer_signer: S,
     issuer_signer2: S2,
     issuer_fqdn: &str,
@@ -442,8 +433,8 @@ where
 pub async fn create_leaf_cert_der_local(
     key: p256::ecdsa::SigningKey,
     fqdn: &str,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
+    start: SystemTime,
+    end: SystemTime,
     signature_ext: Option<stored::cert::v1::X509ExtSpagh>,
     issuer_fqdn: &str,
 ) -> Result<Blob, loga::Error> {

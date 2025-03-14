@@ -17,7 +17,7 @@ pub mod record_utils;
 pub use v1 as latest;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RecordValue {
     V1(v1::RecordValue),
 }

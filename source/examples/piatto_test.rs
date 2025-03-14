@@ -18,46 +18,48 @@
 //! ```bash
 //! qdisc del dev lo root
 //! ```
-use std::{
-    net::{
-        SocketAddr,
-        SocketAddrV4,
-        Ipv4Addr,
-    },
-    env::current_dir,
-};
-use chrono::{
-    Utc,
-    Duration,
-};
-use ipnet::IpAdd;
-use itertools::Itertools;
-use loga::Log;
-use spaghettinuum::{
-    interface::{
-        config::{
-            identity::LocalIdentitySecret,
-            shared::StrSocketAddr,
-        },
-        stored::{
-            self,
-            announcement::latest::{
-                AnnouncementContent,
-                AnnouncementPublisher,
+use {
+    ipnet::IpAdd,
+    itertools::Itertools,
+    loga::Log,
+    spaghettinuum::{
+        interface::{
+            config::{
+                identity::LocalIdentitySecret,
+                shared::StrSocketAddr,
             },
-            shared::SerialAddr,
+            stored::{
+                self,
+                announcement::latest::{
+                    AnnouncementContent,
+                    AnnouncementPublisher,
+                },
+                shared::SerialAddr,
+            },
+            wire::node::latest::NodeInfo,
         },
-        wire::node::latest::NodeInfo,
+        service::node::Node,
+        utils::{
+            blob::Blob,
+            signed::IdentSignatureMethods,
+        },
     },
-    service::node::Node,
-    utils::{
-        blob::Blob,
-        signed::IdentSignatureMethods,
+    std::{
+        env::current_dir,
+        net::{
+            Ipv4Addr,
+            SocketAddr,
+            SocketAddrV4,
+        },
+        time::{
+            Duration,
+            SystemTime,
+        },
     },
-};
-use tokio::{
-    fs::create_dir_all,
-    select,
+    tokio::{
+        fs::create_dir_all,
+        select,
+    },
 };
 
 #[tokio::main]
@@ -86,15 +88,13 @@ async fn main() {
             nodes.push(node.clone());
             prev_node = Some((SerialAddr(addr), node.node_identity()));
         }
-
         select!{
             _ = tm.until_terminate() => {
                 return Ok(());
             },
-            _ = tokio:: time:: sleep(Duration::seconds(60).to_std().unwrap()) => {
+            _ = tokio:: time:: sleep(Duration::from_secs(60)) => {
             }
         }
-
         let (ident, mut ident_secret) = LocalIdentitySecret::new();
         let message_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(169, 168, 167, 165), 1111));
         let (_, message_signature) =
@@ -103,9 +103,8 @@ async fn main() {
                     addr: SerialAddr(message_addr),
                     cert_hash: Blob::new(0),
                 }],
-                announced: Utc::now(),
+                announced: SystemTime::now().into(),
             }).unwrap();
-
         select!{
             _ = tm.until_terminate() => {
                 return Ok(());
@@ -114,7 +113,6 @@ async fn main() {
                 0
             ).unwrap().put(ident.clone(), stored::announcement::Announcement::V1(message_signature)) =>(),
         };
-
         let mut i = 0;
         let found = loop {
             let x = select!{
@@ -129,14 +127,12 @@ async fn main() {
                     if i > 10 {
                         panic!("value never found");
                     }
-
                     select!{
                         _ = tm.until_terminate() => {
                         },
-                        _ = tokio:: time:: sleep(Duration::seconds(10).to_std().unwrap()) => {
+                        _ = tokio:: time:: sleep(Duration::from_secs(10)) => {
                         }
                     }
-
                     i += 1;
                 },
             }

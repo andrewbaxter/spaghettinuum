@@ -157,11 +157,11 @@ pub async fn remote_resolve_global_ip(
     return Ok(ip);
 }
 
-pub async fn resolve_global_ip(log: &Log, config: GlobalAddrConfig) -> Result<IpAddr, loga::Error> {
+pub async fn resolve_global_ip(log: &Log, config: &GlobalAddrConfig) -> Result<IpAddr, loga::Error> {
     return Ok(match config {
         GlobalAddrConfig::Fixed(s) => {
             log.log_with(loga::INFO, "Identified fixed public ip address from config", ea!(addr = s));
-            s
+            *s
         },
         GlobalAddrConfig::FromInterface { name, ip_version } => {
             let res = loop {

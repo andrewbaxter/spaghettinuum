@@ -1,4 +1,5 @@
 use {
+    aargvark::Aargvark,
     loga::{
         ea,
         DebugDisplay,
@@ -29,112 +30,106 @@ use {
     tokio::{
         fs::create_dir_all,
         io::{
-            stdin, stdout, AsyncReadExt, AsyncWriteExt
+            stdin,
+            stdout,
+            AsyncReadExt,
+            AsyncWriteExt,
         },
     },
 };
 
-pub mod args {
-    use {
-        aargvark::{
-            Aargvark,
-        },
-        std::path::PathBuf,
-    };
-
-    #[derive(Aargvark)]
-    pub struct SshShell {
-        // User, defaults to root.
-        #[vark(flag = "-u", flag = "--user")]
-        pub user: Option<String>,
-        pub host: String,
-        // Ssh port, defaults to 22.
-        #[vark(flag = "-p", flag = "--port")]
-        pub port: Option<u16>,
-        /// Use a specific key file instead of whatever's automatically detected.
-        #[vark(flag = "-i", flag = "--keyfile")]
-        pub key: Option<PathBuf>,
-        pub command: Option<Vec<String>>,
-    }
-
-    #[derive(Aargvark)]
-    pub enum Preposition {
-        /// Place the file or directory as a child of the destination path, using the
-        /// filename of the source path to name the destination file.
-        In,
-        /// Place the file or directory at the exact destination path. If a file, the
-        /// destination must not exist or be a file. If a directory, the destination must
-        /// not exist or be a directory, and the contents of the source will be created in
-        /// the destination.
-        At,
-    }
-
-    #[derive(Aargvark)]
-    pub struct SshDownload {
-        // User, defaults to root.
-        #[vark(flag = "-u", flag = "--user")]
-        pub user: Option<String>,
-        pub host: String,
-        #[vark(flag = "-p", flag = "--port")]
-        // Ssh port, defaults to 22.
-        pub port: Option<u16>,
-        /// Use a specific key file instead of whatever's automatically detected.
-        #[vark(flag = "-i", flag = "--keyfile")]
-        pub key: Option<PathBuf>,
-        /// Absolute path to a file or directory to download.
-        pub remote: PathBuf,
-        pub preposition: Preposition,
-        /// Path of where to place the file on the local host.
-        pub local: PathBuf,
-        /// Create the parent directories on the destination if they don't already exist.
-        pub create_dirs: Option<()>,
-        /// By default, newer files in the destination are skipped. This flag disables that
-        /// behavior.
-        pub no_skip_newer: Option<()>,
-        /// When transfering a directory, delete files in the destination that aren't in
-        /// the source so that the directory contents are equal afterwards.
-        pub sync: Option<()>,
-    }
-
-    #[derive(Aargvark)]
-    pub struct SshUpload {
-        // User, defaults to root.
-        #[vark(flag = "-u", flag = "--user")]
-        pub user: Option<String>,
-        pub host: String,
-        #[vark(flag = "-p", flag = "--port")]
-        // Ssh port, defaults to 22.
-        pub port: Option<u16>,
-        /// Use a specific key file instead of whatever's automatically detected.
-        #[vark(flag = "-i", flag = "--keyfile")]
-        pub key: Option<PathBuf>,
-        /// Path to a file or directory to upload.
-        pub local: PathBuf,
-        pub preposition: Preposition,
-        /// Absolute path of where to place the file on the remote.
-        pub remote: PathBuf,
-        /// Create the parent directories on the destination if they don't already exist.
-        pub create_dirs: Option<()>,
-        /// By default, newer files in the destination are skipped. This flag disables that
-        /// behavior.
-        pub no_skip_newer: Option<()>,
-        /// When transfering a directory, delete files in the destination that aren't in
-        /// the source so that the directory contents are equal afterwards.
-        pub sync: Option<()>,
-    }
-
-    #[derive(Aargvark)]
-    pub enum Ssh {
-        Shell(SshShell),
-        Download(SshDownload),
-        Upload(SshUpload),
-    }
+#[derive(Aargvark)]
+pub struct SshShell {
+    // User, defaults to root.
+    #[vark(flag = "-u", flag = "--user")]
+    pub user: Option<String>,
+    pub host: String,
+    // Ssh port, defaults to 22.
+    #[vark(flag = "-p", flag = "--port")]
+    pub port: Option<u16>,
+    /// Use a specific key file instead of whatever's automatically detected.
+    #[vark(flag = "-i", flag = "--keyfile")]
+    pub key: Option<PathBuf>,
+    pub command: Option<Vec<String>>,
 }
 
-pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
+#[derive(Aargvark)]
+pub enum Preposition {
+    /// Place the file or directory as a child of the destination path, using the
+    /// filename of the source path to name the destination file.
+    In,
+    /// Place the file or directory at the exact destination path. If a file, the
+    /// destination must not exist or be a file. If a directory, the destination must
+    /// not exist or be a directory, and the contents of the source will be created in
+    /// the destination.
+    At,
+}
+
+#[derive(Aargvark)]
+pub struct SshDownload {
+    // User, defaults to root.
+    #[vark(flag = "-u", flag = "--user")]
+    pub user: Option<String>,
+    pub host: String,
+    #[vark(flag = "-p", flag = "--port")]
+    // Ssh port, defaults to 22.
+    pub port: Option<u16>,
+    /// Use a specific key file instead of whatever's automatically detected.
+    #[vark(flag = "-i", flag = "--keyfile")]
+    pub key: Option<PathBuf>,
+    /// Absolute path to a file or directory to download.
+    pub remote: PathBuf,
+    pub preposition: Preposition,
+    /// Path of where to place the file on the local host.
+    pub local: PathBuf,
+    /// Create the parent directories on the destination if they don't already exist.
+    pub create_dirs: Option<()>,
+    /// By default, newer files in the destination are skipped. This flag disables that
+    /// behavior.
+    pub no_skip_newer: Option<()>,
+    /// When transfering a directory, delete files in the destination that aren't in
+    /// the source so that the directory contents are equal afterwards.
+    pub sync: Option<()>,
+}
+
+#[derive(Aargvark)]
+pub struct SshUpload {
+    // User, defaults to root.
+    #[vark(flag = "-u", flag = "--user")]
+    pub user: Option<String>,
+    pub host: String,
+    #[vark(flag = "-p", flag = "--port")]
+    // Ssh port, defaults to 22.
+    pub port: Option<u16>,
+    /// Use a specific key file instead of whatever's automatically detected.
+    #[vark(flag = "-i", flag = "--keyfile")]
+    pub key: Option<PathBuf>,
+    /// Path to a file or directory to upload.
+    pub local: PathBuf,
+    pub preposition: Preposition,
+    /// Absolute path of where to place the file on the remote.
+    pub remote: PathBuf,
+    /// Create the parent directories on the destination if they don't already exist.
+    pub create_dirs: Option<()>,
+    /// By default, newer files in the destination are skipped. This flag disables that
+    /// behavior.
+    pub no_skip_newer: Option<()>,
+    /// When transfering a directory, delete files in the destination that aren't in
+    /// the source so that the directory contents are equal afterwards.
+    pub sync: Option<()>,
+}
+
+#[derive(Aargvark)]
+pub enum Args {
+    Shell(SshShell),
+    Download(SshDownload),
+    Upload(SshUpload),
+}
+
+pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
     match config {
-        args::Ssh::Shell(config) => {
-            struct Inner(args::SshShell);
+        Args::Shell(config) => {
+            struct Inner(SshShell);
 
             impl SshConnectHandler for Inner {
                 async fn run(self, conn: SshConn) -> Result<(), loga::Error> {
@@ -219,8 +214,8 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
                 Inner(config),
             ).await?;
         },
-        args::Ssh::Download(config) => {
-            struct Inner(args::SshDownload);
+        Args::Download(config) => {
+            struct Inner(SshDownload);
 
             impl SshConnectHandler for Inner {
                 async fn run(self, conn: SshConn) -> Result<(), loga::Error> {
@@ -234,13 +229,13 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
                     // Prep (calc)
                     let local = config.local.absolutize().context("Invalid local path")?;
                     let local = match config.preposition {
-                        args::Preposition::In => local.join(
+                        Preposition::In => local.join(
                             config
                                 .remote
                                 .file_name()
                                 .context("File name of remote path unknown, can't form local path (`in`)")?,
                         ),
-                        args::Preposition::At => local.to_path_buf(),
+                        Preposition::At => local.to_path_buf(),
                     };
                     let str_remote =
                         config
@@ -298,8 +293,8 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
                 Inner(config),
             ).await?;
         },
-        args::Ssh::Upload(config) => {
-            struct Inner(args::SshUpload);
+        Args::Upload(config) => {
+            struct Inner(SshUpload);
 
             impl SshConnectHandler for Inner {
                 async fn run(self, conn: SshConn) -> Result<(), loga::Error> {
@@ -314,7 +309,7 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
                     // Prep ( calc)
                     let remote = config.remote.absolutize().context("Invalid remote path")?;
                     let remote = match config.preposition {
-                        args::Preposition::In => remote.join(
+                        Preposition::In => remote.join(
                             PathBuf::from(
                                 config
                                     .local
@@ -322,7 +317,7 @@ pub async fn run(log: &Log, config: args::Ssh) -> Result<(), loga::Error> {
                                     .context("File name of local path unknown, can't form remote path (`in`)")?,
                             ),
                         ),
-                        args::Preposition::At => remote.to_path_buf(),
+                        Preposition::At => remote.to_path_buf(),
                     };
 
                     // Prep (mutation)

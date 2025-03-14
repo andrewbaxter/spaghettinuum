@@ -43,13 +43,6 @@ use {
         },
     },
     async_trait::async_trait,
-    chrono::{
-        DateTime,
-        Duration,
-        NaiveDate,
-        NaiveDateTime,
-        Utc,
-    },
     deadpool_sqlite::Pool,
     flowcontrol::shed,
     good_ormning_runtime::GoodError,
@@ -60,6 +53,10 @@ use {
     http_body_util::BodyExt,
     htwrap::htserve::{
         self,
+        auth::{
+            check_auth_token_hash,
+            AuthTokenHash,
+        },
         responses::{
             response_200,
             response_200_json,
@@ -68,13 +65,10 @@ use {
             response_404,
             response_503,
         },
-        auth::{
-            check_auth_token_hash,
-            AuthTokenHash,
-        },
     },
     loga::{
         ea,
+        DebugDisplay,
         Log,
         ResultContext,
     },
@@ -94,6 +88,11 @@ use {
             Arc,
             Mutex,
             RwLock,
+        },
+        time::{
+            Duration,
+            SystemTime,
+            UNIX_EPOCH,
         },
     },
     taskmanager::TaskManager,
@@ -162,8 +161,8 @@ impl Publisher {
                         create_leaf_cert_der_local(
                             priv_key.clone(),
                             "unused",
-                            DateTime::UNIX_EPOCH,
-                            NaiveDateTime::from(NaiveDate::from_ymd_opt(9999, 12, 31).unwrap()).and_utc(),
+                            UNIX_EPOCH,
+                            UNIX_EPOCH + Duration::from_secs(60 * 60 * 24 * 365 * 5000),
                             None,
                             "unused",
                         ).await?;
@@ -274,7 +273,7 @@ impl Publisher {
                 }
             },
         );
-        tm.periodic("Publisher - periodic announce", Duration::try_hours(1).unwrap().to_std().unwrap(), {
+        tm.periodic("Publisher - periodic announce", Duration::from_secs(60 * 60 * 1), {
             let log = log.fork(ea!(subsys = "periodic_announce"));
             cap_fn!(()(log, publisher, node) {
                 match async {
@@ -334,8 +333,8 @@ impl Publisher {
                                             "Received more up to date announcement from network, discarding obsolete local announcement",
                                             ea!(
                                                 identity = identity,
-                                                remote_announced = remote_announced,
-                                                local_announced = local_announced
+                                                remote_announced = remote_announced.dbg_str(),
+                                                local_announced = local_announced.dbg_str()
                                             ),
                                         );
                                         db::announcements_delete(db, &identity)?;
@@ -468,25 +467,24 @@ impl Publisher {
         return Ok(self.db_pool.tx(move |db| {
             let mut out = HashMap::new();
             let missing_ttl = db::ident_get(db, &identity)?.unwrap_or_else(|| 0);
-            let now = Utc::now();
+            let now = SystemTime::now();
             for k in keys {
                 let expires;
                 let data;
                 match db::values_get(db, &identity, &join_record_key(&k))? {
                     Some(v) => match v {
                         stored::record::RecordValue::V1(v) => {
-                            expires = now + Duration::try_minutes(v.ttl as i64).context("TTL out of range")?;
+                            expires = now + Duration::from_secs(60 * v.ttl);
                             data = v.data;
                         },
                     },
                     None => {
-                        expires =
-                            now + Duration::try_minutes(missing_ttl as i64).context("Missing-TTL out of range")?;
+                        expires = now + Duration::from_secs(60 * missing_ttl as u64);
                         data = None;
                     },
                 }
                 out.insert(k.clone(), wire::resolve::v1::ResolveValue {
-                    expires: expires,
+                    expires: expires.into(),
                     data: data,
                 });
             }
@@ -691,7 +689,7 @@ pub async fn build_api_endpoints_with_authorizer(
     return Ok(routes);
 }
 
-pub async fn build_api_endpoints(
+pub async fn build_api_publish_external_endpoints(
     log: &Log,
     publisher: &Arc<Publisher>,
     admin_token: &AuthTokenHash,

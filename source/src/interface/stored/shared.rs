@@ -11,21 +11,21 @@ use serde::{
 };
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum SerialAddrInner {
     V4(SerialIpv4),
     V6(SerialIpv6),
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct SerialIpv4 {
     addr: [u8; 4],
     port: u16,
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct SerialIpv6 {
     addr: [u16; 8],
     port: u16,

@@ -5,7 +5,7 @@ use serde::{
 use crate::utils::blob::Blob;
 
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Certs {
     #[serde(rename = "pub")]
     pub pub_der: Blob,

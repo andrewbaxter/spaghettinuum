@@ -9,7 +9,7 @@ pub mod v1;
 pub use v1 as latest;
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Certs {
     V1(v1::Certs),
 }

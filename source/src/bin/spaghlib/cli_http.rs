@@ -1,5 +1,12 @@
 use {
-    http::Method,
+    aargvark::{
+        traits_impls::AargvarkFile,
+        Aargvark,
+    },
+    http::{
+        Method,
+        Uri,
+    },
     http_body_util::Full,
     htwrap::htreq,
     hyper::body::Bytes,
@@ -26,6 +33,7 @@ use {
             HashMap,
             HashSet,
         },
+        path::PathBuf,
         time::Duration,
     },
     tokio::{
@@ -34,48 +42,34 @@ use {
     },
 };
 
-pub mod args {
-    use {
-        aargvark::{
-            traits_impls::AargvarkFile,
-            Aargvark,
-        },
-        http::Uri,
-        std::{
-            collections::HashMap,
-            path::PathBuf,
-        },
-    };
-
-    #[derive(Aargvark)]
-    pub enum HttpMethod {
-        Head,
-        Options,
-        Get,
-        Put,
-        Post,
-        Patch,
-        Delete,
-    }
-
-    #[derive(Aargvark)]
-    pub struct Http {
-        pub method: HttpMethod,
-        pub url: Uri,
-        pub headers: Option<HashMap<String, String>>,
-        pub params: Option<HashMap<String, String>>,
-        pub body: Option<String>,
-        /// Like `body` but read from a file.
-        pub body_file: Option<AargvarkFile>,
-        /// Output to file instead of stdout.
-        pub output: Option<PathBuf>,
-        /// Write output metadata as json. If output is not a file, output will be a field
-        /// in the JSON.
-        pub json: Option<()>,
-    }
+#[derive(Aargvark)]
+pub enum HttpMethod {
+    Head,
+    Options,
+    Get,
+    Put,
+    Post,
+    Patch,
+    Delete,
 }
 
-pub async fn run(log: &Log, config: args::Http) -> Result<(), loga::Error> {
+#[derive(Aargvark)]
+pub struct Args {
+    pub method: HttpMethod,
+    pub url: Uri,
+    pub headers: Option<HashMap<String, String>>,
+    pub params: Option<HashMap<String, String>>,
+    pub body: Option<String>,
+    /// Like `body` but read from a file.
+    pub body_file: Option<AargvarkFile>,
+    /// Output to file instead of stdout.
+    pub output: Option<PathBuf>,
+    /// Write output metadata as json. If output is not a file, output will be a field
+    /// in the JSON.
+    pub json: Option<()>,
+}
+
+pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
     let (scheme, host, port) = htreq::uri_parts(&config.url)?;
 
     // Prepare request
@@ -85,13 +79,13 @@ pub async fn run(log: &Log, config: args::Http) -> Result<(), loga::Error> {
 
         // Method
         req = req.method(match config.method {
-            args::HttpMethod::Head => Method::HEAD,
-            args::HttpMethod::Options => Method::OPTIONS,
-            args::HttpMethod::Get => Method::GET,
-            args::HttpMethod::Put => Method::PUT,
-            args::HttpMethod::Post => Method::POST,
-            args::HttpMethod::Patch => Method::PATCH,
-            args::HttpMethod::Delete => Method::DELETE,
+            HttpMethod::Head => Method::HEAD,
+            HttpMethod::Options => Method::OPTIONS,
+            HttpMethod::Get => Method::GET,
+            HttpMethod::Put => Method::PUT,
+            HttpMethod::Post => Method::POST,
+            HttpMethod::Patch => Method::PATCH,
+            HttpMethod::Delete => Method::DELETE,
         });
 
         // Headers

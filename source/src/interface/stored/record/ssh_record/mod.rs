@@ -13,7 +13,7 @@ pub use v1 as latest;
 pub const KEY_SUFFIX_SSH_HOSTKEYS: &'static str = "ssh_hostkeys";
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SshHostKeys {
     V1(v1::SshHostKeys),
 }

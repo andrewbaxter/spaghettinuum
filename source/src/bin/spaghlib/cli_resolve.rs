@@ -1,4 +1,5 @@
 use {
+    aargvark::Aargvark,
     htwrap::htreq,
     itertools::Itertools,
     loga::{
@@ -17,21 +18,15 @@ use {
     std::collections::HashMap,
 };
 
-pub mod args {
-    use {
-        aargvark::Aargvark,
-    };
-
-    #[derive(Aargvark)]
-    pub struct Query {
-        /// Identity to query
-        pub identity: String,
-        /// Keys published by the identity, to query
-        pub keys: Vec<String>,
-    }
+#[derive(Aargvark)]
+pub struct Args {
+    /// Identity to query
+    pub identity: String,
+    /// Keys published by the identity, to query
+    pub keys: Vec<String>,
 }
 
-pub async fn run_get(log: &Log, config: args::Query) -> Result<(), loga::Error> {
+pub async fn run_get(log: &Log, config: Args) -> Result<(), loga::Error> {
     let mut errs = vec![];
     for pair in default_resolver_url_pairs(log)? {
         match async {

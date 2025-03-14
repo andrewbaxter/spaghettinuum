@@ -29,31 +29,41 @@ use {
                 IdentSignatureMethods,
                 NodeIdentSignatureMethods,
             },
-            time_util::ToInstant,
+            time_util::{
+                ToInstant,
+                UtcSecs,
+            },
         },
-    }, chrono::{
-        DateTime,
-        Duration,
-        Utc,
-    }, constant_time_eq::constant_time_eq, flowcontrol::shed, futures::channel::mpsc::{
+    },
+    constant_time_eq::constant_time_eq,
+    flowcontrol::shed,
+    futures::channel::mpsc::{
         unbounded,
         UnboundedSender,
-    }, generic_array::{
+    },
+    generic_array::{
         ArrayLength,
         GenericArray,
-    }, loga::{
+    },
+    loga::{
+        conversion::ResultIgnore,
         ea,
         DebugDisplay,
         ErrContext,
         Log,
         ResultContext,
-    }, manual_future::{
+    },
+    manual_future::{
         ManualFuture,
         ManualFutureCompleter,
-    }, rand::RngCore, serde::{
+    },
+    rand::RngCore,
+    serde::{
         Deserialize,
         Serialize,
-    }, sha2::Digest, std::{
+    },
+    sha2::Digest,
+    std::{
         collections::{
             hash_map::Entry,
             HashMap,
@@ -72,11 +82,18 @@ use {
             Arc,
             Mutex,
         },
-    }, taskmanager::TaskManager, tokio::{
+        time::{
+            Duration,
+            Instant,
+            SystemTime,
+        },
+    },
+    taskmanager::TaskManager,
+    tokio::{
         net::UdpSocket,
         select,
         time::sleep,
-    }
+    },
 };
 
 pub mod db;
@@ -97,12 +114,12 @@ const BUCKET_COUNT: usize = HASH_BITS - NEIGHBORHOOD_BITS + 1;
 const PARALLEL: usize = 3;
 
 fn req_timeout() -> Duration {
-    return Duration::try_seconds(2).unwrap();
+    return Duration::from_secs(2);
 }
 
 // All stored values expire after 24h
 fn store_expire_duration() -> Duration {
-    return Duration::try_hours(24).unwrap();
+    return Duration::from_secs(60 * 60 * 24);
 }
 
 fn dist_<N: ArrayLength<u8>>(a: &GenericArray<u8, N>, b: &GenericArray<u8, N>) -> (usize, GenericArray<u8, N>) {
@@ -192,23 +209,23 @@ fn ident_coord(x: &Identity) -> DhtCoord {
 
 #[derive(Debug)]
 struct NextFindTimeout {
-    updated: DateTime<Utc>,
+    updated: Instant,
     key: (FindGoal, usize),
 }
 
 #[derive(Clone)]
 struct ValueState {
     value: stored::announcement::Announcement,
-    received: DateTime<Utc>,
+    received: Instant,
 }
 
 struct NextPingTimeout {
-    end: DateTime<Utc>,
+    end: Instant,
     key: (node_identity::NodeIdentity, usize),
 }
 
 struct NextChallengeTimeout {
-    end: DateTime<Utc>,
+    end: Instant,
     key: (node_identity::NodeIdentity, usize),
 }
 
@@ -260,7 +277,7 @@ struct NearestNodeEntry {
 struct FindState {
     req_id: usize,
     goal: FindGoal,
-    updated: DateTime<Utc>,
+    updated: Instant,
     nearest: Vec<NearestNodeEntry>,
     outstanding: Vec<OutstandingNodeEntry>,
     seen: HashSet<node_identity::NodeIdentity>,
@@ -429,37 +446,33 @@ impl Node {
         }
 
         // Periodically save
-        tm.periodic(
-            "Node - persist state",
-            Duration::try_minutes(10).unwrap().to_std().unwrap(),
-            cap_fn!(()(log, dir, db_pool) {
-                if !dir.0.dirty.swap(false, Ordering::Relaxed) {
-                    return;
-                }
-                let db_pool = db_pool.clone();
-                match async {
-                    db_pool.get().await.context("Error getting db connection")?.interact(move |conn| {
-                        db::secret_ensure(conn, &dir.0.own_secret)?;
-                        db::neighbors_clear(conn)?;
-                        for bucket in dir.0.buckets.lock().unwrap().buckets.clone().into_iter() {
-                            for n in bucket {
-                                db::neighbors_insert(conn, &wire::node::NodeState::V1(n))?;
-                            }
+        tm.periodic("Node - persist state", Duration::from_secs(60 * 10), cap_fn!(()(log, dir, db_pool) {
+            if !dir.0.dirty.swap(false, Ordering::Relaxed) {
+                return;
+            }
+            let db_pool = db_pool.clone();
+            match async {
+                db_pool.get().await.context("Error getting db connection")?.interact(move |conn| {
+                    db::secret_ensure(conn, &dir.0.own_secret)?;
+                    db::neighbors_clear(conn)?;
+                    for bucket in dir.0.buckets.lock().unwrap().buckets.clone().into_iter() {
+                        for n in bucket {
+                            db::neighbors_insert(conn, &wire::node::NodeState::V1(n))?;
                         }
-                        return Ok(()) as Result<_, loga::Error>;
-                    }).await??;
+                    }
                     return Ok(()) as Result<_, loga::Error>;
-                }.await {
-                    Ok(_) => { },
-                    Err(e) => log.log_err(loga::WARN, e.context("Failed to persist state")),
-                }
-            }),
-        );
+                }).await??;
+                return Ok(()) as Result<_, loga::Error>;
+            }.await {
+                Ok(_) => { },
+                Err(e) => log.log_err(loga::WARN, e.context("Failed to persist state")),
+            }
+        }));
 
         // Find timeouts
         tm.stream("Node - finish timed requests", find_timeout_recv, cap_fn!((e)(dir) {
             let deadline = e.updated + req_timeout();
-            tokio::time::sleep_until(deadline.to_instant()).await;
+            tokio::time::sleep_until(deadline.into()).await;
             let state = {
                 let mut borrowed_states = dir.0.find_states.lock().unwrap();
                 let mut state_entry = match borrowed_states.entry(e.key.0) {
@@ -471,7 +484,7 @@ impl Node {
                     // for old request, out of date
                     return;
                 }
-                if state.updated + req_timeout() > Utc::now() {
+                if state.updated + req_timeout() > Instant::now() {
                     // time pushed back while this timeout was in the queue
                     return;
                 }
@@ -485,54 +498,46 @@ impl Node {
         }));
 
         // Stored data expiry
-        tm.periodic(
-            "Node - re-propagate/expire stored data",
-            Duration::try_hours(1).unwrap().to_std().unwrap(),
-            cap_fn!(()(dir) {
-                let now = Utc::now();
-                dir.0.store.lock().unwrap().retain(|_, v| {
-                    if v.received + store_expire_duration() < now {
-                        return false;
-                    }
-                    return true;
-                });
-            }),
-        );
+        tm.periodic("Node - re-propagate/expire stored data", Duration::from_secs(60 * 60 * 1), cap_fn!(()(dir) {
+            let now = Instant::now();
+            dir.0.store.lock().unwrap().retain(|_, v| {
+                if v.received + store_expire_duration() < now {
+                    return false;
+                }
+                return true;
+            });
+        }));
 
         // Pings
-        tm.periodic(
-            "Node - neighbor aliveness",
-            Duration::try_minutes(10).unwrap().to_std().unwrap(),
-            cap_fn!(()(dir, ping_timeout_write) {
-                for i in 0 .. NEIGHBORHOOD {
-                    for leading_zeros in 0 .. BUCKET_COUNT {
-                        let (id, addr) =
-                            if let Some(node) = dir.0.buckets.lock().unwrap().buckets[leading_zeros].get(i) {
-                                (node.node.ident.clone(), node.node.address.clone())
-                            } else {
-                                continue;
-                            };
-                        let req_id = dir.0.next_req_id.fetch_add(1, Ordering::Relaxed);
-                        match dir.0.ping_states.lock().unwrap().entry(id.clone()) {
-                            Entry::Occupied(_) => continue,
-                            Entry::Vacant(e) => e.insert(PingState {
-                                req_id: req_id,
-                                bucket_i: leading_zeros,
-                            }),
+        tm.periodic("Node - neighbor aliveness", Duration::from_secs(60 * 10), cap_fn!(()(dir, ping_timeout_write) {
+            for i in 0 .. NEIGHBORHOOD {
+                for leading_zeros in 0 .. BUCKET_COUNT {
+                    let (id, addr) =
+                        if let Some(node) = dir.0.buckets.lock().unwrap().buckets[leading_zeros].get(i) {
+                            (node.node.ident.clone(), node.node.address.clone())
+                        } else {
+                            continue;
                         };
-                        dir.send(&addr.0, wire::node::Protocol::V1(wire::node::latest::Message::Ping)).await;
-                        ping_timeout_write.unbounded_send(NextPingTimeout {
-                            end: Utc::now() + req_timeout(),
-                            key: (id, req_id),
-                        }).unwrap();
-                    }
+                    let req_id = dir.0.next_req_id.fetch_add(1, Ordering::Relaxed);
+                    match dir.0.ping_states.lock().unwrap().entry(id.clone()) {
+                        Entry::Occupied(_) => continue,
+                        Entry::Vacant(e) => e.insert(PingState {
+                            req_id: req_id,
+                            bucket_i: leading_zeros,
+                        }),
+                    };
+                    dir.send(&addr.0, wire::node::Protocol::V1(wire::node::latest::Message::Ping)).await;
+                    ping_timeout_write.unbounded_send(NextPingTimeout {
+                        end: Instant::now() + req_timeout(),
+                        key: (id, req_id),
+                    }).ignore();
                 }
-            }),
-        );
+            }
+        }));
 
         // Ping timeouts
         tm.stream("Node - ping timeouts", ping_timeout_recv, cap_fn!((e)(dir) {
-            tokio::time::sleep_until(e.end.to_instant()).await;
+            tokio::time::sleep_until(e.end.into()).await;
             let state = {
                 let mut borrowed_states = dir.0.ping_states.lock().unwrap();
                 let mut state_entry = match borrowed_states.entry(e.key.0.clone()) {
@@ -551,7 +556,7 @@ impl Node {
 
         // Challenge timeouts
         tm.stream("Node - challenge timeouts", challenge_timeout_recv, cap_fn!((e)(dir) {
-            tokio::time::sleep_until(e.end.to_instant()).await;
+            tokio::time::sleep_until(e.end.into()).await;
             let mut borrowed_states = dir.0.challenge_states.lock().unwrap();
             let mut state_entry = match borrowed_states.entry(e.key.0.clone()) {
                 Entry::Occupied(s) => s,
@@ -614,7 +619,7 @@ impl Node {
             async move {
                 select!{
                     _ = async {
-                        sleep(Duration::try_seconds(60).unwrap().to_std().unwrap()).await;
+                        sleep(Duration::from_secs(60)).await;
                         dir.start_find(FindGoal::Coord(node_ident_coord(&dir.0.own_ident)), None).await;
                     }
                     =>(),
@@ -695,7 +700,7 @@ impl Node {
                             .log_with(loga::DEBUG, "Own store request, storing locally", ea!(value = key.dbg_str()));
                         self.0.store.lock().unwrap().insert(key.clone(), ValueState {
                             value: value.clone(),
-                            received: Utc::now(),
+                            received: Instant::now(),
                         });
                     },
                     NearestNodeEntryNode::Node(node) => {
@@ -731,7 +736,7 @@ impl Node {
 
     async fn start_challenge(&self, id: node_identity::NodeIdentity, addr: &SocketAddr) {
         // store state by key, with futures
-        let timeout = Utc::now() + req_timeout();
+        let timeout = Instant::now() + req_timeout();
         let (challenge, req_id) = {
             let mut borrowed_states = self.0.challenge_states.lock().unwrap();
             let (challenge, state) = match borrowed_states.entry(id.clone()) {
@@ -756,7 +761,7 @@ impl Node {
         self.0.challenge_timeouts.unbounded_send(NextChallengeTimeout {
             end: timeout,
             key: (id, req_id),
-        }).unwrap();
+        }).ignore();
     }
 
     async fn start_find(&self, goal: FindGoal, fut: Option<ManualFutureCompleter<FindResult>>) {
@@ -766,7 +771,7 @@ impl Node {
         };
 
         // store state by key, with futures
-        let updated = Utc::now();
+        let updated = Instant::now();
         let mut defer = vec![];
         let req_id = {
             let mut borrowed_states = self.0.find_states.lock().unwrap();
@@ -1107,8 +1112,8 @@ impl Node {
                                     loga::DEBUG,
                                     "Received value older than one we already have",
                                     ea!(
-                                        have_published = have_published.to_rfc3339(),
-                                        found_published = found_published.to_rfc3339()
+                                        have_published = have_published.dbg_str(),
+                                        found_published = found_published.dbg_str()
                                     ),
                                 );
                                 break;
@@ -1131,7 +1136,7 @@ impl Node {
                 Some(state_entry.remove())
             } else {
                 // New things to do, bump updated time and re-queue
-                state.updated = Utc::now();
+                state.updated = Instant::now();
                 match self.0.find_timeouts.unbounded_send(NextFindTimeout {
                     updated: state.updated,
                     key: (state.goal.clone(), state.req_id),
@@ -1289,7 +1294,8 @@ impl Node {
                             new_announced = new_content.announced;
                         },
                     }
-                    if new_announced > Utc::now() + Duration::try_minutes(1).unwrap() {
+                    if <UtcSecs as Into<SystemTime>>::into(new_announced).to_instant() >
+                        Instant::now() + Duration::from_secs(60 * 1) {
                         return Err(log.err("Store request published date too far in the future"));
                     }
                     match self.0.store.lock().unwrap().entry(m.key) {
@@ -1304,19 +1310,19 @@ impl Node {
                             if new_announced >= existing_published {
                                 e.insert(ValueState {
                                     value: m.value,
-                                    received: Utc::now(),
+                                    received: Instant::now(),
                                 });
                             } else if existing_value == &m.value {
                                 e.insert(ValueState {
                                     value: m.value,
-                                    received: Utc::now(),
+                                    received: Instant::now(),
                                 });
                             }
                         },
                         Entry::Vacant(e) => {
                             e.insert(ValueState {
                                 value: m.value,
-                                received: Utc::now(),
+                                received: Instant::now(),
                             });
                         },
                     };
@@ -1465,6 +1471,11 @@ impl Node {
     async fn send(&self, addr: &SocketAddr, data: wire::node::Protocol) {
         let bytes = data.to_bytes();
         self.0.log.log_with(loga::DEBUG, "Sending", ea!(to_addr = addr, message = data.dbg_str()));
-        self.0.socket.send_to(&bytes, addr).await.unwrap();
+        self
+            .0
+            .socket
+            .send_to(&bytes, addr)
+            .await
+            .log_with(&self.0.log, loga::DEBUG, "Error sending node message", ea!(to_addr = addr));
     }
 }

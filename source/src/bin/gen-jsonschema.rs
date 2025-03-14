@@ -34,18 +34,14 @@ pub fn main() {
     let examples = readme_root.join("examples");
     fs::remove_dir_all(&out).unwrap();
     fs::create_dir_all(&out).unwrap();
-    let node_schema_raw =
-        serde_json::to_string_pretty(&schema_for!(spaghettinuum::interface::config::node::Config)).unwrap();
-    fs::write(out.join("config_spagh_node.schema.json"), &node_schema_raw).unwrap();
-    let node_schema = jsonschema::JSONSchema::compile(&serde_json::from_str(&node_schema_raw).unwrap()).unwrap();
-    validate(&node_schema, &examples.join("spagh_node_full.json"));
-    let auto_schema_raw =
-        serde_json::to_string_pretty(&schema_for!(spaghettinuum::interface::config::auto::Config)).unwrap();
-    fs::write(out.join("config_spagh_auto.schema.json"), &auto_schema_raw).unwrap();
-    let auto_schema = jsonschema::JSONSchema::compile(&serde_json::from_str(&auto_schema_raw).unwrap()).unwrap();
-    validate(&auto_schema, &examples.join("spagh_auto_discovery_only.json"));
-    validate(&auto_schema, &examples.join("spagh_auto_reverse_proxy.json"));
-    validate(&auto_schema, &examples.join("spagh_auto_static_files.json"));
+    let demon_schema_raw =
+        serde_json::to_string_pretty(&schema_for!(spaghettinuum::interface::config::spagh::Config)).unwrap();
+    fs::write(out.join("config_spagh_demon.schema.json"), &demon_schema_raw).unwrap();
+    let node_schema = jsonschema::JSONSchema::compile(&serde_json::from_str(&demon_schema_raw).unwrap()).unwrap();
+    validate(&node_schema, &examples.join("spagh_demon_full.json"));
+    validate(&node_schema, &examples.join("spagh_demon_discovery_only.json"));
+    validate(&node_schema, &examples.join("spagh_demon_reverse_proxy.json"));
+    validate(&node_schema, &examples.join("spagh_demon_static_files.json"));
     fs::write(
         out.join("record_delegate.schema.json"),
         &serde_json::to_string_pretty(&schema_for!(stored::record::delegate_record::Delegate)).unwrap(),

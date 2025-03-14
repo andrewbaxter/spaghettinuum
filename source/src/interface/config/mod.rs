@@ -19,25 +19,20 @@ pub const ENV_CONFIG: &'static str = "SPAGH_CONFIG";
 /// Persisted identity types
 pub mod identity;
 
-/// Shared configs for serving content (http, static sites or reverse proxy) by
-/// auto/node.
-pub mod content;
-
-/// Configs for `spagh-auto`
-pub mod auto;
-
-/// Configs for `spagh-node`
-pub mod node;
+/// Configs for running a `spagh` demon
+pub mod spagh;
 
 /// Common config structures
 pub mod shared;
 
 #[derive(Clone, Hash, PartialEq, Eq, Copy, Aargvark)]
 pub enum DebugFlag {
+    Admin,
     Node,
     Publish,
     Resolve,
     Dns,
     SelfTls,
     Api,
+    Content,
 }

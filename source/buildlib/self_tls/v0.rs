@@ -34,7 +34,7 @@ pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
             v,
             "z6FBFBQ15",
             "state",
-            field_str().custom("crate::interface::stored::self_tls::SelfTlsState").opt().build(),
+            field_str().custom("crate::interface::stored::self_tls::RefreshTlsState").opt().build(),
         );
     singleton_api_certs.constraint(
         v,

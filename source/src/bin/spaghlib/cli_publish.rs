@@ -1,4 +1,11 @@
 use {
+    aargvark::{
+        traits_impls::{
+            AargvarkJson,
+            NotFlag,
+        },
+        Aargvark,
+    },
     loga::{
         ea,
         Log,
@@ -7,6 +14,7 @@ use {
     serde::Serialize,
     spaghettinuum::{
         interface::{
+            config::shared::IdentitySecretArg,
             stored::{
                 self,
                 record::{
@@ -33,135 +41,116 @@ use {
         },
     },
     std::{
-        collections::HashMap,
+        collections::{
+            HashMap,
+            HashSet,
+        },
         net::{
             Ipv4Addr,
             Ipv6Addr,
         },
+        path::PathBuf,
         str::FromStr,
     },
 };
 
-pub mod args {
-    use {
-        aargvark::{
-            traits_impls::{
-                AargvarkJson,
-                NotFlag,
-            },
-            Aargvark,
-        },
-        spaghettinuum::interface::{
-            config::shared::IdentitySecretArg,
-            stored,
-        },
-        std::{
-            collections::{
-                HashMap,
-                HashSet,
-            },
-            path::PathBuf,
-        },
-    };
-
-    #[derive(Aargvark)]
-    pub struct NewLocalIdentity {
-        /// Store the new id and secret in a file at this path
-        pub path: PathBuf,
-    }
-
-    #[derive(Aargvark)]
-    pub struct UnsetAll {
-        /// Identity whose records to wipe
-        pub identity: IdentitySecretArg,
-    }
-
-    #[derive(Aargvark)]
-    pub struct Set {
-        /// Identity to publish as
-        pub identity: IdentitySecretArg,
-        /// Data to publish.  Must be json in the structure
-        /// `{KEY: {"ttl": MINUTES, "value": DATA}, ...}`. `KEY` is a string that's a
-        /// dotted list of key segments, with `/` to escape dots and escape characters.
-        pub data: AargvarkJson<HashMap<String, stored::record::latest::RecordValue>>,
-    }
-
-    #[derive(Aargvark)]
-    pub struct SetCommon {
-        /// Identity to publish
-        pub identity: IdentitySecretArg,
-        /// Dotted list of subdomains to publish under in DNS order (ex: 'a.b.c').
-        pub path: Vec<NotFlag>,
-        /// TTL for hits and misses, in minutes
-        pub ttl: u32,
-        /// A list of other DNS names (`.s` spaghettinuum names or non-spaghettinuum names).
-        pub delegate: Option<Vec<NotFlag>>,
-        /// A list of Ipv4 addresses
-        pub dns_a: Option<Vec<NotFlag>>,
-        /// A list of Ipv6 addresses
-        pub dns_aaaa: Option<Vec<NotFlag>>,
-        /// A list of valid TXT record strings
-        pub dns_txt: Option<Vec<NotFlag>>,
-        /// Mail server names. These are automatically prioritized, with the first having
-        /// priority 0, second 1, etc.
-        pub dns_mx: Option<Vec<NotFlag>>,
-    }
-
-    #[derive(Aargvark)]
-    pub struct Unset {
-        /// Identity whose keys to stop publishing
-        pub identity: IdentitySecretArg,
-        /// Keys to stop publishing
-        pub keys: HashSet<String>,
-    }
-
-    #[derive(Aargvark)]
-    pub struct ListKeys {
-        pub identity: String,
-    }
-
-    #[derive(Aargvark)]
-    pub struct Announce {
-        /// Identity to advertise this publisher for
-        pub identity: IdentitySecretArg,
-    }
-
-    #[derive(Aargvark)]
-    #[vark(break_help)]
-    pub enum Publish {
-        /// Announce the publisher server as the authority for this identity. This must be
-        /// done before any values published on this publisher can be queried, and replaces
-        /// the previous publisher.
-        Announce(Announce),
-        /// Create or replace existing publish data for an identity on a publisher server
-        Set(Set),
-        /// A shortcut for publishing common data, generating the appropriate key-values
-        /// for you
-        SetCommon(SetCommon),
-        /// Stop publishing specific records
-        Unset(Unset),
-        /// Stop publishing all records for an identity
-        UnsetAll(UnsetAll),
-    }
+#[derive(Aargvark)]
+pub struct NewLocalIdentity {
+    /// Store the new id and secret in a file at this path
+    pub path: PathBuf,
 }
 
-pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
+#[derive(Aargvark)]
+pub struct UnsetAll {
+    /// Identity whose records to wipe
+    pub identity: IdentitySecretArg,
+}
+
+#[derive(Aargvark)]
+pub struct Set {
+    /// Identity to publish as
+    pub identity: IdentitySecretArg,
+    /// Data to publish.  Must be json in the structure
+    /// `{KEY: {"ttl": MINUTES, "value": DATA}, ...}`. `KEY` is a string that's a
+    /// dotted list of key segments, with `/` to escape dots and escape characters.
+    pub data: AargvarkJson<HashMap<String, stored::record::latest::RecordValue>>,
+}
+
+#[derive(Aargvark)]
+pub struct SetCommon {
+    /// Identity to publish
+    pub identity: IdentitySecretArg,
+    /// Dotted list of subdomains to publish under in DNS order (ex: 'a.b.c').
+    pub path: Vec<NotFlag>,
+    /// TTL for hits and misses, in minutes
+    pub ttl: u32,
+    /// A list of other DNS names (`.s` spaghettinuum names or non-spaghettinuum names).
+    pub delegate: Option<Vec<NotFlag>>,
+    /// A list of Ipv4 addresses
+    pub dns_a: Option<Vec<NotFlag>>,
+    /// A list of Ipv6 addresses
+    pub dns_aaaa: Option<Vec<NotFlag>>,
+    /// A list of valid TXT record strings
+    pub dns_txt: Option<Vec<NotFlag>>,
+    /// Mail server names. These are automatically prioritized, with the first having
+    /// priority 0, second 1, etc.
+    pub dns_mx: Option<Vec<NotFlag>>,
+}
+
+#[derive(Aargvark)]
+pub struct Unset {
+    /// Identity whose keys to stop publishing
+    pub identity: IdentitySecretArg,
+    /// Keys to stop publishing
+    pub keys: HashSet<String>,
+}
+
+#[derive(Aargvark)]
+pub struct ListKeys {
+    pub identity: String,
+}
+
+#[derive(Aargvark)]
+pub struct Announce {
+    /// Identity to advertise this publisher for
+    pub identity: IdentitySecretArg,
+}
+
+#[derive(Aargvark)]
+#[vark(break_help)]
+pub enum Args {
+    /// Announce the publisher server as the authority for this identity. This must be
+    /// done before any values published on this publisher can be queried, and replaces
+    /// the previous publisher.
+    Announce(Announce),
+    /// Create or replace existing publish data for an identity on a publisher server
+    Set(Set),
+    /// A shortcut for publishing common data, generating the appropriate key-values
+    /// for you
+    SetCommon(SetCommon),
+    /// Stop publishing specific records
+    Unset(Unset),
+    /// Stop publishing all records for an identity
+    UnsetAll(UnsetAll),
+}
+
+pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
     let resolvers = default_resolver_url_pairs(log)?;
     let publishers = system_publisher_url_pairs(log)?;
     match config {
-        args::Publish::Announce(config) => {
+        Args::Announce(config) => {
             let signer =
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
             publish_util::announce(log, &resolvers, &publishers, &signer).await?;
         },
-        args::Publish::Set(config) => {
+        Args::Set(config) => {
             let signer =
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(log, &resolvers, &publishers, &signer, PublishArgs {
+            publish_util::remote_publish(log, &resolvers, &publishers, &signer, PublishArgs {
                 set: config
                     .data
                     .value
@@ -171,12 +160,12 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 ..Default::default()
             }).await?;
         },
-        args::Publish::SetCommon(config) => {
+        Args::SetCommon(config) => {
             let path = config.path.into_iter().map(|x| x.0).collect::<Vec<_>>();
 
             fn rec_val(ttl: u32, data: impl Serialize) -> stored::record::RecordValue {
                 return stored::record::RecordValue::latest(stored::record::latest::RecordValue {
-                    ttl: ttl as i32,
+                    ttl: ttl as u64,
                     data: Some(serde_json::to_value(&data).unwrap()),
                 });
             }
@@ -262,27 +251,27 @@ pub async fn run(log: &Log, config: args::Publish) -> Result<(), loga::Error> {
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(log, &resolvers, &publishers, &signer, PublishArgs {
+            publish_util::remote_publish(log, &resolvers, &publishers, &signer, PublishArgs {
                 set: kvs,
                 ..Default::default()
             }).await?;
         },
-        args::Publish::Unset(config) => {
+        Args::Unset(config) => {
             let signer =
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(log, &resolvers, &publishers, &signer, PublishArgs {
+            publish_util::remote_publish(log, &resolvers, &publishers, &signer, PublishArgs {
                 clear: config.keys.into_iter().map(|k| split_record_key(&k)).collect(),
                 ..Default::default()
             }).await?;
         },
-        args::Publish::UnsetAll(config) => {
+        Args::UnsetAll(config) => {
             let signer =
                 get_identity_signer(config.identity)
                     .await
                     .stack_context(&log, "Error constructing signer for identity")?;
-            publish_util::publish(log, &resolvers, &publishers, &signer, PublishArgs {
+            publish_util::remote_publish(log, &resolvers, &publishers, &signer, PublishArgs {
                 clear_all: true,
                 ..Default::default()
             }).await?;

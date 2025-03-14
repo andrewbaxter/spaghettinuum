@@ -12,22 +12,22 @@ use {
 
 /// A list of Ipv4 addresses
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct DnsA(pub Vec<Ipv4Addr>);
 
 /// A list of Ipv6 addresses
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct DnsAaaa(pub Vec<Ipv6Addr>);
 
 /// A list of TXT record strings. Each entry is a separate TXT record, there can be
 /// no multi-string single-record values.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct DnsTxt(pub Vec<String>);
 
 /// A list of mail server domain names.  The first will have priority 0, the second
 /// 1, etc.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct DnsMx(pub Vec<String>);

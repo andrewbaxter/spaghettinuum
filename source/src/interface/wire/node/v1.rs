@@ -17,7 +17,7 @@ use crate::utils::blob::{
 };
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct BincodeSignature<T: Serialize + DeserializeOwned, I> {
     pub message: Blob,
     pub signature: Blob,
@@ -70,14 +70,14 @@ impl<'a> Deserialize<'a> for DhtCoord {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum FindGoal {
     Coord(DhtCoord),
     Identity(Identity),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct FindRequest {
     pub sender: NodeIdentity,
     pub challenge: Blob,
@@ -85,14 +85,14 @@ pub struct FindRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct NodeInfo {
     pub ident: NodeIdentity,
     pub address: SerialAddr,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct FindResponseContent {
     pub goal: FindGoal,
     pub challenge: Blob,
@@ -102,35 +102,35 @@ pub struct FindResponseContent {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct FindResponse {
     pub sender: NodeIdentity,
     pub content: BincodeSignature<FindResponseContent, NodeIdentity>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct StoreRequest {
     pub key: Identity,
     pub value: Announcement,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct StoreResponse {
     pub key: Identity,
     pub value: Announcement,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ChallengeResponse {
     pub sender: NodeIdentity,
     pub signature: Blob,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Message {
     FindRequest(FindRequest),
     FindResponse(FindResponse),
@@ -152,7 +152,7 @@ impl Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct NodeState {
     pub node: NodeInfo,
     pub unresponsive: bool,
