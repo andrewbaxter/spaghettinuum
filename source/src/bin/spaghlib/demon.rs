@@ -317,8 +317,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                                 }
                             ),
                         ),
-                    )
-                    .unwrap();
+                    );
                 return Ok(admin_token);
             }.await.context("Error setting up admin endpoint");
             self.admin = Some(res.clone());
@@ -640,8 +639,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                 );
             setup_state
                 .api_routes
-                .insert(format!("/{}", API_ROUTE_RESOLVE), Box::new(resolver::build_api_endpoints(log, &resolver)))
-                .unwrap();
+                .insert(format!("/{}", API_ROUTE_RESOLVE), Box::new(resolver::build_api_endpoints(log, &resolver)));
             return Ok(());
         }.await.context("Error setting up `enable_resolver_rest`")?;
     }
