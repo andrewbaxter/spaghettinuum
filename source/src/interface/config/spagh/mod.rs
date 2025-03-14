@@ -169,6 +169,8 @@ pub enum ContentSource {
     },
 }
 
+/// Map of socket address -> route (empty path with no slash, or slash-prefixed
+/// path) -> content to serve.
 pub type FunctionServeContent = HashMap<StrSocketAddr, HashMap<String, ContentSource>>;
 
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
@@ -221,6 +223,7 @@ pub struct Config {
     /// Function: enable the admin rest endpoints.
     ///
     /// This is required if `enable_external_publish` is on.
+    #[serde(default)]
     pub enable_admin: Option<FunctionAdmin>,
     /// Function: publish the detected global IP address under the configured self
     /// identity.
@@ -231,9 +234,11 @@ pub struct Config {
     /// Function: publish the current host's ssh host public key.
     ///
     /// This allows the spagh ssh client to resolve the host key via the host identity.
+    #[serde(default)]
     pub enable_self_publish_ssh_key: Option<FunctionPublishSelfSshKeys>,
     /// Function: generate and publish tls certificates, automatically refreshing
     /// before they expire.
+    #[serde(default)]
     pub enable_self_publish_tls: bool,
     /// Function: generate and write tls certificates to a directory
     ///
@@ -243,6 +248,7 @@ pub struct Config {
     /// The certs are written with a delay of the published tls record ttl (plus a bit)
     /// if `enable_self_publish_tls` is on so that clients have a chance to refresh
     /// their expected certs before opening a new connection.
+    #[serde(default)]
     pub enable_write_tls: Option<FunctionWriteTls>,
     /// Function: enable external publishers to publish records via the rest api.
     ///
@@ -253,11 +259,13 @@ pub struct Config {
     #[serde(default)]
     pub enable_resolver_rest: bool,
     /// Function: enable resolver queries via dns (via `IDENTITY.s` names).
+    #[serde(default)]
     pub enable_resolver_dns: Option<FunctionResolverDns>,
     /// Function: serve http content (static files or reverse proxy) using a
     /// spaghettinuum TLS certificate.
     ///
     /// This is a mapping of interface IPs and ports to bind, to subpaths, to content
     /// sources.
+    #[serde(default)]
     pub enable_serve_content: FunctionServeContent,
 }
