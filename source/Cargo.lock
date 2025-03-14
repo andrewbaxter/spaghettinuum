@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "aargvark"
-version = "0.6.12"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "849cf0d37af3b9f7813e27190d79ee0d333e257a90b99298ee97be6f069686e8"
+checksum = "1106e812383dcee2dce3fbf21e450e38fe3fb9e4e2193ed21d84c4c70796996d"
 dependencies = [
  "aargvark_proc_macros",
  "comfy-table",
@@ -16,6 +16,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "shell-escape",
  "textwrap",
  "unicode-width 0.1.14",
  "url",
@@ -23,13 +24,14 @@ dependencies = [
 
 [[package]]
 name = "aargvark_proc_macros"
-version = "3.2.12"
+version = "3.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52ac8a005249aa636ea4a15b40f7f4fe64bd9790fb1f3b06277277c8de3239a6"
+checksum = "635362ef9806d94ab16e5f55ac9d6ef6fba488be2ad4f3ec56642070267f118d"
 dependencies = [
  "convert_case 0.6.0",
  "darling",
- "genemichaels-lib",
+ "flowcontrol",
+ "genemichaels-lib 0.7.1",
  "proc-macro2",
  "quote",
  "syn 2.0.96",
@@ -1586,6 +1588,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "genemichaels-lib"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b748f709dd232b5c3aa0fbe91babbb67d703bc90c614530f26e0ca5a5ace3165"
+dependencies = [
+ "cargo-manifest",
+ "derive_more",
+ "loga",
+ "markdown",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "serde",
+ "serde_json",
+ "syn 2.0.96",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1659,7 +1679,7 @@ checksum = "82d17e05b4147c54005056e20bb26bca9eaed12dec764a57dc4308efdc9c0eec"
 dependencies = [
  "enum_dispatch",
  "flowcontrol",
- "genemichaels-lib",
+ "genemichaels-lib 0.5.11",
  "hex",
  "proc-macro2",
  "quote",
@@ -1997,7 +2017,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "socket2 0.4.10",
+ "socket2 0.5.8",
  "tokio",
  "tower-service",
  "tracing",
@@ -3858,7 +3878,7 @@ version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e48a73567f820686716195f46520651fc6b60eab4c77669603fbc967a2050fee"
 dependencies = [
- "genemichaels-lib",
+ "genemichaels-lib 0.5.11",
  "proc-macro2",
  "quote",
  "syn 2.0.96",
