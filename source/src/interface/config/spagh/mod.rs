@@ -156,7 +156,7 @@ pub struct FunctionResolverDns {
     pub synthetic_self_record: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Clone)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContentSource {
     StaticFiles {

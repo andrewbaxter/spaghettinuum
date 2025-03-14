@@ -209,7 +209,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
 
     // Start node
     let node = {
-        let log = log.fork_with_log_from(debug_level(&debug_flags, DebugFlag::Node), ea!(sys = "node"));
+        let log = Log::new_root(debug_level(&debug_flags, DebugFlag::Node)).fork(ea!(sys = "node"));
         let mut bootstrap = vec![];
         match &config.node.bootstrap {
             Some(bootstrap1) => {
@@ -246,7 +246,6 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
         tm: TaskManager,
         config: Config,
         node: Node,
-        log: Log,
         global_ips: Vec<IpAddr>,
         debug_flags: HashSet<DebugFlag>,
         // Outputs
@@ -281,10 +280,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                     config::spagh::AdminToken::Inline(p) => p.clone(),
                 });
                 let node = self.node.clone();
-                let log =
-                    self
-                        .log
-                        .fork_with_log_from(debug_level(&self.debug_flags, DebugFlag::Admin), ea!(sys = "admin"));
+                let log = Log::new_root(debug_level(&self.debug_flags, DebugFlag::Admin)).fork(ea!(sys = "admin"));
                 self
                     .api_routes
                     .insert(
@@ -346,12 +342,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             };
             let res = async {
                 let log =
-                    &self
-                        .log
-                        .fork_with_log_from(
-                            debug_level(&self.debug_flags, DebugFlag::Publish),
-                            ea!(sys = "publisher"),
-                        );
+                    &Log::new_root(
+                        debug_level(&self.debug_flags, DebugFlag::Publish),
+                    ).fork(ea!(sys = "publisher"));
                 let bind_addr =
                     self
                         .config
@@ -395,12 +388,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             }
             let res = async {
                 let log =
-                    self
-                        .log
-                        .fork_with_log_from(
-                            debug_level(&self.debug_flags, DebugFlag::Resolve),
-                            ea!(sys = "resolver"),
-                        );
+                    Log::new_root(debug_level(&self.debug_flags, DebugFlag::Resolve)).fork(ea!(sys = "resolver"));
                 let publisher;
                 if self.config.enable_external_publish || self.config.enable_self_publish_ip ||
                     self.config.enable_self_publish_ssh_key.is_some() ||
@@ -433,12 +421,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             }
             let res = async {
                 let log =
-                    self
-                        .log
-                        .fork_with_log_from(
-                            debug_level(&self.debug_flags, DebugFlag::SelfTls),
-                            ea!(sys = "tls_refresh"),
-                        );
+                    Log::new_root(
+                        debug_level(&self.debug_flags, DebugFlag::SelfTls),
+                    ).fork(ea!(sys = "tls_refresh"));
                 let identity = self.setup_identity().await?;
                 return Ok(
                     self_tls::stream_persistent_certs(
@@ -468,12 +453,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             }
             let res = async {
                 let log =
-                    self
-                        .log
-                        .fork_with_log_from(
-                            debug_level(&self.debug_flags, DebugFlag::SelfTls),
-                            ea!(sys = "htserve_tls_refresh"),
-                        );
+                    Log::new_root(
+                        debug_level(&self.debug_flags, DebugFlag::SelfTls),
+                    ).fork(ea!(sys = "htserve_tls_refresh"));
                 let Some(certs) = self.setup_tls().await? else {
                     return Ok(None);
                 };
@@ -489,7 +471,6 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
         tm: tm,
         config: config,
         node: node,
-        log: log.clone(),
         global_ips: global_ips,
         publisher: Default::default(),
         resolver: Default::default(),
@@ -514,10 +495,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             let admin_token = setup_state.setup_admin().await?;
             let publisher = setup_state.setup_publisher().await?.1;
             let log =
-                log.fork_with_log_from(
+                Log::new_root(
                     debug_level(&setup_state.debug_flags, DebugFlag::Publish),
-                    ea!(sys = "external_publish"),
-                );
+                ).fork(ea!(sys = "external_publish"));
             setup_state
                 .api_routes
                 .insert(
@@ -557,12 +537,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             let publisher = setup_state.setup_publisher().await?.1;
             let identity = setup_state.setup_identity().await?;
             let log =
-                setup_state
-                    .log
-                    .fork_with_log_from(
-                        debug_level(&setup_state.debug_flags, DebugFlag::SelfTls),
-                        ea!(sys = "self_publish_tls"),
-                    );
+                Log::new_root(
+                    debug_level(&setup_state.debug_flags, DebugFlag::SelfTls),
+                ).fork(ea!(sys = "self_publish_tls"));
             setup_state.tm.stream("Self-publish TLS certs", WatchStream::new(tls_stream), move |current| {
                 let publisher = publisher.clone();
                 let log = log.clone();
@@ -591,12 +568,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                 return Ok(());
             };
             let log =
-                setup_state
-                    .log
-                    .fork_with_log_from(
-                        debug_level(&setup_state.debug_flags, DebugFlag::SelfTls),
-                        ea!(sys = "dir_write_tls"),
-                    );
+                Log::new_root(
+                    debug_level(&setup_state.debug_flags, DebugFlag::SelfTls),
+                ).fork(ea!(sys = "dir_write_tls"));
             setup_state.tm.stream("Write TLS certs", WatchStream::new(tls_stream), move |current| {
                 let log = log.clone();
                 let write_tls_config = write_tls_config.clone();
@@ -633,10 +607,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             ta_return!((), loga::Error);
             let resolver = setup_state.setup_resolver().await?;
             let log =
-                log.fork_with_log_from(
+                Log::new_root(
                     debug_level(&setup_state.debug_flags, DebugFlag::Resolve),
-                    ea!(sys = "resolver_rest"),
-                );
+                ).fork(ea!(sys = "resolver_rest"));
             setup_state
                 .api_routes
                 .insert(format!("/{}", API_ROUTE_RESOLVE), Box::new(resolver::build_api_endpoints(log, &resolver)));
@@ -653,10 +626,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                 return Ok(());
             };
             let log =
-                log.fork_with_log_from(
+                Log::new_root(
                     debug_level(&setup_state.debug_flags, DebugFlag::Dns),
-                    ea!(sys = "resolver_dns"),
-                );
+                ).fork(ea!(sys = "resolver_dns"));
             resolver::dns::start_dns_bridge(
                 &log,
                 &setup_state.tm,
@@ -674,10 +646,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
         async {
             ta_return!((), loga::Error);
             let log =
-                log.fork_with_log_from(
+                Log::new_root(
                     debug_level(&setup_state.debug_flags, DebugFlag::Content),
-                    ea!(sys = "content"),
-                );
+                ).fork(ea!(sys = "content"));
             let Some((certs, _)) = setup_state.setup_htserve_tls().await? else {
                 return Ok(());
             };
@@ -685,7 +656,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                 &log,
                 &setup_state.tm,
                 certs,
-                setup_state.config.enable_serve_content.drain().collect::<HashMap<_, _>>(),
+                setup_state.config.enable_serve_content.clone(),
             ).await?;
             return Ok(());
         }.await.context("Error setting up `enable_serve_content`")?;
@@ -704,7 +675,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             publisher.announce(&identity, announcement).await?;
             publisher.modify_values(&identity, PublishArgs {
                 clear_all: true,
-                set: setup_state.self_publish.drain().collect::<HashMap<_, _>>(),
+                set: setup_state.self_publish.clone(),
                 ..Default::default()
             }).await?;
             return Ok(());
@@ -713,8 +684,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
 
     // # Rest API
     if !setup_state.api_routes.is_empty() {
-        let log =
-            log.fork_with_log_from(debug_level(&setup_state.debug_flags, DebugFlag::Api), ea!(sys = "api_http"));
+        let log = Log::new_root(debug_level(&setup_state.debug_flags, DebugFlag::Api)).fork(ea!(sys = "api_http"));
         let mut router = htserve::handler::PathRouter::default();
         router.insert("/health", Box::new(htwrap::handler!(()(_r -> htserve:: responses:: Body) {
             return response_200();

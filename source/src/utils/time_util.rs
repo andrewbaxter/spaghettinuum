@@ -47,16 +47,16 @@ pub trait ToInstant {
 
 impl ToInstant for SystemTime {
     fn to_instant(&self) -> Instant {
-        let diff = self.duration_since(SystemTime::now());
         let now = Instant::now();
 
         // Showcasing rust core developers in denial of negative numbers
+        let diff = self.duration_since(SystemTime::now());
         match diff {
-            Ok(past) => {
-                return now - past;
+            Ok(future) => {
+                return now + future;
             },
-            Err(future) => {
-                return now + future.duration();
+            Err(past) => {
+                return now - past.duration();
             },
         }
     }

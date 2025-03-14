@@ -241,7 +241,7 @@ pub async fn stream_certs(
 
     let (certs_stream_tx, certs_stream_rx) = watch::channel(state.clone());
     tm.critical_task("API - TLS cert refresher", {
-        let tm = tm.clone();
+        let tm: TaskManager = tm.clone();
         let log = log.clone();
         async move {
             ta_res!(());
@@ -285,7 +285,7 @@ pub async fn stream_certs(
                                     break 'ok Some(certs);
                                 },
                                 Err(e) => {
-                                    log.log_err(loga::WARN, e.context("Error getting new certs"));
+                                    log.log_err(loga::WARN, e.context("Error refreshing cert"));
                                     sleep(backoff).await;
                                     backoff = backoff * 2;
                                 },
@@ -301,70 +301,6 @@ pub async fn stream_certs(
         }
     });
     return Ok(certs_stream_rx);
-}
-
-pub struct SimpleResolvesServerCert(RwLock<Arc<rustls::sign::CertifiedKey>>);
-
-impl std::fmt::Debug for SimpleResolvesServerCert {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return self.0.read().unwrap().fmt(f);
-    }
-}
-
-impl ResolvesServerCert for SimpleResolvesServerCert {
-    fn resolve(
-        &self,
-        _client_hello: rustls::server::ClientHello,
-    ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
-        return Some(self.0.read().unwrap().clone());
-    }
-}
-
-pub struct Rustls21SimpleResolvesServerCert(RwLock<Arc<rustls_21::sign::CertifiedKey>>);
-
-impl std::fmt::Debug for Rustls21SimpleResolvesServerCert {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return self.0.read().unwrap().cert.fmt(f);
-    }
-}
-
-impl rustls_21::server::ResolvesServerCert for Rustls21SimpleResolvesServerCert {
-    fn resolve(&self, _client_hello: rustls_21::server::ClientHello) -> Option<Arc<rustls_21::sign::CertifiedKey>> {
-        return Some(self.0.read().unwrap().clone());
-    }
-}
-
-pub async fn publish_tls_certs(
-    log: &Log,
-    publisher: &Arc<dyn Publisher>,
-    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-    state: &RefreshTlsState,
-) -> Result<(), loga::Error> {
-    publisher.publish(log, identity_signer, publish_util::PublishArgs {
-        set: {
-            let mut m = HashMap::new();
-            let mut certs = vec![state.current.pub_pem.clone()];
-            if let Some(pending) = &state.pending {
-                certs.push(pending.pub_pem.clone());
-            }
-            m.insert(
-                vec![stored::record::tls_record::KEY_SUFFIX_TLS.to_string()],
-                stored::record::RecordValue::V1(stored::record::latest::RecordValue {
-                    ttl: publish_ssl_ttl().as_secs() / 60,
-                    data: Some(
-                        serde_json::to_value(
-                            &stored::record::tls_record::TlsCerts::V1(
-                                stored::record::tls_record::latest::TlsCerts(certs),
-                            ),
-                        ).unwrap(),
-                    ),
-                }),
-            );
-            m
-        },
-        ..Default::default()
-    }).await?;
-    return Ok(());
 }
 
 pub async fn stream_persistent_certs(
@@ -417,6 +353,37 @@ pub async fn stream_persistent_certs(
         },
     };
     return Ok(Some(stream_certs(&log, &tm, identity_signer.clone(), options, state).await?));
+}
+
+pub struct SimpleResolvesServerCert(RwLock<Arc<rustls::sign::CertifiedKey>>);
+
+impl std::fmt::Debug for SimpleResolvesServerCert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return self.0.read().unwrap().fmt(f);
+    }
+}
+
+impl ResolvesServerCert for SimpleResolvesServerCert {
+    fn resolve(
+        &self,
+        _client_hello: rustls::server::ClientHello,
+    ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
+        return Some(self.0.read().unwrap().clone());
+    }
+}
+
+pub struct Rustls21SimpleResolvesServerCert(RwLock<Arc<rustls_21::sign::CertifiedKey>>);
+
+impl std::fmt::Debug for Rustls21SimpleResolvesServerCert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return self.0.read().unwrap().cert.fmt(f);
+    }
+}
+
+impl rustls_21::server::ResolvesServerCert for Rustls21SimpleResolvesServerCert {
+    fn resolve(&self, _client_hello: rustls_21::server::ClientHello) -> Option<Arc<rustls_21::sign::CertifiedKey>> {
+        return Some(self.0.read().unwrap().clone());
+    }
 }
 
 /// Produce a rustls-compatible server cert resolver with an automatically updated
@@ -501,4 +468,37 @@ pub async fn stream_htserve_certs(
         }
     });
     return Ok(Some((latest_certs, r21_latest_certs as Arc<dyn rustls_21::server::ResolvesServerCert>)));
+}
+
+pub async fn publish_tls_certs(
+    log: &Log,
+    publisher: &Arc<dyn Publisher>,
+    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
+    state: &RefreshTlsState,
+) -> Result<(), loga::Error> {
+    publisher.publish(log, identity_signer, publish_util::PublishArgs {
+        set: {
+            let mut m = HashMap::new();
+            let mut certs = vec![state.current.pub_pem.clone()];
+            if let Some(pending) = &state.pending {
+                certs.push(pending.pub_pem.clone());
+            }
+            m.insert(
+                vec![stored::record::tls_record::KEY_SUFFIX_TLS.to_string()],
+                stored::record::RecordValue::V1(stored::record::latest::RecordValue {
+                    ttl: publish_ssl_ttl().as_secs() / 60,
+                    data: Some(
+                        serde_json::to_value(
+                            &stored::record::tls_record::TlsCerts::V1(
+                                stored::record::tls_record::latest::TlsCerts(certs),
+                            ),
+                        ).unwrap(),
+                    ),
+                }),
+            );
+            m
+        },
+        ..Default::default()
+    }).await?;
+    return Ok(());
 }
