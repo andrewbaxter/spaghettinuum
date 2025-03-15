@@ -176,7 +176,6 @@ pub async fn request_cert(
         })).unwrap();
         let url = Uri::from_str(CERTIFIER_URL).unwrap();
         let log = log.fork(ea!(url = url));
-        log.log_with(loga::DEBUG, "Sending cert request body", ea!(body = String::from_utf8_lossy(&body)));
         let body =
             htreq::post(
                 &log,
