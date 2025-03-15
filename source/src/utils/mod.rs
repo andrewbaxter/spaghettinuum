@@ -137,13 +137,7 @@ macro_rules! cap_block{
 #[macro_export]
 macro_rules! ta_res{
     ($t: ty) => {
-        if false {
-            fn unreachable_value<T>() -> T {
-                panic!();
-            }
-            return std:: result:: Result::< $t,
-            loga::Error > ::Ok(unreachable_value());
-        }
+        flowcontrol::ta_return!($t, loga::Error);
     }
 }
 
@@ -152,12 +146,6 @@ macro_rules! ta_res{
 #[macro_export]
 macro_rules! ta_vis_res{
     ($t: ty) => {
-        if false {
-            fn unreachable_value<T>() -> T {
-                panic!();
-            }
-            return std:: result:: Result::< $t,
-            $crate:: utils:: VisErr >:: Ok(unreachable_value());
-        }
+        flowcontrol::ta_return!($t, $crate:: utils:: VisErr);
     }
 }

@@ -412,7 +412,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                 if self.config.enable_external_publish || self.config.enable_self_publish_ip ||
                     self.config.enable_self_publish_ssh_key.is_some() ||
                     self.config.enable_self_publish_tls {
-                    publisher = Some(self.setup_publisher().await?.1);
+                    publisher = Some(self.setup_publisher().await?);
                 } else {
                     publisher = None;
                 }
@@ -425,7 +425,6 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                             self.config.resolver.max_cache,
                             &self.config.cache_dir,
                             publisher,
-                            self.global_ips.clone(),
                         ).await?,
                     );
                 return Ok(resolver) as Result<_, loga::Error>;

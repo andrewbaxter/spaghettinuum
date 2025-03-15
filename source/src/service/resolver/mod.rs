@@ -62,7 +62,7 @@ use {
     rustls::ClientConfig,
     std::{
         collections::HashMap,
-        net::IpAddr,
+        net::SocketAddr,
         path::Path,
         str::FromStr,
         sync::Arc,
@@ -153,8 +153,7 @@ struct Resolver_ {
     node: Node,
     log: Log,
     cache: Cache<(Identity, RecordKey), (SystemTime, Option<String>)>,
-    publisher: Option<Arc<Publisher>>,
-    global_addrs: Vec<IpAddr>,
+    publisher: Option<(SocketAddr, Arc<Publisher>)>,
 }
 
 /// This is the core of the resolver; it does lookups using a local node. If you
@@ -177,8 +176,7 @@ impl Resolver {
         node: Node,
         max_cache: Option<u64>,
         cache_dir: &Path,
-        publisher: Option<Arc<Publisher>>,
-        global_addrs: Vec<IpAddr>,
+        publisher: Option<(SocketAddr, Arc<Publisher>)>,
     ) -> Result<Resolver, loga::Error> {
         let db_pool =
             setup_db(&cache_dir.join("resolver.sqlite3"), db::migrate)
@@ -226,7 +224,6 @@ impl Resolver {
             log: log.clone(),
             cache: cache.clone(),
             publisher: publisher,
-            global_addrs: global_addrs,
         }));
 
         // Bg core cleanup
@@ -349,13 +346,13 @@ impl Resolver {
                 // Request values from publisher
                 shed!{
                     // Check if publisher is us, short circuit network
-                    if !self.0.global_addrs.iter().any(|i| *i == publisher.addr.0.ip()) {
-                        break;
-                    }
-                    let Some(publisher) = &self.0.publisher else {
+                    let Some((self_advertise_addr, self_publisher)) = &self.0.publisher else {
                         break;
                     };
-                    return Ok(publisher.get_values(&ident, request_keys.clone()).await?);
+                    if *self_advertise_addr != publisher.addr.0 {
+                        break;
+                    }
+                    return Ok(self_publisher.get_values(&ident, request_keys.clone()).await?);
                 }
 
                 // Request values via publisher over internet

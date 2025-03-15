@@ -29,7 +29,7 @@ pub async fn read(path: impl AsRef<Path>) -> Result<Vec<u8>, loga::Error> {
     );
 }
 
-pub async fn read_json<D: DeserializeOwned>(path: impl AsRef<Path>) -> Result<Option<D>, loga::Error> {
+pub async fn read_json<D: DeserializeOwned>(path: impl AsRef<Path>) -> Result<D, loga::Error> {
     let bytes = read(path.as_ref()).await?;
     return Ok(
         serde_json::from_slice(
