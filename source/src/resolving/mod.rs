@@ -79,7 +79,7 @@ use {
 ///
 /// This is kind of a super-URL that may carry with it associated address
 /// information to be used instead of looking up the address.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct UrlPair {
     pub address: Option<IpAddr>,
     pub url: Uri,
@@ -115,7 +115,7 @@ impl std::fmt::Display for UrlPair {
 
 /// This returns a list of ip address/url pairs of resolvers on the system.
 pub fn default_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error> {
-    let mut out = vec![];
+    let mut out = HashSet::new();
     if let Ok(pairs) = env::var(ENV_RESOLVER_PAIRS) {
         for pair in pairs.split(',') {
             let (ip, url) =
@@ -133,7 +133,7 @@ pub fn default_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
                 Uri::from_str(
                     &url,
                 ).context_with("Couldn't parse URL in URL pair", ea!(env_var = ENV_RESOLVER_PAIRS, url = url))?;
-            out.push(UrlPair {
+            out.insert(UrlPair {
                 address: Some(ip),
                 url: url,
             });
@@ -153,7 +153,7 @@ pub fn default_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
                 continue;
             };
             let raw_url = format!("https://{}:{}", name, DEFAULT_API_PORT);
-            out.push(UrlPair {
+            out.insert(UrlPair {
                 url: Uri::from_str(
                     &raw_url,
                 ).context_with("Invalid ADN for URL in system resolver configuration", ea!(url = raw_url))?,
@@ -165,7 +165,7 @@ pub fn default_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
         if out.is_empty() {
             for s in conf.name_servers() {
                 let raw_url = format!("https://{}:{}", s.socket_addr.ip().as_url_host(), DEFAULT_API_PORT);
-                out.push(UrlPair {
+                out.insert(UrlPair {
                     url: Uri::from_str(
                         &raw_url,
                     ).context_with("Invalid ADN for URL in system resolver configuration", ea!(url = raw_url))?,
@@ -177,7 +177,7 @@ pub fn default_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
     if out.is_empty() {
         return Err(loga::err("Couldn't identify any default resolvers by scanning the system"));
     }
-    return Ok(out);
+    return Ok(out.into_iter().collect());
 }
 
 /// Connect to a publisher node which either might be colocated with the resolver

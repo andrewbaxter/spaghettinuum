@@ -186,6 +186,25 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             ),
         );
     };
+    if [
+        config.enable_resolver_rest,
+        config.enable_external_publish,
+        config.enable_self_publish_ip,
+        config.enable_self_publish_ssh_key.is_some(),
+        config.enable_self_publish_tls,
+        config.enable_admin.is_some(),
+        config.enable_write_tls.is_some(),
+        !config.enable_serve_content.is_empty(),
+    ]
+        .into_iter()
+        .any(|x| x) &&
+        config.identity.is_none() {
+        return Err(
+            loga::err(
+                "One or more selected features require an identity (for publishing records or provisioning a TLS cert)",
+            ),
+        );
+    }
     if args.validate.is_some() {
         return Ok(());
     }
@@ -538,7 +557,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             let identity = setup_state.setup_identity().await?;
             let log =
                 Log::new_root(
-                    debug_level(&setup_state.debug_flags, DebugFlag::SelfTls),
+                    debug_level(&setup_state.debug_flags, DebugFlag::Publish),
                 ).fork(ea!(sys = "self_publish_tls"));
             setup_state.tm.stream("Self-publish TLS certs", WatchStream::new(tls_stream), move |current| {
                 let publisher = publisher.clone();
@@ -672,70 +691,80 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                 advertise_addr: advertise_addr,
                 cert_pub_hash: publisher.pub_cert_hash(),
             }]).map_err(|e| loga::err_with("Failed to generate announcement for self publication", ea!(err = e)))?;
-            publisher.announce(&identity, announcement).await?;
             publisher.modify_values(&identity, PublishArgs {
                 clear_all: true,
                 set: setup_state.self_publish.clone(),
                 ..Default::default()
             }).await?;
+            publisher.announce(&identity, announcement).await?;
             return Ok(());
         }.await.context("Error self-publishing initial records")?;
     }
 
     // # Rest API
     if !setup_state.api_routes.is_empty() {
-        let log = Log::new_root(debug_level(&setup_state.debug_flags, DebugFlag::Api)).fork(ea!(sys = "api_http"));
-        let mut router = htserve::handler::PathRouter::default();
-        router.insert("/health", Box::new(htwrap::handler!(()(_r -> htserve:: responses:: Body) {
-            return response_200();
-        }))).unwrap();
-        let router = Arc::new(router);
-        let mut api_bind_addrs = setup_state.config.api.bind_addrs.clone();
-        if api_bind_addrs.is_empty() {
-            api_bind_addrs.push(
-                StrSocketAddr::from(
-                    SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, DEFAULT_API_PORT, 0, 0)),
-                ),
-            );
-            api_bind_addrs.push(
-                StrSocketAddr::from(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DEFAULT_API_PORT))),
-            );
-        }
-        for bind_addr in api_bind_addrs {
-            let bind_addr = bind_addr.resolve().context("Error resolving api bind address")?;
-            let log = log.clone();
-            let routes = router.clone();
-            let Some((certs, _)) = setup_state.setup_htserve_tls().await.context("Error setting up API")? else {
-                return Ok(());
-            };
-            let tls_acceptor = tls_acceptor(certs.clone());
-            setup_state
-                .tm
-                .stream(
-                    format!("API - Server ({})", bind_addr),
-                    tokio_stream::wrappers::TcpListenerStream::new(
-                        tokio::net::TcpListener::bind(&bind_addr).await.context("Error binding to address for api")?,
+        async {
+            ta_return!((), loga::Error);
+            let log =
+                Log::new_root(debug_level(&setup_state.debug_flags, DebugFlag::Api)).fork(ea!(sys = "api_http"));
+            let mut router =
+                htserve::handler::PathRouter::new(
+                    setup_state.api_routes.drain().collect(),
+                ).map_err(|e| loga::agg_err("Error building routes", e.into_iter().map(loga::err).collect()))?;
+            router.insert("/health", Box::new(htwrap::handler!(()(_r -> htserve:: responses:: Body) {
+                return response_200();
+            }))).unwrap();
+            let router = Arc::new(router);
+            let mut api_bind_addrs = setup_state.config.api.bind_addrs.clone();
+            if api_bind_addrs.is_empty() {
+                api_bind_addrs.push(
+                    StrSocketAddr::from(
+                        SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, DEFAULT_API_PORT, 0, 0)),
                     ),
-                    move |stream| {
-                        let log = log.clone();
-                        let tls_acceptor = tls_acceptor.clone();
-                        let routes = routes.clone();
-                        async move {
-                            match async {
-                                ta_res!(());
-                                htserve::handler::root_handle_https(&log, tls_acceptor, routes, stream?).await?;
-                                return Ok(());
-                            }.await {
-                                Ok(_) => (),
-                                Err(e) => {
-                                    log.log_err(loga::DEBUG, e.context("Error serving request"));
-                                    return;
-                                },
-                            }
-                        }
-                    },
                 );
-        }
+                api_bind_addrs.push(
+                    StrSocketAddr::from(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DEFAULT_API_PORT))),
+                );
+            }
+            for bind_addr in api_bind_addrs {
+                let bind_addr = bind_addr.resolve().context("Error resolving api bind address")?;
+                let log = log.clone();
+                let routes = router.clone();
+                let Some((certs, _)) = setup_state.setup_htserve_tls().await.context("Error setting up API")? else {
+                    return Ok(());
+                };
+                let tls_acceptor = tls_acceptor(certs.clone());
+                setup_state
+                    .tm
+                    .stream(
+                        format!("API - Server ({})", bind_addr),
+                        tokio_stream::wrappers::TcpListenerStream::new(
+                            tokio::net::TcpListener::bind(&bind_addr)
+                                .await
+                                .context("Error binding to address for api")?,
+                        ),
+                        move |stream| {
+                            let log = log.clone();
+                            let tls_acceptor = tls_acceptor.clone();
+                            let routes = routes.clone();
+                            async move {
+                                match async {
+                                    ta_res!(());
+                                    htserve::handler::root_handle_https(&log, tls_acceptor, routes, stream?).await?;
+                                    return Ok(());
+                                }.await {
+                                    Ok(_) => (),
+                                    Err(e) => {
+                                        log.log_err(loga::DEBUG, e.context("Error serving request"));
+                                        return;
+                                    },
+                                }
+                            }
+                        },
+                    );
+            }
+            return Ok(());
+        }.await.context("Error setting up rest api")?;
     }
 
     // Done

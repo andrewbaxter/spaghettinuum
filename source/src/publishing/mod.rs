@@ -1,8 +1,6 @@
 use {
     crate::{
-        interface::{
-            config::ENV_PUBLISHER_URLS,
-        },
+        interface::config::ENV_PUBLISHER_URLS,
         resolving::{
             default_resolver_url_pairs,
             UrlPair,
@@ -21,6 +19,7 @@ use {
         ResultContext,
     },
     std::{
+        collections::HashSet,
         env,
         os::unix::ffi::OsStringExt,
         str::FromStr,
@@ -49,9 +48,9 @@ pub fn system_publisher_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
                     ),
                 ),
             )?;
-        let mut publishers = vec![];
+        let mut publishers = HashSet::new();
         for p in raw_publishers.split(",") {
-            publishers.push(UrlPair {
+            publishers.insert(UrlPair {
                 address: None,
                 url: Uri::from_str(p).context_with("Couldn't parse publisher url", ea!(url = p))?,
             });
@@ -59,7 +58,7 @@ pub fn system_publisher_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
         if publishers.is_empty() {
             return Err(loga::err_with("Publisher env set but empty", ea!(env = ENV_PUBLISHER_URLS)));
         }
-        return Ok(publishers);
+        return Ok(publishers.into_iter().collect());
     };
     return Ok(default_resolver_url_pairs(log)?);
 }
