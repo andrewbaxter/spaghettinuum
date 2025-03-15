@@ -100,7 +100,7 @@ pub mod db;
 
 pub fn default_bootstrap() -> Vec<wire::node::latest::NodeInfo> {
     return vec![wire::node::latest::NodeInfo {
-        ident: NodeIdentity::from_str("n_yryyyyyyyy8dqmefqpfqgpopoawdwxack5c7ixrsr639fbb69a1z9yecbcbp4").unwrap(),
+        ident: NodeIdentity::from_str("n_yryyyyyyynw9smromhhffosxy1cscgdgcdeunf399i1jui4grymzmuxpsdtx1").unwrap(),
         address: SerialAddr(SocketAddr::from_str("[2600:1900:4040:485::]:48390").unwrap()),
     }];
 }
