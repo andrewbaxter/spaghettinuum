@@ -100,7 +100,7 @@ pub mod db;
 
 pub fn default_bootstrap() -> Vec<wire::node::latest::NodeInfo> {
     return vec![wire::node::latest::NodeInfo {
-        ident: NodeIdentity::from_str("n_yryyyyyyynw9smromhhffosxy1cscgdgcdeunf399i1jui4grymzmuxpsdtx1").unwrap(),
+        ident: NodeIdentity::from_str("n_yryyyyyyybxx3rnepqdwa6s45z8qkc6x5xrceruxgy3q6rhm9rxzrrw1rwmbr").unwrap(),
         address: SerialAddr(SocketAddr::from_str("[2600:1900:4040:485::]:48390").unwrap()),
     }];
 }
@@ -344,8 +344,6 @@ impl Node {
         cache_dir: &Path,
     ) -> Result<Node, loga::Error> {
         let mut do_bootstrap = false;
-        let own_ident;
-        let own_secret;
         let mut initial_buckets = Buckets {
             buckets: array_init::array_init(|_| vec![]),
             addrs: HashMap::new(),
@@ -355,19 +353,24 @@ impl Node {
                 .await
                 .stack_context(log, "Error initializing database")?;
         let db = db_pool.get().await.stack_context(log, "Error getting database connection")?;
-        match db
-            .interact(|conn| db::secret_get(&conn))
-            .await
-            .stack_context(log, "Error interacting with database")?
-            .stack_context(log, "Error retrieving secret")? {
-            Some(s) => {
-                own_ident = s.get_identity();
-                own_secret = s;
-            },
-            None => {
-                (own_ident, own_secret) = node_identity::NodeIdentity::new();
-            },
-        }
+        let (own_ident, own_secret) =
+            db
+                .interact(
+                    |conn| -> Result<(NodeIdentity, node_identity::NodeSecret), good_ormning_runtime::GoodError> {
+                        match db::secret_get(conn)? {
+                            Some(s) => return Ok((s.get_identity(), s)),
+                            None => {
+                                let (own_ident, own_secret) = node_identity::NodeIdentity::new();
+                                db::secret_ensure(conn, &own_secret)?;
+                                return Ok((own_ident, own_secret));
+                            },
+                        }
+                    },
+                )
+                .await
+                .stack_context(log, "Error interacting with database")?
+                .stack_context(log, "Error retrieving secret")?;
+        log.log_with(loga::INFO, "Starting", ea!(own_node_ident = own_ident));
         let own_coord = node_ident_coord(&own_ident);
         {
             let mut no_neighbors = true;
@@ -402,10 +405,9 @@ impl Node {
                 no_neighbors = false;
             }
             if no_neighbors {
-                do_bootstrap = true;
+                do_bootstrap = true && !bootstrap.is_empty();
             }
         }
-        log.log_with(loga::INFO, "Starting", ea!(own_node_ident = own_ident));
         let sock = {
             let log = log.fork(ea!(addr = bind_addr));
             UdpSocket::bind(bind_addr.resolve()?).await.stack_context(&log, "Failed to open node UDP port")?
