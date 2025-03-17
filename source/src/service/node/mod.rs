@@ -830,6 +830,9 @@ impl Node {
                 state.futures.push(f);
             }
             let closest_peers = self.get_closest_peers(goal_coord, PARALLEL);
+            if closest_peers.is_empty() {
+                self.0.log.log_with(loga::WARN, "No peers available for request", ea!(goal = goal.dbg_str()));
+            }
             for p in closest_peers {
                 let challenge = generate_challenge();
                 let (bucket_i, dist) = dist(&node_ident_coord(&p.ident), &goal_coord);
@@ -1214,6 +1217,13 @@ impl Node {
             for bucket in bucket_i .. BUCKET_COUNT {
                 for state in &buckets.buckets[bucket] {
                     if state.unresponsive {
+                        self
+                            .0
+                            .log
+                            .log(
+                                loga::DEBUG,
+                                format!("Get closest peers, skipping unresponsive peer {}", state.node.ident),
+                            );
                         continue;
                     }
                     nodes.push(state.node.clone());
@@ -1224,9 +1234,16 @@ impl Node {
             }
             // 3. Failing that, try more distant buckets
             if bucket_i > 0 {
-                for bucket in (0 .. bucket_i - 1).rev() {
+                for bucket in (0 .. bucket_i).rev() {
                     for state in &buckets.buckets[bucket] {
                         if state.unresponsive {
+                            self
+                                .0
+                                .log
+                                .log(
+                                    loga::DEBUG,
+                                    format!("Get closest peers, skipping unresponsive peer {}", state.node.ident),
+                                );
                             continue;
                         }
                         nodes.push(state.node.clone());
