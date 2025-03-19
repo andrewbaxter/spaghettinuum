@@ -40,16 +40,18 @@ use {
 
 #[derive(Aargvark)]
 pub struct SshShell {
-    // User, defaults to root.
+    /// User, defaults to root.
     #[vark(flag = "-u", flag = "--user")]
     pub user: Option<String>,
+    /// Host to connect to.
     pub host: String,
-    // Ssh port, defaults to 22.
+    /// Ssh port, defaults to 22.
     #[vark(flag = "-p", flag = "--port")]
     pub port: Option<u16>,
     /// Use a specific key file instead of whatever's automatically detected.
     #[vark(flag = "-i", flag = "--keyfile")]
     pub key: Option<PathBuf>,
+    /// Run a command and exit.
     pub command: Option<Vec<String>>,
 }
 
@@ -120,6 +122,7 @@ pub struct SshUpload {
 }
 
 #[derive(Aargvark)]
+#[vark(break_help)]
 pub enum Args {
     Shell(SshShell),
     Download(SshDownload),
