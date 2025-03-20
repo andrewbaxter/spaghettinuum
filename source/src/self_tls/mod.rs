@@ -28,11 +28,9 @@ use {
             stored::{
                 self,
                 cert::v1::X509ExtSpagh,
-                self_tls::{
-                    latest::{
-                        CertPair,
-                        RefreshTlsState,
-                    },
+                self_tls::latest::{
+                    CertPair,
+                    RefreshTlsState,
                 },
             },
             wire::{
@@ -48,11 +46,13 @@ use {
                 self,
                 DbTx,
             },
+            dns_util::{
+                self,
+                UpstreamDns,
+            },
             identity_secret::IdentitySigner,
             publish_util,
-            time_util::{
-                ToInstant,
-            },
+            time_util::ToInstant,
             tls_util::{
                 create_leaf_cert_der_local,
                 encode_priv_pem,
@@ -66,7 +66,11 @@ use {
     der::Encode,
     flowcontrol::shed,
     http::Uri,
-    htwrap::htreq,
+    htwrap::htreq::{
+        self,
+        default_tls,
+        uri_parts,
+    },
     loga::{
         conversion::ResultIgnore,
         ea,
@@ -74,15 +78,11 @@ use {
         Log,
         ResultContext,
     },
-    p256::{
-        pkcs8::EncodePrivateKey,
-    },
+    p256::pkcs8::EncodePrivateKey,
     rustls::server::ResolvesServerCert,
     std::{
         collections::HashMap,
-        path::{
-            Path,
-        },
+        path::Path,
         str::FromStr,
         sync::{
             Arc,
@@ -123,10 +123,15 @@ pub fn publish_ssl_ttl() -> Duration {
     return Duration::from_secs(60 * 60);
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
+pub struct CertifierOptions {
+    pub upstream_dns: UpstreamDns,
+}
+
+#[derive(Clone)]
 pub struct RequestCertOptions {
     /// Get a certificate signed by the `certipasta` CA cert.
-    pub certifier: bool,
+    pub certifier: Option<CertifierOptions>,
     /// Add the spaghettinuum identity signature extension to the cert.
     pub signature: bool,
 }
@@ -158,7 +163,7 @@ pub async fn request_cert(
     };
     let priv_pem = encode_priv_pem(priv_key.to_pkcs8_der().unwrap().as_bytes());
     let pub_pem;
-    if options.certifier {
+    if let Some(certifier_opts) = options.certifier {
         let text = serde_json::to_vec(&wire::certify::latest::CertRequestParams {
             stamp: SystemTime::now().into(),
             sig_ext: sig_ext,
@@ -176,10 +181,14 @@ pub async fn request_cert(
         })).unwrap();
         let url = Uri::from_str(CERTIFIER_URL).unwrap();
         let log = log.fork(ea!(url = url));
+        let (scheme, host, port) = uri_parts(&url).stack_context(&log, "Incomplete url")?;
+        let ips = dns_util::query(&certifier_opts.upstream_dns, &url).await?;
         let body =
             htreq::post(
                 &log,
-                &mut htreq::connect(&url).await.stack_context(&log, "Error connecting to certifier url")?,
+                &mut htreq::connect_ips(ips, default_tls(), scheme, host, port)
+                    .await
+                    .stack_context(&log, "Error connecting to certifier url")?,
                 &url,
                 &HashMap::new(),
                 body,
@@ -279,7 +288,7 @@ pub async fn stream_certs(
                     let next_certs = shed!{
                         'ok _;
                         for _ in 0 .. max_tries {
-                            match request_cert(&log, signer.clone(), options).await {
+                            match request_cert(&log, signer.clone(), options.clone()).await {
                                 Ok(certs) => {
                                     break 'ok Some(certs);
                                 },
@@ -325,7 +334,7 @@ pub async fn stream_persistent_certs(
         None => {
             let pair = loop {
                 match select!{
-                    c = request_cert(&log, identity_signer.clone(), options) => c,
+                    c = request_cert(&log, identity_signer.clone(), options.clone()) => c,
                     _ = tm.until_terminate() => {
                         return Ok(None);
                     }

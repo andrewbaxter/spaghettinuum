@@ -343,7 +343,6 @@ impl Node {
         bootstrap: &[wire::node::latest::NodeInfo],
         cache_dir: &Path,
     ) -> Result<Node, loga::Error> {
-        let mut do_bootstrap = false;
         let mut initial_buckets = Buckets {
             buckets: array_init::array_init(|_| vec![]),
             addrs: HashMap::new(),
@@ -373,7 +372,6 @@ impl Node {
         log.log_with(loga::INFO, "Starting", ea!(own_node_ident = own_ident));
         let own_coord = node_ident_coord(&own_ident);
         {
-            let mut no_neighbors = true;
             for e in db
                 .interact(|conn| db::neighbors_get(&conn))
                 .await
@@ -402,10 +400,6 @@ impl Node {
                     ea!(ident = state.node.ident, addr = state.node.address),
                 );
                 initial_buckets.buckets[leading_zeros].push(state);
-                no_neighbors = false;
-            }
-            if no_neighbors {
-                do_bootstrap = true && !bootstrap.is_empty();
             }
         }
         let sock = {
@@ -425,7 +419,7 @@ impl Node {
             }),
             own_coord: own_coord,
             buckets: Mutex::new(initial_buckets),
-            dirty: AtomicBool::new(do_bootstrap),
+            dirty: AtomicBool::new(true),
             store: Mutex::new(HashMap::new()),
             socket: sock,
             next_req_id: AtomicUsize::new(0),
@@ -435,16 +429,11 @@ impl Node {
             challenge_timeouts: challenge_timeout_write,
             challenge_states: Mutex::new(HashMap::new()),
         }));
-        if do_bootstrap {
-            log.log_with(loga::DEBUG, "No neighbors, bootstrapping", ea!(count = bootstrap.len()));
-            for b in bootstrap {
-                if b.ident == dir.0.own_ident {
-                    continue;
-                }
-                if !dir.add_good_node(b.ident.clone(), Some(b.clone())) {
-                    panic!("");
-                }
+        for b in bootstrap {
+            if b.ident == dir.0.own_ident {
+                continue;
             }
+            dir.add_good_node(b.ident.clone(), Some(b.clone()));
         }
 
         // Periodically save

@@ -145,11 +145,6 @@ pub struct FunctionResolverDns {
     /// disable.
     #[serde(default)]
     pub tcp_bind_addrs: Option<Vec<StrSocketAddr>>,
-    /// Recursive upstream resolvers, such as for non-`.s` names. Each address port
-    /// defaults to port 53 if no ADN, otherwise 853. If not specified, uses system
-    /// resolvers.
-    #[serde(default)]
-    pub upstream: Option<Vec<AdnSocketAddr>>,
     /// Create a synthetic A/AAAA record with this name pointing to this host. This
     /// uses the global addresses specified in the root config.
     #[serde(default)]
@@ -197,6 +192,12 @@ pub struct Config {
     /// If empty, defaults to using the first gobal IPv6 address found on any interface.
     #[serde(default)]
     pub global_addrs: Vec<GlobalAddrConfig>,
+    /// Upstream resolvers. These are used for any dns resolution needed internally
+    /// (namely, contacting the certifier for self-tls), as well  as resolving non-`.s`
+    /// names in the dns bridge. Each address port defaults to port 53 if no ADN,
+    /// otherwise 853. If not specified, uses system resolvers.
+    #[serde(default)]
+    pub upstream_dns: Option<Vec<AdnSocketAddr>>,
     // # Core internal service override config
     //
     // ---

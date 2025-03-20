@@ -32,6 +32,7 @@ pub mod blob;
 pub mod signed;
 pub mod fs_util;
 pub mod ssh_util;
+pub mod dns_util;
 
 #[derive(Clone)]
 pub struct AsyncBus<T: Clone + Unpin>(Arc<Mutex<Vec<ManualFutureCompleter<T>>>>);

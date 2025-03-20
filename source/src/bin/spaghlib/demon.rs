@@ -3,9 +3,7 @@ use {
         traits_impls::AargvarkJson,
         Aargvark,
     },
-    flowcontrol::{
-        ta_return,
-    },
+    flowcontrol::ta_return,
     htwrap::htserve::{
         self,
         auth::{
@@ -38,9 +36,7 @@ use {
         interface::{
             config::{
                 self,
-                shared::{
-                    StrSocketAddr,
-                },
+                shared::StrSocketAddr,
                 spagh::{
                     Config,
                     DEFAULT_API_PORT,
@@ -89,6 +85,10 @@ use {
         ta_res,
         ta_vis_res,
         utils::{
+            dns_util::{
+                build_upstream_dns,
+                UpstreamDns,
+            },
             fs_util::{
                 self,
                 maybe_read_json,
@@ -281,9 +281,19 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
         identity: Option<Result<Arc<Mutex<dyn IdentitySigner>>, loga::Error>>,
         api_routes: HashMap<String, Box<dyn Handler<Body>>>,
         self_publish: HashMap<RecordKey, RecordValue>,
+        upstream_dns: Option<Result<UpstreamDns, loga::Error>>,
     }
 
     impl SetupState {
+        async fn setup_upstream_dns(&mut self) -> Result<UpstreamDns, loga::Error> {
+            if let Some(x) = self.upstream_dns.as_ref() {
+                return x.clone();
+            };
+            let res = build_upstream_dns(&self.config.upstream_dns);
+            self.upstream_dns = Some(res.clone());
+            return res;
+        }
+
         async fn setup_admin(&mut self) -> Result<AuthTokenHash, loga::Error> {
             if let Some(x) = self.admin.as_ref() {
                 return x.clone();
@@ -443,6 +453,10 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                         debug_level(&self.debug_flags, DebugFlag::SelfTls),
                     ).fork(ea!(sys = "tls_refresh"));
                 let identity = self.setup_identity().await?;
+                let certifier_options = match self.config.tls.no_certifier {
+                    true => None,
+                    false => Some(self_tls::CertifierOptions { upstream_dns: self.setup_upstream_dns().await? }),
+                };
                 return Ok(
                     self_tls::stream_persistent_certs(
                         &log,
@@ -450,7 +464,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                         &self.config.cache_dir,
                         &identity,
                         RequestCertOptions {
-                            certifier: !self.config.tls.no_certifier,
+                            certifier: certifier_options,
                             signature: true,
                         },
                     ).await?,
@@ -498,6 +512,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
         tls: Default::default(),
         htserve_tls: Default::default(),
         identity: Default::default(),
+        upstream_dns: Default::default(),
         debug_flags: debug_flags,
     };
 
@@ -640,6 +655,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
         async {
             ta_return!((), loga::Error);
             let resolver = setup_state.setup_resolver().await?;
+            let upstream_dns = setup_state.setup_upstream_dns().await?;
             let Some((_, r21_certs)) = setup_state.setup_htserve_tls().await? else {
                 return Ok(());
             };
@@ -650,6 +666,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             resolver::dns::start_dns_bridge(
                 &log,
                 &setup_state.tm,
+                upstream_dns,
                 &resolver,
                 r21_certs,
                 &setup_state.global_ips,
