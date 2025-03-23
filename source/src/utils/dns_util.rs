@@ -36,6 +36,7 @@ use {
     htwrap::htreq::Ips,
     loga::{
         ea,
+        ErrContext,
         ResultContext,
     },
     rand::{
@@ -84,6 +85,9 @@ pub fn build_upstream_dns(config: &Option<Vec<AdnSocketAddr>>) -> Result<Upstrea
             hickory_resolver
             ::system_conf
             ::read_system_conf().context("Error reading system dns resolver config for DNS bridge upstream")?;
+        if config.name_servers().is_empty() {
+            return Err(loga::err("Couldn't find dns resolvers configured on host system"));
+        }
         for n in config.name_servers() {
             upstream_servers.push(n.clone());
         }
@@ -128,65 +132,73 @@ pub async fn query(upstream_dns: &UpstreamDns, url: &Uri) -> Result<Ips, loga::E
             ips.ipv6s.push(rec.0);
         }
     };
-    if !ips.ipv4s.is_empty() || ips.ipv6s.is_empty() {
+    if !ips.ipv4s.is_empty() || !ips.ipv6s.is_empty() {
         return Ok(ips);
     }
 
     // Remote lookup
+    let mut errors = vec![];
     let mut seen_names = HashSet::new();
     let mut names = vec![name];
     while let Some(name) = names.pop() {
-        if seen_names.insert(name.clone()) {
+        if !seen_names.insert(name.clone()) {
             continue;
         }
-        let Some(resp) = upstream_dns.send(DnsRequest::new({
-            let mut m = Message::new();
-            m.set_id(thread_rng().gen());
-            m.set_message_type(MessageType::Query);
-            m.set_op_code(OpCode::Query);
-            m.add_query({
-                let mut q = hickory_proto::op::Query::new();
-                q.set_name(name.clone());
-                q.set_query_type(RecordType::A);
-                q.set_query_class(DNSClass::IN);
-                q
-            });
-            m.add_query({
-                let mut q = hickory_proto::op::Query::new();
-                q.set_name(name.clone());
-                q.set_query_type(RecordType::AAAA);
-                q.set_query_class(DNSClass::IN);
-                q
-            });
-            m.add_query({
-                let mut q = hickory_proto::op::Query::new();
-                q.set_name(name);
-                q.set_query_type(RecordType::CNAME);
-                q.set_query_class(DNSClass::IN);
-                q
-            });
-            m
-        }, DnsRequestOptions::default())).next().await else {
-            return Err(loga::err_with("Failed to resolve url, upstream dns returned no results", ea!(url = url)));
-        };
-        let resp = resp.context_with("Error resolving url", ea!(url = url))?;
-        for answer in resp.answers() {
-            let Some(data) = answer.data() else {
-                continue;
-            };
-            match data {
-                RData::A(data) => {
-                    ips.ipv4s.push(data.0);
-                },
-                RData::AAAA(data) => {
-                    ips.ipv6s.push(data.0);
-                },
-                RData::CNAME(data) => {
-                    names.push(data.0.clone());
-                },
-                _ => { },
+        for rec_type in [RecordType::CNAME, RecordType::AAAA, RecordType::A] {
+            let mut iter = upstream_dns.send(DnsRequest::new({
+                let mut m = Message::new();
+                m.set_id(thread_rng().gen());
+                m.set_recursion_desired(true);
+                m.set_message_type(MessageType::Query);
+                m.set_op_code(OpCode::Query);
+                m.add_query({
+                    let mut q = hickory_proto::op::Query::new();
+                    q.set_name(name.clone());
+                    q.set_query_type(rec_type);
+                    q.set_query_class(DNSClass::IN);
+                    q
+                });
+                m
+            }, DnsRequestOptions::default()));
+            let mut resp_count = 0;
+            while let Some(resp) = iter.next().await {
+                resp_count += 1;
+                let resp = match resp {
+                    Ok(r) => r,
+                    Err(e) => {
+                        errors.push(
+                            e.context_with("Error from upstream dns for record type", ea!(record_type = rec_type)),
+                        );
+                        continue;
+                    },
+                };
+                for answer in resp.answers() {
+                    let Some(data) = answer.data() else {
+                        continue;
+                    };
+                    match data {
+                        RData::A(data) => {
+                            ips.ipv4s.push(data.0);
+                        },
+                        RData::AAAA(data) => {
+                            ips.ipv6s.push(data.0);
+                        },
+                        RData::CNAME(data) => {
+                            names.push(data.0.clone());
+                        },
+                        _ => { },
+                    }
+                }
+            }
+            if resp_count == 0 {
+                errors.push(
+                    loga::err_with("No responses from dns servers for record type", ea!(record_type = rec_type)),
+                );
             }
         }
+    }
+    if ips.ipv4s.is_empty() && ips.ipv6s.is_empty() && !errors.is_empty() {
+        return Err(loga::agg_err_with("One or more errors resolving dns name for url", errors, ea!(url = url)));
     }
     return Ok(ips);
 }

@@ -483,7 +483,7 @@ impl Node {
                 state_entry.remove()
             };
             for o in &state.outstanding {
-                dir.mark_node_unresponsive(o.node.ident, o.bucket_i, true);
+                dir.set_node_unresponsive(o.node.ident, o.bucket_i, true);
             }
             dir.complete_state(state).await;
         }));
@@ -542,7 +542,7 @@ impl Node {
                 }
                 state_entry.remove()
             };
-            dir.mark_node_unresponsive(e.key.0, state.bucket_i, true);
+            dir.set_node_unresponsive(e.key.0, state.bucket_i, true);
         }));
 
         // Challenge timeouts
@@ -713,7 +713,7 @@ impl Node {
         return res.value;
     }
 
-    fn mark_node_unresponsive(&self, key: node_identity::NodeIdentity, bucket_i: usize, unresponsive: bool) {
+    fn set_node_unresponsive(&self, key: node_identity::NodeIdentity, bucket_i: usize, unresponsive: bool) {
         let mut buckets = self.0.buckets.lock().unwrap();
         let bucket = &mut buckets.buckets[bucket_i];
         for n in bucket {
@@ -1348,7 +1348,7 @@ impl Node {
                         Entry::Occupied(s) => s.remove(),
                         Entry::Vacant(_) => return Ok(()),
                     };
-                    self.mark_node_unresponsive(k, state.bucket_i, false);
+                    self.set_node_unresponsive(k, state.bucket_i, false);
                 },
                 wire::node::latest::Message::Challenge(challenge) => {
                     self
@@ -1418,9 +1418,6 @@ impl Node {
                 let bucket_entry = &mut bucket[i];
                 if bucket_entry.node.ident == id {
                     if let Some(node) = node {
-                        if bucket_entry.unresponsive {
-                            bucket_entry.unresponsive = false;
-                        }
                         buckets.addrs.remove(&bucket_entry.node.address.0);
                         let new_state = wire::node::latest::NodeState {
                             node: node.clone(),

@@ -103,9 +103,6 @@ pub struct SshUpload {
     #[vark(flag = "-p", flag = "--port")]
     // Ssh port, defaults to 22.
     pub port: Option<u16>,
-    /// Use a specific key file instead of whatever's automatically detected.
-    #[vark(flag = "-i", flag = "--keyfile")]
-    pub key: Option<PathBuf>,
     /// Path to a file or directory to upload.
     pub local: PathBuf,
     pub preposition: Preposition,
@@ -123,15 +120,24 @@ pub struct SshUpload {
 
 #[derive(Aargvark)]
 #[vark(break_help)]
-pub enum Args {
+pub enum Command {
     Shell(SshShell),
     Download(SshDownload),
     Upload(SshUpload),
 }
 
-pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
-    match config {
-        Args::Shell(config) => {
+#[derive(Aargvark)]
+pub struct Args {
+    /// Use a specific key file instead of whatever's automatically detected.
+    #[vark(flag = "--keyfile", flag = "-i")]
+    key: Option<PathBuf>,
+    command: Command,
+}
+
+pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
+    let key = args.key;
+    match args.command {
+        Command::Shell(args) => {
             struct Inner(SshShell);
 
             impl SshConnectHandler for Inner {
@@ -210,14 +216,14 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
 
             ssh_connect(
                 log,
-                config.user.clone(),
-                format!("{}.s", config.host),
-                config.port,
-                config.key.clone(),
-                Inner(config),
+                args.user.clone(),
+                format!("{}.s", args.host),
+                args.port,
+                key.clone(),
+                Inner(args),
             ).await?;
         },
-        Args::Download(config) => {
+        Command::Download(args) => {
             struct Inner(SshDownload);
 
             impl SshConnectHandler for Inner {
@@ -289,14 +295,14 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
 
             ssh_connect(
                 log,
-                config.user.clone(),
-                format!("{}.s", config.host),
-                config.port,
-                config.key.clone(),
-                Inner(config),
+                args.user.clone(),
+                format!("{}.s", args.host),
+                args.port,
+                key.clone(),
+                Inner(args),
             ).await?;
         },
-        Args::Upload(config) => {
+        Command::Upload(args) => {
             struct Inner(SshUpload);
 
             impl SshConnectHandler for Inner {
@@ -374,11 +380,11 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
 
             ssh_connect(
                 log,
-                config.user.clone(),
-                format!("{}.s", config.host),
-                config.port,
-                config.key.clone(),
-                Inner(config),
+                args.user.clone(),
+                format!("{}.s", args.host),
+                args.port,
+                key.clone(),
+                Inner(args),
             ).await?;
         },
     }

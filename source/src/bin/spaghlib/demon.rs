@@ -127,12 +127,14 @@ use {
             Arc,
             Mutex,
         },
+        time::Duration,
     },
     taskmanager::TaskManager,
     tokio::{
         fs::create_dir_all,
         select,
         sync::watch,
+        time::sleep,
     },
     tokio_stream::wrappers::WatchStream,
 };
@@ -219,6 +221,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
         for a in &config.global_addrs {
             ips.push(resolve_global_ip(log, a).await?);
         };
+        if let Some(delay) = config.post_addr_delay_seconds {
+            sleep(Duration::from_secs(delay as u64)).await;
+        }
         return Ok(ips);
     };
     let global_ips = select!{

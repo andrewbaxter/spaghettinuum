@@ -192,6 +192,10 @@ pub struct Config {
     /// If empty, defaults to using the first gobal IPv6 address found on any interface.
     #[serde(default)]
     pub global_addrs: Vec<GlobalAddrConfig>,
+    /// After getting an ip address, wait before attempting any network traffic
+    /// (specifically, udp traffic) in case the UDP stack isn't fully initialized and
+    /// the packets get dropped.
+    pub post_addr_delay_seconds: Option<u64>,
     /// Upstream resolvers. These are used for any dns resolution needed internally
     /// (namely, contacting the certifier for self-tls), as well  as resolving non-`.s`
     /// names in the dns bridge. Each address port defaults to port 53 if no ADN,
