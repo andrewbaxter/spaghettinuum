@@ -38,7 +38,9 @@ pub struct TlsConfig {
     ///
     /// Certifier signature is important for general http clients that don't support
     /// spaghettinuum natively as well as systems that don't have spaghettinuum access
-    /// yet (like DNS clients).
+    /// yet (like DNS clients). If you're just using service discovery or non-http
+    /// protocols, or you're running on a host with no persistent storage to store
+    /// certificates disabling certifier usage may avoid rate limit issues.
     #[serde(default)]
     pub no_certifier: bool,
 }

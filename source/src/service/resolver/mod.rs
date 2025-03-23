@@ -103,11 +103,12 @@ impl rustls::client::danger::ServerCertVerifier for SingleKeyVerifier {
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        if cert_der_hash(
-            end_entity.as_ref(),
-        ).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))? !=
-            self.hash {
-            return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding));
+        let got_hash =
+            cert_der_hash(
+                end_entity.as_ref(),
+            ).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+        if got_hash != self.hash {
+            return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName));
         }
         return Ok(rustls::client::danger::ServerCertVerified::assertion());
     }
