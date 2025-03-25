@@ -290,9 +290,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                     // Transfer
                     download(
                         &log,
+                        &conn,
                         &sftp,
                         &config.remote,
-                        source_meta.is_dir(),
                         &local,
                         !config.no_skip_newer.is_some(),
                         !config.no_skip_same_size.is_some(),
@@ -380,7 +380,6 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                         &conn,
                         &sftp,
                         &config.local,
-                        source_meta.is_dir(),
                         &remote,
                         !config.no_skip_newer.is_some(),
                         !config.no_skip_same_size.is_some(),

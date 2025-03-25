@@ -10,9 +10,7 @@ use {
         shed,
         superif,
     },
-    futures::{
-        FutureExt,
-    },
+    futures::FutureExt,
     itertools::Itertools,
     loga::{
         conversion::ResultIgnore,
@@ -38,12 +36,13 @@ use {
     },
     russh_sftp::{
         client::SftpSession,
-        protocol::OpenFlags,
+        protocol::{
+            OpenFlags,
+            StatusCode,
+        },
     },
     std::{
-        collections::{
-            HashMap,
-        },
+        collections::HashMap,
         ffi::OsString,
         future::Future,
         io::{
@@ -71,6 +70,7 @@ use {
             remove_dir_all,
             File,
         },
+        io::AsyncRead,
     },
 };
 
@@ -483,13 +483,321 @@ pub async fn run_command_inherit<
     }
 }
 
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum EntryType {
+    File,
+    Dir,
+}
+
+struct Entry {
+    type_: EntryType,
+    modified: Option<SystemTime>,
+    size: Option<u64>,
+}
+
+trait TransferTarget {
+    async fn list(&self, path: &Path) -> Result<HashMap<OsString, Entry>, loga::Error>;
+    async fn remove_tree(&self, log: &Log, path: &Path) -> Result<(), loga::Error>;
+    async fn create_dir(&self, log: &Log, path: &Path) -> Result<(), loga::Error>;
+    async fn read(&self, path: &Path) -> Result<impl AsyncRead + Unpin, loga::Error>;
+    async fn write(&self, log: &Log, path: &Path, source: impl AsyncRead + Unpin) -> Result<(), loga::Error>;
+}
+
+struct TargetRemote<'a, H: russh::client::Handler> {
+    conn: &'a russh::client::Handle<H>,
+    sftp: &'a SftpSession,
+}
+
+impl<'a, H: russh::client::Handler> TransferTarget for TargetRemote<'a, H> {
+    async fn list(&self, path: &Path) -> Result<HashMap<OsString, Entry>, loga::Error> {
+        let mut remote_entries = HashMap::new();
+        for remote_entry in self
+            .sftp
+            .read_dir(path.to_string_lossy())
+            .await
+            .context_with("Error reading remote directory", ea!(path = path.to_string_lossy()))? {
+            let remote_meta = remote_entry.metadata();
+            remote_entries.insert(OsString::from(remote_entry.file_name()), Entry {
+                type_: if remote_meta.is_regular() {
+                    EntryType::File
+                } else {
+                    EntryType::Dir
+                },
+                size: remote_meta.size,
+                modified: remote_meta.modified().ok(),
+            });
+        }
+        return Ok(remote_entries);
+    }
+
+    async fn remove_tree(&self, log: &Log, path: &Path) -> Result<(), loga::Error> {
+        run_command_capture(
+            log,
+            self.conn,
+            vec!["rm".to_string(), "-r".to_string(), path.to_string_lossy().to_string()],
+        ).await?;
+        return Ok(());
+    }
+
+    async fn create_dir(&self, log: &Log, path: &Path) -> Result<(), loga::Error> {
+        log.log_with(loga::DEBUG, "Creating remote dir", ea!(remote = path.dbg_str()));
+        self
+            .sftp
+            .create_dir(path.to_string_lossy())
+            .await
+            .context_with("Error creating remote directory", ea!(remote = path.dbg_str()))?;
+        return Ok(());
+    }
+
+    async fn read(&self, path: &Path) -> Result<impl AsyncRead + Unpin, loga::Error> {
+        return Ok(
+            self
+                .sftp
+                .open_with_flags(path.to_string_lossy(), OpenFlags::READ)
+                .await
+                .context_with("Error opening remote file to download", ea!(remote = path.to_string_lossy()))?,
+        );
+    }
+
+    async fn write(&self, log: &Log, path: &Path, mut source: impl AsyncRead + Unpin) -> Result<(), loga::Error> {
+        log.log_with(loga::DEBUG, "Uploading file", ea!(remote = path.dbg_str()));
+        let mut dest =
+            self
+                .sftp
+                .open_with_flags(
+                    path
+                        .to_str()
+                        .context_with(
+                            "Couldn't convert remote path to string, required by sftp subsystem",
+                            ea!(remote = path.dbg_str()),
+                        )?,
+                    OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+                )
+                .await
+                .unwrap();
+        tokio::io::copy(&mut source, &mut dest).await.context("Error during data transfer")?;
+        return Ok(());
+    }
+}
+struct TargetLocal;
+
+impl TransferTarget for TargetLocal {
+    async fn list(&self, path: &Path) -> Result<HashMap<OsString, Entry>, loga::Error> {
+        let mut out = HashMap::new();
+        let mut local_entries =
+            read_dir(&path).await.context_with("Error reading local directory", ea!(local = path.dbg_str()))?;
+        while let Some(local_entry) =
+            local_entries
+                .next_entry()
+                .await
+                .context_with("Error reading entry in directory", ea!(local = path.dbg_str()))? {
+            let local_entry_meta =
+                local_entry
+                    .metadata()
+                    .await
+                    .context_with("Error reading local metadata", ea!(local = local_entry.path().dbg_str()))?;
+            out.insert(local_entry.path().into(), Entry {
+                type_: if local_entry_meta.is_dir() {
+                    EntryType::Dir
+                } else {
+                    EntryType::File
+                },
+                modified: local_entry_meta.modified().ok(),
+                size: Some(local_entry_meta.size()),
+            });
+        }
+        return Ok(out);
+    }
+
+    async fn remove_tree(&self, log: &Log, path: &Path) -> Result<(), loga::Error> {
+        log.log_with(loga::DEBUG, "Deleting local tree", ea!(path = path.dbg_str()));
+        remove_dir_all(&path).await.context_with("Failed to sync-remove file", ea!(local = path.dbg_str()))?;
+        return Ok(());
+    }
+
+    async fn create_dir(&self, log: &Log, path: &Path) -> Result<(), loga::Error> {
+        log.log_with(loga::DEBUG, "Creating local dir", ea!(local = path.dbg_str()));
+        match create_dir(path).await {
+            Ok(_) => (),
+            Err(e) => {
+                if e.kind() == ErrorKind::AlreadyExists {
+                    // nop
+                } else {
+                    return Err(
+                        e.context_with("Failed to create local dir for download", ea!(local = path.dbg_str())),
+                    );
+                }
+            },
+        }
+        return Ok(());
+    }
+
+    async fn read(&self, path: &Path) -> Result<impl AsyncRead + Unpin, loga::Error> {
+        return Ok(
+            File::open(&path)
+                .await
+                .context_with("Error opening local file for reading", ea!(local = path.to_string_lossy()))?,
+        );
+    }
+
+    async fn write(&self, log: &Log, path: &Path, mut source: impl AsyncRead + Unpin) -> Result<(), loga::Error> {
+        log.log_with(loga::DEBUG, "Downloading file", ea!(local = path.dbg_str()));
+        let mut dest =
+            File::create(&path)
+                .await
+                .context_with("Error opening local file for writing", ea!(path = path.to_string_lossy()))?;
+        tokio::io::copy(&mut source, &mut dest)
+            .await
+            .context_with("Error during data transfer", ea!(local = path.dbg_str()))?;
+        return Ok(());
+    }
+}
+
+async fn transfer_dir(
+    log: &Log,
+    source_target: &impl TransferTarget,
+    dest_target: &impl TransferTarget,
+    source: &Path,
+    dest: &Path,
+    dest_entries: &mut HashMap<OsString, Entry>,
+    skip_newer: bool,
+    skip_same_size: bool,
+    sync: bool,
+) -> Result<(), loga::Error> {
+    for (source_entry_filename, source_entry) in source_target.list(source).await? {
+        transfer(
+            log,
+            source_target,
+            dest_target,
+            &source.join(&source_entry_filename),
+            source_entry,
+            &dest.join(&source_entry_filename),
+            dest_entries.remove(&source_entry_filename),
+            skip_newer,
+            skip_same_size,
+            sync,
+        )
+            .boxed_local()
+            .await?;
+    }
+    return Ok(());
+}
+
+async fn transfer_file(
+    log: &Log,
+    source_target: &impl TransferTarget,
+    dest_target: &impl TransferTarget,
+    source: &Path,
+    dest: &Path,
+) -> Result<(), loga::Error> {
+    dest_target.write(log, dest, source_target.read(source).await?).await?;
+    return Ok(());
+}
+
+async fn transfer(
+    log: &Log,
+    source_target: &impl TransferTarget,
+    dest_target: &impl TransferTarget,
+    source: &Path,
+    source_entry: Entry,
+    dest: &Path,
+    dest_entry: Option<Entry>,
+    skip_newer: bool,
+    skip_same_size: bool,
+    sync: bool,
+) -> Result<(), loga::Error> {
+    if let Some(remote_entry) = dest_entry {
+        match (source_entry.type_, remote_entry.type_) {
+            (EntryType::Dir, EntryType::Dir) => {
+                let mut dest_entries = dest_target.list(dest).await?;
+                transfer_dir(
+                    log,
+                    source_target,
+                    dest_target,
+                    source,
+                    dest,
+                    &mut dest_entries,
+                    skip_newer,
+                    skip_same_size,
+                    sync,
+                ).await?;
+                if sync {
+                    for (name, _) in dest_entries {
+                        dest_target.remove_tree(log, &dest.join(name)).await?;
+                    }
+                }
+            },
+            (EntryType::File, EntryType::File) => {
+                match (remote_entry.size, source_entry.size) {
+                    (Some(remote_size), Some(local_size)) => {
+                        if skip_same_size && remote_size == local_size {
+                            return Ok(());
+                        }
+                    },
+                    _ => { },
+                }
+                match (remote_entry.modified, source_entry.modified) {
+                    (Some(remote_modified), Some(local_modified)) => {
+                        if skip_newer && remote_modified >= local_modified {
+                            return Ok(());
+                        }
+                    },
+                    _ => { },
+                }
+                transfer_file(log, source_target, dest_target, source, dest).await?;
+            },
+            (_, _) => {
+                dest_target.remove_tree(log, dest).await?;
+                match source_entry.type_ {
+                    EntryType::File => {
+                        transfer_file(log, source_target, dest_target, source, dest).await?;
+                    },
+                    EntryType::Dir => {
+                        dest_target.create_dir(log, dest).await?;
+                        transfer_dir(
+                            log,
+                            source_target,
+                            dest_target,
+                            source,
+                            dest,
+                            &mut Default::default(),
+                            skip_newer,
+                            skip_same_size,
+                            sync,
+                        ).await?;
+                    },
+                }
+                if source_entry.type_ == EntryType::Dir { } else { }
+            },
+        }
+    } else {
+        match source_entry.type_ {
+            EntryType::File => {
+                transfer_file(log, source_target, dest_target, source, dest).await?;
+            },
+            EntryType::Dir => {
+                dest_target.create_dir(log, dest).await?;
+                transfer_dir(
+                    log,
+                    source_target,
+                    dest_target,
+                    source,
+                    dest,
+                    &mut Default::default(),
+                    skip_newer,
+                    skip_same_size,
+                    sync,
+                ).await?;
+            },
+        }
+    }
+    return Ok(());
+}
+
 /// Upload a local file to a remote path. If the source is a file, it will be
 /// uploaded to the exact remote path.  If the source is a directory, its contents
 /// will be uploaded to the remote path, which must be an existing directory. No
 /// parent directories will be created.
-///
-/// You need to open two sessions: one session to run commands (like `rm -f`) and
-/// one to turn into an sftp session.
 ///
 /// If `sync` and the source is a directory, remote files not present locally will
 /// be deleted after other files have been uploaded.
@@ -500,155 +808,66 @@ pub async fn upload<
     conn: &russh::client::Handle<H>,
     sftp: &SftpSession,
     local: &Path,
-    local_is_dir: bool,
     remote: &Path,
     skip_newer: bool,
     skip_same_size: bool,
     sync: bool,
 ) -> Result<(), loga::Error> {
-    if local_is_dir {
-        // Get remote state
-        struct RemoteEntry {
-            is_file: bool,
-            modified: SystemTime,
-            size: Option<u64>,
-        }
-
-        let mut remote_entries = if !sync && !skip_newer && !skip_same_size {
-            HashMap::new()
-        } else {
-            let remote_str =
-                remote
-                    .to_str()
-                    .context_with(
-                        "Sftp requires utf-8 paths but remote path is not utf-8",
-                        ea!(path = remote.dbg_str()),
-                    )?;
-            match sftp.read_dir(remote_str).await {
-                Ok(d) => {
-                    let mut remote_entries = HashMap::new();
-                    for remote_entry in d {
-                        let remote_meta = remote_entry.metadata();
-                        eprintln!("remote entry {:?} in {:?}", remote_entry.file_name(), remote);
-                        remote_entries.insert(OsString::from(remote_entry.file_name()), RemoteEntry {
-                            is_file: remote_meta.is_regular(),
-                            size: remote_meta.size,
-                            modified: remote_meta
-                                .modified()
-                                .context_with(
-                                    "Error reading remote file modified time",
-                                    ea!(path = remote.join(remote_entry.file_name()).dbg_str()),
-                                )?,
-                        });
-                    }
-                    remote_entries
-                },
-                Err(e) => superif!({
-                    let russh_sftp::client::error::Error::Status(s) = &e else {
-                        break 'reraise;
-                    };
-                    let russh_sftp::protocol::StatusCode::NoSuchFile = &s.status_code else {
-                        break 'reraise;
-                    };
-                    log.log_with(loga::DEBUG, "Creating remote dir", ea!(dir = remote_str));
-                    sftp
-                        .create_dir(remote_str)
-                        .await
-                        .context_with("Error creating remote directory", ea!(path = remote.dbg_str()))?;
-                    HashMap::new()
-                } 'reraise {
-                    return Err(e.context_with("Error reading remote directory", ea!(path = remote.dbg_str())));
-                }),
+    let local_meta =
+        tokio::fs::metadata(&local)
+            .await
+            .context_with("Error reading local metadata", ea!(path = local.dbg_str()))?;
+    let remote_meta = match sftp.metadata(remote.to_string_lossy()).await {
+        Ok(meta) => Some(meta),
+        Err(e) => superif!({
+            let russh_sftp::client::error::Error::Status(status) = &e else {
+                break 'bad;
+            };
+            if status.status_code != StatusCode::NoSuchFile {
+                break 'bad;
             }
-        };
-
-        // Upload files
-        let mut local_entries =
-            read_dir(&local).await.context_with("Error reading local directory", ea!(path = local.dbg_str()))?;
-        while let Some(local_entry) =
-            local_entries
-                .next_entry()
-                .await
-                .context_with("Error reading entry in directory", ea!(dir = local.dbg_str()))? {
-            let local_meta =
-                local_entry
-                    .metadata()
-                    .await
-                    .context_with("Error reading local metadata", ea!(path = local_entry.path().dbg_str()))?;
-            let remote_entry = remote_entries.remove(&local_entry.file_name());
-            if let Some(remote_entry) = remote_entry {
-                if local_meta.is_file() && remote_entry.is_file {
-                    if skip_same_size && remote_entry.size == Some(local_meta.size()) {
-                        continue;
-                    }
-                    if skip_newer &&
-                        remote_entry.modified >
-                            local_meta
-                                .modified()
-                                .context_with(
-                                    "Error reading local file modified time",
-                                    ea!(path = local_entry.path().dbg_str()),
-                                )? {
-                        continue;
-                    }
-                }
-            }
-            eprintln!("upload {:?} in {:?}", local_entry.file_name(), remote);
-            upload(
-                log,
-                conn,
-                sftp,
-                &local.join(local_entry.file_name()),
-                local_meta.is_dir(),
-                &remote.join(local_entry.file_name()),
-                skip_newer,
-                skip_same_size,
-                sync,
-            )
-                .boxed_local()
-                .await?;
-        }
-
-        // If syncing, delete old remote files
-        if sync {
-            eprintln!(
-                "sync, deleting remaining {:?} in {:?}",
-                remote_entries.keys().map(|x| x.to_string_lossy().to_string()).collect::<Vec<_>>(),
-                remote
-            );
-            for (name, _) in remote_entries {
-                let path = remote.join(name);
-                let str_path =
-                    path
-                        .to_str()
-                        .context_with(
-                            "Remote path to recursively delete is invalid utf-8, but sftp requires utf-8 paths",
-                            ea!(path = path.dbg_str()),
-                        )?;
-                run_command_capture(log, conn, vec!["rm".to_string(), "-r".to_string(), str_path.to_string()]).await?;
-            }
-        }
-    } else {
-        log.log_with(loga::DEBUG, "Uploading file", ea!(local = local.dbg_str(), remote = remote.dbg_str()));
-        let mut source =
-            File::open(&local)
-                .await
-                .context_with("Error opening local file for reading", ea!(path = local.to_string_lossy()))?;
-        let mut dest =
-            sftp
-                .open_with_flags(
-                    remote
-                        .to_str()
-                        .context_with(
-                            "Couldn't convert remote path to string, required by sftp subsystem",
-                            ea!(path = remote.dbg_str()),
-                        )?,
-                    OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-                )
-                .await
-                .unwrap();
-        tokio::io::copy(&mut source, &mut dest).await.context("Error during data transfer")?;
-    }
+            None
+        } 'bad {
+            return Err(e.context_with("Error reading local metadata", ea!(path = remote.dbg_str())));
+        }),
+    };
+    transfer(
+        //. .
+        log,
+        &TargetLocal,
+        &TargetRemote {
+            conn: conn,
+            sftp: sftp,
+        },
+        local,
+        Entry {
+            type_: if local_meta.is_dir() {
+                EntryType::Dir
+            } else {
+                EntryType::File
+            },
+            modified: local_meta.modified().ok(),
+            size: Some(local_meta.size()),
+        },
+        remote,
+        match remote_meta {
+            Some(m) => {
+                Some(Entry {
+                    type_: if m.file_type().is_dir() {
+                        EntryType::Dir
+                    } else {
+                        EntryType::File
+                    },
+                    modified: m.modified().ok(),
+                    size: m.size,
+                })
+            },
+            None => None,
+        },
+        skip_newer,
+        skip_same_size,
+        sync,
+    ).await?;
     return Ok(());
 }
 
@@ -657,128 +876,70 @@ pub async fn upload<
 /// will be downloaded to the local path, which must be an existing directory. No
 /// parent directories will be created.
 ///
-/// You need to open two sessions: one session to run commands (like `rm -f`) and
-/// one to turn into an sftp session.
-///
 /// If `sync` and the source is a directory, local files not present remotely will
 /// be deleted after other files have been downloaded.
-pub async fn download(
+pub async fn download<
+    H: russh::client::Handler,
+>(
     log: &Log,
+    conn: &russh::client::Handle<H>,
     sftp: &SftpSession,
     remote: &Path,
-    remote_is_dir: bool,
     local: &Path,
     skip_newer: bool,
     skip_same_size: bool,
     sync: bool,
 ) -> Result<(), loga::Error> {
-    let str_remote =
-        remote
-            .to_str()
-            .context_with(
-                "Couldn't convert remote path to string, required by sftp subsystem",
-                ea!(path = remote.to_string_lossy()),
-            )?;
-    if remote_is_dir {
-        struct LocalEntry {
-            is_file: bool,
-            modified: SystemTime,
-            size: u64,
-        }
-
-        let mut local_entries = if !sync && !skip_newer && !skip_same_size {
-            HashMap::new()
-        } else {
-            log.log_with(loga::DEBUG, "Create dir", ea!(dir = local.dbg_str()));
-            match create_dir(local).await {
-                Ok(_) => (),
-                Err(e) => {
-                    if e.kind() == ErrorKind::AlreadyExists {
-                        // nop
-                    } else {
-                        return Err(
-                            e.context_with("Failed to create local dir for download", ea!(path = local.dbg_str())),
-                        );
-                    }
+    let remote_meta =
+        sftp
+            .metadata(remote.to_string_lossy())
+            .await
+            .context_with("Error reading remote metadata", ea!(path = remote.dbg_str()))?;
+    let local_meta = match tokio::fs::metadata(&local).await {
+        Ok(meta) => Some(meta),
+        Err(e) => match e.kind() {
+            ErrorKind::NotFound => {
+                None
+            },
+            _ => {
+                return Err(e.context_with("Error reading local metadata", ea!(path = local.dbg_str())));
+            },
+        },
+    };
+    transfer(
+        //. .
+        log,
+        &TargetRemote {
+            sftp: sftp,
+            conn: conn,
+        },
+        &TargetLocal,
+        remote,
+        Entry {
+            type_: if remote_meta.is_dir() {
+                EntryType::Dir
+            } else {
+                EntryType::File
+            },
+            modified: remote_meta.modified().ok(),
+            size: remote_meta.size,
+        },
+        local,
+        match local_meta {
+            Some(m) => Some(Entry {
+                type_: if m.is_dir() {
+                    EntryType::Dir
+                } else {
+                    EntryType::File
                 },
-            }
-            let mut local_entries = HashMap::new();
-            let mut local_entries1 =
-                read_dir(local)
-                    .await
-                    .context_with("Error reading local dir for sync", ea!(path = local.dbg_str()))?;
-            while let Some(entry) =
-                local_entries1
-                    .next_entry()
-                    .await
-                    .context_with("Error reading entry from local directory for sync", ea!(path = local.dbg_str()))? {
-                let meta = entry.metadata().await.context("Error reading local file metadata")?;
-                local_entries.insert(entry.file_name(), LocalEntry {
-                    is_file: meta.is_file(),
-                    modified: meta.modified().context("Error reading local file time")?,
-                    size: meta.size(),
-                });
-            }
-            local_entries
-        };
-        for remote_entry in sftp
-            .read_dir(str_remote)
-            .await
-            .context_with("Error reading remote directory", ea!(path = str_remote))? {
-            let local_entry = local_entries.remove(&OsString::from(remote_entry.file_name()));
-            let child_remote = remote.join(remote_entry.file_name());
-            if let Some(local_entry) = local_entry {
-                if local_entry.is_file && remote_entry.metadata().is_regular() {
-                    if skip_same_size && Some(local_entry.size) == remote_entry.metadata().size {
-                        continue;
-                    }
-                    if skip_newer &&
-                        local_entry.modified >=
-                            remote_entry
-                                .metadata()
-                                .modified()
-                                .context_with(
-                                    "Error reading remote file modified time",
-                                    ea!(path = child_remote.dbg_str()),
-                                )? {
-                        continue;
-                    }
-                }
-            }
-            download(
-                log,
-                sftp,
-                &child_remote,
-                remote_entry.metadata().is_dir(),
-                &local.join(remote_entry.file_name()),
-                skip_newer,
-                skip_same_size,
-                sync,
-            )
-                .boxed_local()
-                .await?;
-        }
-        if sync {
-            for (name, _entry) in local_entries {
-                let path = local.join(name);
-                log.log_with(loga::DEBUG, "Deleting tree", ea!(path = path.dbg_str()));
-                remove_dir_all(&path).await.context_with("Failed to sync-remove file", ea!(path = path.dbg_str()))?;
-            }
-        }
-    } else {
-        log.log_with(loga::DEBUG, "Downloading file", ea!(local = local.dbg_str(), remote = str_remote));
-        let mut source =
-            sftp
-                .open_with_flags(str_remote, OpenFlags::READ)
-                .await
-                .context_with("Error opening remote file to download", ea!(path = str_remote))?;
-        let mut dest =
-            File::create(&local)
-                .await
-                .context_with("Error opening local file for writing", ea!(path = local.to_string_lossy()))?;
-        tokio::io::copy(&mut source, &mut dest)
-            .await
-            .context_with("Error during data transfer", ea!(remote = str_remote, local = local.dbg_str()))?;
-    }
+                modified: m.modified().ok(),
+                size: Some(m.size()),
+            }),
+            None => None,
+        },
+        skip_newer,
+        skip_same_size,
+        sync,
+    ).await?;
     return Ok(());
 }
