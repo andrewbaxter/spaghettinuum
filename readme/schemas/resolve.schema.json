@@ -14,11 +14,20 @@
       "properties": {
         "data": true,
         "expires": {
-          "description": "The expiration time per the time on the publisher when the value was retrieved. This should be far enough in the future to ignore when not storing the results.",
-          "type": "string",
-          "format": "date-time"
+          "description": "The expiration instant per the time on the publisher when the value was retrieved. This should be far enough in the future to ignore when not storing the results.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/UtcSecs"
+            }
+          ]
         }
-      }
+      },
+      "additionalProperties": false
+    },
+    "UtcSecs": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
     }
   }
 }

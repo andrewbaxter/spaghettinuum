@@ -2,39 +2,115 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Config",
   "type": "object",
+  "required": [
+    "cache_dir",
+    "persistent_dir"
+  ],
   "properties": {
+    "$schema": {
+      "description": "Allow setting a JSON Schema URL or path, for example to provide VS Code autocomplete.",
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "api": {
       "description": "An HTTPS server for all client interaction except DNS: resolving, publishing, and administration. It is disabled if not present or null, but to enable it with defaults you can provide an empty config.",
+      "default": {
+        "bind_addrs": []
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/ApiConfig"
+        }
+      ]
+    },
+    "cache_dir": {
+      "description": "Where cache files will be placed.",
+      "type": "string"
+    },
+    "enable_admin": {
+      "description": "Function: enable the admin rest endpoints.\n\nThis is required if `enable_external_publish` is on.",
       "default": null,
       "anyOf": [
         {
-          "$ref": "#/definitions/ApiConfig"
+          "$ref": "#/definitions/FunctionAdmin"
         },
         {
           "type": "null"
         }
       ]
     },
-    "cache_dir": {
-      "description": "Where cache files will be placed. If not specified, uses a default directory based on the `CACHE_DIRECTORY` environment variable.",
-      "type": [
-        "string",
-        "null"
+    "enable_external_publish": {
+      "description": "Function: enable external publishers to publish records via the rest api.\n\nThe identities to publish must be registered via the admin api beforehand.",
+      "default": false,
+      "type": "boolean"
+    },
+    "enable_resolver_dns": {
+      "description": "Function: enable resolver queries via dns (via `IDENTITY.s` names).",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/FunctionResolverDns"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
-    "content": {
-      "description": "Additionally serve more HTTP content, using the host cert.",
+    "enable_resolver_rest": {
+      "description": "Function: enable resolver queries via the rest api.",
+      "default": false,
+      "type": "boolean"
+    },
+    "enable_self_publish_ip": {
+      "description": "Function: publish the detected global IP address under the configured self identity.\n\nThis is automatically enabled if `enable_serve_content` is on.",
+      "default": false,
+      "type": "boolean"
+    },
+    "enable_self_publish_ssh_key": {
+      "description": "Function: publish the current host's ssh host public key.\n\nThis allows the spagh ssh client to resolve the host key via the host identity.",
       "default": null,
-      "type": [
-        "array",
-        "null"
-      ],
-      "items": {
-        "$ref": "#/definitions/ContentConfig"
+      "anyOf": [
+        {
+          "$ref": "#/definitions/FunctionPublishSelfSshKeys"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "enable_self_publish_tls": {
+      "description": "Function: generate and publish tls certificates, automatically refreshing before they expire.",
+      "default": false,
+      "type": "boolean"
+    },
+    "enable_serve_content": {
+      "description": "Function: serve http content (static files or reverse proxy) using a spaghettinuum TLS certificate.\n\nThis is a mapping of interface IPs and ports to bind, to subpaths, to content sources.",
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "$ref": "#/definitions/ContentSource"
+        }
       }
     },
+    "enable_write_tls": {
+      "description": "Function: generate and write tls certificates to a directory\n\nA service like nginx can be configured to use the certs in the directory for publishing content if this demon's publishing functionality isn't used directly.\n\nThe certs are written with a delay of the published tls record ttl (plus a bit) if `enable_self_publish_tls` is on so that clients have a chance to refresh their expected certs before opening a new connection.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/FunctionWriteTls"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "global_addrs": {
-      "description": "How to determine the public ip for publisher announcements and self-publishing. Publisher announcements always use the first address.\n\nIf empty, defaults to using a gobal IPv6 address found on any interface.",
+      "description": "How to determine the public ip for publisher announcements and self-publishing. Publisher announcements always use the first address.\n\nIf empty, defaults to using the first gobal IPv6 address found on any interface.",
       "default": [],
       "type": "array",
       "items": {
@@ -54,7 +130,7 @@
       ]
     },
     "node": {
-      "description": "Configuration for the core node. The core node is the DHT participant, used by the publisher and resolver (always enabled).",
+      "description": "Override default configuration for the node (DHT participant).",
       "default": {
         "bind_addr": null,
         "bootstrap": null
@@ -66,37 +142,55 @@
       ]
     },
     "persistent_dir": {
-      "description": "Where persistent files will be placed. You may want to back this up periodically. If not specified, uses a default directory based on the `DATA_DIRECTORY` environment variable.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "description": "Where persistent files will be placed, such as published records. You may want to back this up periodically.",
+      "type": "string"
     },
     "publisher": {
-      "description": "The publisher (as named) allows publishing records.",
-      "default": null,
-      "anyOf": [
+      "description": "Override default configuration for the publisher.",
+      "default": {
+        "advertise_port": null,
+        "bind_addr": null
+      },
+      "allOf": [
         {
           "$ref": "#/definitions/PublisherConfig"
-        },
-        {
-          "type": "null"
         }
       ]
     },
     "resolver": {
       "description": "The resolver (as named) resolves records for clients. It is exposed on the API server along with other APIs.",
-      "default": null,
-      "anyOf": [
+      "default": {
+        "max_cache": null
+      },
+      "allOf": [
         {
           "$ref": "#/definitions/ResolverConfig"
-        },
-        {
-          "type": "null"
         }
       ]
+    },
+    "tls": {
+      "default": {
+        "no_certifier": false
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/TlsConfig"
+        }
+      ]
+    },
+    "upstream_dns": {
+      "description": "Upstream resolvers. These are used for any dns resolution needed internally (namely, contacting the certifier for self-tls), as well  as resolving non-`.s` names in the dns bridge. Each address port defaults to port 53 if no ADN, otherwise 853. If not specified, uses system resolvers.",
+      "default": null,
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/definitions/AdnSocketAddr"
+      }
     }
   },
+  "additionalProperties": false,
   "definitions": {
     "AdminToken": {
       "oneOf": [
@@ -133,27 +227,16 @@
     "ApiConfig": {
       "type": "object",
       "properties": {
-        "admin_token": {
-          "description": "HTTP authorization bearer token for accessing publisher admin endpoints.\n\nIf not specified, remote admin operations will be disabled (only self-publish on this node will work since there will be no way to register publishing identities).",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AdminToken"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "bind_addrs": {
-          "description": "Addresses for the server to listen on for client interaction.\n\nDefaults to `[::]:12434` and `0:12434`.",
+          "description": "Addresses for the server to listen on for client interaction.\n\nIf empty or not specified, defaults to `[::]:12434` and `0:12434`.",
           "default": [],
           "type": "array",
           "items": {
             "$ref": "#/definitions/StrSocketAddr"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "BootstrapConfig": {
       "type": "object",
@@ -178,28 +261,89 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
-    "ContentConfig": {
+    "ContentSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "static_files"
+          ],
+          "properties": {
+            "static_files": {
+              "type": "object",
+              "required": [
+                "content_dir"
+              ],
+              "properties": {
+                "content_dir": {
+                  "description": "Where files to serve are.",
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "reverse_proxy"
+          ],
+          "properties": {
+            "reverse_proxy": {
+              "type": "object",
+              "required": [
+                "upstream_url"
+              ],
+              "properties": {
+                "upstream_url": {
+                  "description": "Base url of upstream HTTP server. The request path is appended.",
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "FunctionAdmin": {
       "type": "object",
       "required": [
-        "items"
+        "admin_token"
       ],
       "properties": {
-        "items": {
-          "description": "Mapping of interface IPs and ports to bind to to subpaths to content to serve.\n\nRegardless of port this always serves HTTPS. For HTTP traffic you can use some other static file server.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/definitions/ServeMode"
+        "admin_token": {
+          "description": "HTTP authorization `Bearer` token for accessing publisher admin endpoints.\n\nIf not specified, remote admin operations will be disabled (only self-publish on this node will work since there will be no way to register publishing identities).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/AdminToken"
             }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "FunctionPublishSelfSshKeys": {
+      "type": "object",
+      "properties": {
+        "ssh_host_keys": {
+          "description": "A list of paths to SSH host keys to self-publish for this host.\n\nIf empty or not specified default SSH host key locations will be used.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
           }
         }
       },
       "additionalProperties": false
     },
-    "DnsBridgeConfig": {
+    "FunctionResolverDns": {
       "type": "object",
       "properties": {
         "synthetic_self_record": {
@@ -231,19 +375,22 @@
           "items": {
             "$ref": "#/definitions/StrSocketAddr"
           }
-        },
-        "upstream": {
-          "description": "Upstream resolvers, such as for non-`.s` names. Each address port defaults to port 53 if no ADN, otherwise 853. If not specified, uses system resolvers.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/AdnSocketAddr"
-          }
         }
-      }
+      },
+      "additionalProperties": false
+    },
+    "FunctionWriteTls": {
+      "type": "object",
+      "required": [
+        "write_certs_dir"
+      ],
+      "properties": {
+        "write_certs_dir": {
+          "description": "The location to write the certificates to whenever they're refreshed. The certificates will be named `pub.pem` and `priv.pem`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     },
     "GlobalAddrConfig": {
       "oneOf": [
@@ -291,7 +438,8 @@
                     "null"
                   ]
                 }
-              }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -333,7 +481,8 @@
           "description": "Host to look up address on.",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "IdentitySecretArg": {
       "description": "An identity with its associated secret.",
@@ -386,7 +535,8 @@
             "$ref": "#/definitions/BootstrapConfig"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "NodeIdentity": {
       "description": "A node identity (zbase32 string)",
@@ -416,37 +566,15 @@
               "type": "null"
             }
           ]
-        },
-        "ssh_host_keys": {
-          "description": "A list of paths to SSH host keys to self-publish for this host.\n\nIf not specified at all, a default SSH host key location will be used. If an empty list is provided no SSH host keys will be published.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ResolverConfig": {
       "type": "object",
       "properties": {
-        "dns_bridge": {
-          "description": "The DNS bridge exposes specific spaghettinuum `dns/` records over DNS.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/DnsBridgeConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "max_cache": {
-          "description": "Maximum number of entries (identity, key pairs) in resolver cache.",
+          "description": "Maximum number of entries in resolver cache.",
           "default": null,
           "type": [
             "integer",
@@ -455,59 +583,23 @@
           "format": "uint64",
           "minimum": 0.0
         }
-      }
-    },
-    "ServeMode": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": [
-            "static_files"
-          ],
-          "properties": {
-            "static_files": {
-              "type": "object",
-              "required": [
-                "content_dir"
-              ],
-              "properties": {
-                "content_dir": {
-                  "description": "Where files to serve are.",
-                  "type": "string"
-                }
-              },
-              "additionalProperties": false
-            }
-          },
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "required": [
-            "reverse_proxy"
-          ],
-          "properties": {
-            "reverse_proxy": {
-              "type": "object",
-              "required": [
-                "upstream_url"
-              ],
-              "properties": {
-                "upstream_url": {
-                  "description": "Base url of upstream HTTP server. The request path is appended.",
-                  "type": "string"
-                }
-              },
-              "additionalProperties": false
-            }
-          },
-          "additionalProperties": false
-        }
-      ]
+      },
+      "additionalProperties": false
     },
     "StrSocketAddr": {
       "description": "An ip address or domain (ex: \"localhost\") which resolves to an address",
       "type": "string"
+    },
+    "TlsConfig": {
+      "type": "object",
+      "properties": {
+        "no_certifier": {
+          "description": "Disable certifier signature of certs.\n\nThe certs will still be published in spaghettinuum and therefore verifiable via spaghettinuum lookup.\n\nCertifier signature is important for general http clients that don't support spaghettinuum natively as well as systems that don't have spaghettinuum access yet (like DNS clients). If you're just using service discovery or non-http protocols, or you're running on a host with no persistent storage to store certificates disabling certifier usage may avoid rate limit issues.",
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

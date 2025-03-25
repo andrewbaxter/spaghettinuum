@@ -1,6 +1,6 @@
 ![spaghettinuum](readme/logo.svg)
 
-The spaghettinuum is an alternative to DNS based around a distributed hash table (DHT). Replacing the web with a plate of pasta. A little less centralized and a little more noodly.
+The spaghettinuum is an alternative to the DNS-based web, using a distributed hash table (DHT). Replacing the web with a plate of pasta. A little less centralized and a little more noodly.
 
 ---
 
@@ -60,8 +60,8 @@ Why it's cool:
 
 - Own your identity - no monthly payments, nobody else can ever use your identity or restrict you from using it
 - No hoops to jump through to get an ID, no WHOIS requirements
-- Get TLS certificates in a single request, no challenges. Or generate your own self-signed certificate validated via DHT
 - DNS bridge for compatibility with existing software
+- Get TLS certificates in a single request, no challenge procedure. Or generate your own _secure_ self-signed certificates (validated via DHT)
 - Smartcard/PCSC/GPG-card backed identities, optionally, as an excuse to buy a Yubikey 5 Nano
 
 **Current status**: Feature complete but very new -- expect bugs and major changes.
@@ -104,7 +104,7 @@ DNS often functions as an identity: who you are online is often tied to a domain
 
 Having an such an identity is important, but despite regulations the DNS system locks you in to all sorts of abuse:
 
-- Paying large amounts of money to rent seeking middlemen
+- Paying increasingly large amounts of money to rent seeking middlemen
 
 - Keep paying or lose everything
 
@@ -122,14 +122,14 @@ The sooner we have a good decentralized alternative the better.
 
 Yeah, `google.com` is a lot more memorable than `yryyyyyyyyei1n3eqbew6ysyy6ocdzseit6j5a6kmwb7s8puxmpcwmingf67r.s`.
 
-But I live in Japan, and for all intents and purposes people are already living in a world where domain names are just gibberish:
+But I live in Japan, and for all intents and purposes people here are already living in a world where domain names are just gibberish:
 
 - Domain names are heavily biased towards ASCII, which many Japanese find hard to read. In fact, nobody here uses domain names directly - all advertisements say "Search for ABCD" and never include a URL. Browsers come with search engines preconfigured so you don't even need to know how to type in `google.com` (is there a `www`? do you need to add `https://`?).
-- Everyone uses a messenger called Line, which doesn't use any visible absolute identifiers (ID or phone number) - instead, you connect with people by adding them via QR code when you meet _in person_, or by adding them via co-membership in a group chat you joined via other people. Companies put QR codes for adding them on Line on posters, advertisements, etc.
+- Everyone uses a messenger called Line, which doesn't use any visible absolute identifiers (ID or phone number) - instead, you connect with people by adding them via QR code when you meet _in person_, or by adding them via co-membership in a group chat you joined via other people. Companies put QR codes for adding them on Line on posters, advertisements, etc. Mutual acquaintences create groups so people they know can add eachother.
 
 While I'm not claiming the googling-companies-thing is great, the Line bit works well and shows how a world with no absolute names is still perfectly navigable.
 
-In my own internet usage too I don't rely on domain names to establish trust:
+I don't rely on domain names to establish trust in my own internet usage too:
 
 - Stuff that I rely on (_high-trust_) and access all the time: Amazon, my bank, Twitter, etc.
 
@@ -137,11 +137,11 @@ In my own internet usage too I don't rely on domain names to establish trust:
 
   Once I accessed them I bookmarked them, and again the bookmark only shows the website title (or a bookmark title I gave it myself).
 
-- Stuff I find in search results, which is a _low-trust_ interaction: technical information, blogs, reviews, etc.
+- Stuff I find in search results, which I use for _low-trust_ interactions only: technical information, blogs, reviews, etc.
 
   I confirm all the information is legitimate independently before relying on it, often from multiple sources. In this case I (again) don't look at the domain.
 
-As more and more domains are purchased and the number of meaningless suffixes proliferate, the trust provided by a domain name continues to decrease. Is that new bank at `futurebank.io` or `futurebank.cash` or `futurebank.xyz` or `futurebank.it` or (etc). What about typo squatting? What about creative names, like `lyft` vs `lift`?
+As more and more domains are purchased and the number of meaningless suffixes proliferate, the trust provided by a domain name continues to decrease. Is that new bank at `futurebank.io` or `futurebank.cash` or `futurebank.xyz` or `futurebank.it` or (etc). What about typo squatting? What about creative names, like `lyft` vs `lift`? What about all the entirely unrelated sibling domains corporations buy and use for core site operations with no thoughts to validation?
 
 So safely browsing the web _today_ requires:
 

@@ -18,7 +18,7 @@ These are arbitrary, but there are some predefined records and some suggestions/
 
   The value is in [this format](./schemas/record_delegate.schema.json).
 
-  A querying client should query for delegate records for all non-empty prefixes of their request path. Replace the prefix of the path from the shortest match with the record result, then repeat the query. If there are no delegate records, handle the response as usual.
+  A querying client should include a request for delegate records for all non-empty prefixes of their request path in every query. If there are delegate records, the client should replace the prefix of the path from the shortest match with the record result then repeat the query. If there are no delegate records, handle the response as usual.
 
 - DNS equivalent A records, with data in [this format](./schemas/record_dns_a.schema.json)
 

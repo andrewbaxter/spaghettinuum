@@ -1,0 +1,57 @@
+{
+    "$schema": "../schemas/config_spagh_demon.schema.json",
+    "cache_dir": "/var/tmp/spagh",
+    "persistent_dir": "/var/spagh",
+    "global_addrs": [
+        {
+            "fixed": "203.0.113.111"
+        },
+        {
+            "from_interface": {
+                "ip_version": "v6",
+                "name": "eth0"
+            }
+        },
+        {
+            "lookup": {
+                "contact_ip_ver": "v6",
+                "lookup": "https://whatismyip.example.org"
+            }
+        }
+    ],
+    "identity": {
+        "local": "/var/spagh/host.ident"
+    },
+    "enable_admin": {
+        "admin_token": {
+            "inline": "hunter2"
+        }
+    },
+    "enable_self_publish_ip": true,
+    "enable_self_publish_ssh_key": {
+        "ssh_host_keys": [
+            "/etc/ssh/ident.pub"
+        ]
+    },
+    "enable_self_publish_tls": true,
+    "enable_external_publish": true,
+    "enable_resolver_rest": true,
+    "enable_resolver_dns": {},
+    "enable_write_tls": {
+        "write_certs_dir": "/var/spagh_certs"
+    },
+    "enable_serve_content": {
+        "[::]:443": {
+            "/api": {
+                "reverse_proxy": {
+                    "upstream_url": "[::1]:8080"
+                }
+            },
+            "": {
+                "static_files": {
+                    "content_dir": "/srv"
+                }
+            }
+        }
+    }
+}

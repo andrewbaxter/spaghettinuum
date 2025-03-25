@@ -5,7 +5,7 @@ Publishing means associating data with your id and publicizing it so that anyone
 In order to publish, you'll need:
 
 - An [identity](./guide_identities.md)
-- A publisher - either [set your own up](./reference_spagh_node.md) or get your identity authorized on a publisher run by someone else
+- A publisher - either [set your own up](./reference_spagh.md) or get your identity authorized on a publisher run by someone else
 
 ## Manual publishing
 

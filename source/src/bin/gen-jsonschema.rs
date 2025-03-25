@@ -39,9 +39,6 @@ pub fn main() {
     fs::write(out.join("config_spagh_demon.schema.json"), &demon_schema_raw).unwrap();
     let node_schema = jsonschema::JSONSchema::compile(&serde_json::from_str(&demon_schema_raw).unwrap()).unwrap();
     validate(&node_schema, &examples.join("spagh_demon_full.json"));
-    validate(&node_schema, &examples.join("spagh_demon_discovery_only.json"));
-    validate(&node_schema, &examples.join("spagh_demon_reverse_proxy.json"));
-    validate(&node_schema, &examples.join("spagh_demon_static_files.json"));
     fs::write(
         out.join("record_delegate.schema.json"),
         &serde_json::to_string_pretty(&schema_for!(stored::record::delegate_record::Delegate)).unwrap(),

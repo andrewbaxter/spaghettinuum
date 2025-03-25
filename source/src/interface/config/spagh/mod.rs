@@ -173,6 +173,10 @@ pub type FunctionServeContent = HashMap<StrSocketAddr, HashMap<String, ContentSo
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Config {
+    /// Allow setting a JSON Schema URL or path, for example to provide VS Code
+    /// autocomplete.
+    #[serde(default, rename = "$schema")]
+    pub _schema: Option<String>,
     // # External inputs
     //
     // ---
