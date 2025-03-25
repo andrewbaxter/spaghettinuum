@@ -127,16 +127,18 @@ use {
             Arc,
             Mutex,
         },
-        time::Duration,
     },
     taskmanager::TaskManager,
     tokio::{
         fs::create_dir_all,
+        pin,
         select,
         sync::watch,
-        time::sleep,
     },
-    tokio_stream::wrappers::WatchStream,
+    tokio_stream::{
+        wrappers::WatchStream,
+        StreamExt,
+    },
 };
 
 #[derive(Aargvark)]
@@ -221,9 +223,6 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
         for a in &config.global_addrs {
             ips.push(resolve_global_ip(log, a).await?);
         };
-        if let Some(delay) = config.post_addr_delay_seconds {
-            sleep(Duration::from_secs(delay as u64)).await;
-        }
         return Ok(ips);
     };
     let global_ips = select!{
@@ -264,6 +263,25 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             &config.cache_dir,
         ).await?
     };
+    let mut connected = WatchStream::new(node.connected());
+    loop {
+        pin!{
+            let connected = connected.next();
+        }
+        select!{
+            c = & mut connected => {
+                let Some(c) = c else {
+                    return Ok(());
+                };
+                if c {
+                    break;
+                }
+            },
+            _ = tm.until_terminate() => {
+                return Ok(());
+            }
+        }
+    }
 
     struct SetupState {
         // Inputs

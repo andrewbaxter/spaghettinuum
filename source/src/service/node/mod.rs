@@ -92,6 +92,7 @@ use {
     tokio::{
         net::UdpSocket,
         select,
+        sync::watch,
         time::sleep,
     },
 };
@@ -235,6 +236,7 @@ struct Buckets {
 }
 
 struct NodeInner {
+    connected: watch::Receiver<bool>,
     log: Log,
     own_ident: node_identity::NodeIdentity,
     own_coord: DhtCoord,
@@ -409,8 +411,10 @@ impl Node {
         let (find_timeout_write, find_timeout_recv) = unbounded::<NextFindTimeout>();
         let (ping_timeout_write, ping_timeout_recv) = unbounded::<NextPingTimeout>();
         let (challenge_timeout_write, challenge_timeout_recv) = unbounded::<NextChallengeTimeout>();
+        let (connected_write, connected_read) = watch::channel(false);
         let dir = Node(Arc::new(NodeInner {
             log: log.clone(),
+            connected: connected_read,
             own_ident: node_identity::NodeIdentity::V1(match own_ident {
                 node_identity::NodeIdentity::V1(i) => i,
             }),
@@ -500,31 +504,59 @@ impl Node {
         }));
 
         // Pings
-        tm.periodic("Node - neighbor aliveness", Duration::from_secs(60 * 10), cap_fn!(()(dir, ping_timeout_write) {
-            for i in 0 .. NEIGHBORHOOD {
-                for leading_zeros in 0 .. BUCKET_COUNT {
-                    let (id, addr) =
-                        if let Some(node) = dir.0.buckets.lock().unwrap().buckets[leading_zeros].get(i) {
-                            (node.node.ident.clone(), node.node.address.clone())
-                        } else {
-                            continue;
-                        };
-                    let req_id = dir.0.next_req_id.fetch_add(1, Ordering::Relaxed);
-                    match dir.0.ping_states.lock().unwrap().entry(id.clone()) {
-                        Entry::Occupied(_) => continue,
-                        Entry::Vacant(e) => e.insert(PingState {
-                            req_id: req_id,
-                            bucket_i: leading_zeros,
-                        }),
-                    };
-                    dir.send(&addr.0, wire::node::Protocol::V1(wire::node::latest::Message::Ping)).await;
-                    ping_timeout_write.unbounded_send(NextPingTimeout {
-                        end: Instant::now() + req_timeout(),
-                        key: (id, req_id),
-                    }).ignore();
+        tm.periodic(
+            "Node - neighbor aliveness",
+            Duration::from_secs(60 * 10),
+            cap_fn!(()(dir, ping_timeout_write, tm, log, connected_write) {
+                // Normally, just ping and stop. But if 0 neighbors are currently responsive it's
+                // probably a network issue and we don't want to be down for 10m if it recovers
+                // quickly so do a tighter loop until at least one is responsive.
+                'any_alive : loop {
+                    for i in 0 .. NEIGHBORHOOD {
+                        for leading_zeros in 0 .. BUCKET_COUNT {
+                            let (id, addr) =
+                                if let Some(node) = dir.0.buckets.lock().unwrap().buckets[leading_zeros].get(i) {
+                                    (node.node.ident.clone(), node.node.address.clone())
+                                } else {
+                                    continue;
+                                };
+                            let req_id = dir.0.next_req_id.fetch_add(1, Ordering::Relaxed);
+                            match dir.0.ping_states.lock().unwrap().entry(id.clone()) {
+                                Entry::Occupied(_) => continue,
+                                Entry::Vacant(e) => e.insert(PingState {
+                                    req_id: req_id,
+                                    bucket_i: leading_zeros,
+                                }),
+                            };
+                            dir.send(&addr.0, wire::node::Protocol::V1(wire::node::latest::Message::Ping)).await;
+                            ping_timeout_write.unbounded_send(NextPingTimeout {
+                                end: Instant::now() + req_timeout(),
+                                key: (id, req_id),
+                            }).ignore();
+                        }
+                    }
+                    select!{
+                        _ = sleep(req_timeout() * 2) => {
+                        },
+                        _ = tm.until_terminate() => {
+                            break;
+                        }
+                    }
+                    for i in 0 .. NEIGHBORHOOD {
+                        for leading_zeros in 0 .. BUCKET_COUNT {
+                            if let Some(node) = dir.0.buckets.lock().unwrap().buckets[leading_zeros].get(i) {
+                                if !node.unresponsive {
+                                    connected_write.send(true).ignore();
+                                    break 'any_alive;
+                                }
+                            }
+                        }
+                    }
+                    connected_write.send(false).ignore();
+                    log.log(loga::DEBUG, "No reachable neighbors, doing small-period ping");
                 }
-            }
-        }));
+            }),
+        );
 
         // Ping timeouts
         tm.stream("Node - ping timeouts", ping_timeout_recv, cap_fn!((e)(dir) {
@@ -619,6 +651,10 @@ impl Node {
             }
         });
         return Ok(dir);
+    }
+
+    pub fn connected(&self) -> watch::Receiver<bool> {
+        return self.0.connected.clone();
     }
 
     pub fn health_detail(&self) -> HealthDetail {

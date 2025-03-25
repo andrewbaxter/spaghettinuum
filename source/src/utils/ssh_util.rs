@@ -2,17 +2,20 @@ use {
     crate::{
         interface::stored::record,
         resolving::{
-            resolve,
             default_resolver_url_pairs,
+            resolve,
         },
     },
     flowcontrol::{
         shed,
         superif,
     },
-    futures::FutureExt,
+    futures::{
+        FutureExt,
+    },
     itertools::Itertools,
     loga::{
+        conversion::ResultIgnore,
         ea,
         DebugDisplay,
         ErrContext,
@@ -21,14 +24,18 @@ use {
     },
     russh::{
         client::{
+            AuthResult,
             Handle,
             Msg,
+        },
+        keys::{
+            parse_public_key_base64,
+            PrivateKeyWithHashAlg,
         },
         Channel,
         ChannelMsg,
         Disconnect,
     },
-    russh_keys::parse_public_key_base64,
     russh_sftp::{
         client::SftpSession,
         protocol::OpenFlags,
@@ -38,11 +45,18 @@ use {
             HashMap,
         },
         ffi::OsString,
-        io::ErrorKind,
+        future::Future,
+        io::{
+            stderr,
+            stdout,
+            ErrorKind,
+            Write,
+        },
         net::{
             IpAddr,
             SocketAddr,
         },
+        os::unix::fs::MetadataExt,
         path::{
             Path,
             PathBuf,
@@ -50,33 +64,41 @@ use {
         sync::Arc,
         time::SystemTime,
     },
-    tokio::fs::{
-        create_dir,
-        read_dir,
-        remove_dir_all,
-        File,
+    tokio::{
+        fs::{
+            create_dir,
+            read_dir,
+            remove_dir_all,
+            File,
+        },
     },
 };
 
 #[doc(hidden)]
 pub struct Handler {
-    host_keys: Vec<russh_keys::key::PublicKey>,
+    host_keys: Vec<russh::keys::PublicKey>,
 }
 
 #[async_trait::async_trait]
 impl russh::client::Handler for Handler {
     type Error = loga::Error;
 
-    async fn check_server_key(
+    fn check_server_key(
         &mut self,
-        server_public_key: &russh_keys::key::PublicKey,
-    ) -> Result<bool, Self::Error> {
-        for k in &self.host_keys {
-            if k == server_public_key {
-                return Ok(true);
+        server_public_key: &russh::keys::ssh_key::PublicKey,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        let r = shed!{
+            'r _;
+            for k in &self.host_keys {
+                if k == server_public_key {
+                    break 'r true;
+                }
             }
+            break 'r false;
+        };
+        return async move {
+            return Ok(r);
         }
-        return Ok(false);
     }
 }
 
@@ -193,31 +215,44 @@ pub async fn ssh_connect(
         let user = user.or(config_user).unwrap_or("root".to_string());
         if let Some(key) = key {
             let key =
-                russh_keys::load_secret_key(
+                russh::keys::load_secret_key(
                     &key,
                     None,
                 ).context_with("Error loading specified keypair", ea!(path = key.to_string_lossy()))?;
-            let pubkey = key.clone_public_key().context("Error getting public key from keypair")?;
-            log.log_with(loga::DEBUG, "Attempting auth via command line keypair", ea!(key = pubkey.fingerprint()));
-            if conn
-                .authenticate_publickey(&user, Arc::new(key))
+            let pubkey = key.public_key();
+            log.log_with(
+                loga::DEBUG,
+                "Attempting auth via command line keypair",
+                ea!(key = pubkey.fingerprint(russh::keys::HashAlg::Sha256)),
+            );
+            match conn
+                .authenticate_publickey(&user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
                 .await
                 .context("Error attempting auth method via specified key")? {
-                break 'authenticated;
-            } else {
-                return Err(loga::err("Key provided on command line was rejected"));
+                AuthResult::Success => {
+                    break 'authenticated;
+                },
+                AuthResult::Failure { .. } => {
+                    return Err(loga::err("Key provided on command line was rejected"));
+                },
             }
         }
-        match russh_keys::agent::client::AgentClient::connect_env().await {
+        match russh::keys::agent::client::AgentClient::connect_env().await {
             Ok(mut agent) => {
                 let identities =
                     agent.request_identities().await.context("Error requesting identities from SSH agent")?;
                 for key in identities {
-                    log.log_with(loga::DEBUG, "Attempting auth via SSH agent key", ea!(key = key.fingerprint()));
-                    let res;
-                    (agent, res) = conn.authenticate_future(&user, key, agent).await;
-                    if res.context("Error attempting auth method via SSH agent")? {
-                        break 'authenticated;
+                    log.log_with(
+                        loga::DEBUG,
+                        "Attempting auth via SSH agent key",
+                        ea!(key = key.fingerprint(russh::keys::HashAlg::Sha256)),
+                    );
+                    let res = conn.authenticate_publickey_with(&user, key, None, &mut agent).await;
+                    match res.context("Error attempting auth method via SSH agent")? {
+                        AuthResult::Success => { },
+                        AuthResult::Failure { .. } => {
+                            break 'authenticated;
+                        },
                     };
                 }
             },
@@ -229,17 +264,24 @@ pub async fn ssh_connect(
             for suffix in ["rsa", "ed25519"] {
                 let key = home.join(format!(".ssh/id_{}", suffix));
                 let key =
-                    russh_keys::load_secret_key(
+                    russh::keys::load_secret_key(
                         &key,
                         None,
                     ).context_with("Error loading discovered keypair", ea!(path = key.to_string_lossy()))?;
-                let pubkey = key.clone_public_key().context("Error getting public key from keypair")?;
-                log.log_with(loga::DEBUG, "Attempting auth via discovered keypair", ea!(key = pubkey.fingerprint()));
-                if conn
-                    .authenticate_publickey(&user, Arc::new(key))
+                let pubkey = key.public_key();
+                log.log_with(
+                    loga::DEBUG,
+                    "Attempting auth via discovered keypair",
+                    ea!(key = pubkey.fingerprint(russh::keys::HashAlg::Sha256)),
+                );
+                match conn
+                    .authenticate_publickey(&user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
                     .await
                     .context("Error attempting auth method via specified key")? {
-                    break 'authenticated;
+                    AuthResult::Success => {
+                        break 'authenticated;
+                    },
+                    AuthResult::Failure { .. } => { },
                 }
             }
         }
@@ -257,23 +299,187 @@ pub fn quote(command: Vec<String>) -> String {
     return command.iter().map(|x| shell_escape::escape(x.into())).join(" ");
 }
 
-/// A simple method to run a command on an ssh session.
-pub async fn run_command(session: &mut Channel<Msg>, command: Vec<String>) -> Result<(), loga::Error> {
+pub struct RunCommandOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub enum CmdResult {
+    Eof,
+    Close,
+    Failure,
+    Status(u32),
+    Signal(russh::Sig),
+}
+
+pub async fn run_command<
+    H: russh::client::Handler,
+>(
+    log: &Log,
+    conn: &Handle<H>,
+    command: Vec<String>,
+    mut handler: impl FnMut(russh::CryptoVec, Option<u32>),
+) -> Result<CmdResult, loga::Error> {
+    log.log_with(loga::DEBUG, "Running remote command", ea!(command = command.dbg_str()));
+    let mut session =
+        conn
+            .channel_open_session()
+            .await
+            .context_with("Error opening session to run command", ea!(command = command.dbg_str()))?;
     let command = quote(command);
     session.exec(true, command.as_bytes()).await.context_with("Error running command", ea!(command = command))?;
     loop {
         match session.wait().await {
             None => {
-                return Ok(());
+                return Ok(CmdResult::Eof);
             },
-            Some(ChannelMsg::ExitStatus { exit_status }) => {
-                if exit_status != 0 {
-                    return Err(loga::err_with("Command exited with non-0 exit code", ea!(command = command)));
+            Some(m) => {
+                match m {
+                    ChannelMsg::Data { data } => {
+                        handler(data, None);
+                    },
+                    ChannelMsg::ExtendedData { data, ext } => {
+                        handler(data, Some(ext));
+                    },
+                    ChannelMsg::Eof => {
+                        // nop
+                    },
+                    ChannelMsg::Close => {
+                        // relevant?
+                        return Ok(CmdResult::Close);
+                    },
+                    // supposedly server->client, but that seems wrong
+                    ChannelMsg::Open { .. } |
+                    ChannelMsg::RequestPty { .. } |
+                    ChannelMsg::RequestShell { .. } |
+                    ChannelMsg::Exec { .. } |
+                    ChannelMsg::Signal { .. } |
+                    ChannelMsg::RequestSubsystem { .. } |
+                    ChannelMsg::RequestX11 { .. } |
+                    ChannelMsg::SetEnv { .. } |
+                    ChannelMsg::WindowChange { .. } |
+                    ChannelMsg::AgentForward { .. } => {
+                        unreachable!("got client->server message from server: {:?}", m);
+                    },
+                    ChannelMsg::OpenFailure(_) => {
+                        unreachable!("should be handled in open_channel: {:?}", m);
+                    },
+                    ChannelMsg::WindowAdjusted { .. } => {
+                        // nop
+                    },
+                    ChannelMsg::XonXoff { .. } => {
+                        // nop
+                    },
+                    ChannelMsg::ExitStatus { exit_status } => {
+                        return Ok(CmdResult::Status(exit_status));
+                    },
+                    ChannelMsg::ExitSignal { signal_name, core_dumped: _, error_message: _, lang_tag: _ } => {
+                        return Ok(CmdResult::Signal(signal_name));
+                    },
+                    ChannelMsg::Success => {
+                        // nop
+                    },
+                    ChannelMsg::Failure => {
+                        // relevant?
+                        return Ok(CmdResult::Failure);
+                    },
+                    _ => {
+                        // Please, this is insane #[deny(non_exhaustive_omitted_patterns)]
+                        unreachable!();
+                    },
                 }
-                return Ok(());
             },
-            _ => { },
         }
+    }
+}
+
+/// A simple method to run a command on an ssh session and return the stdout/stderr.
+pub async fn run_command_capture<
+    H: russh::client::Handler,
+>(log: &Log, conn: &Handle<H>, command: Vec<String>) -> Result<RunCommandOutput, loga::Error> {
+    let mut stdout = vec![];
+    let mut stderr = vec![];
+    let res = run_command(log, conn, command, |data, ext| {
+        match ext {
+            Some(1) => {
+                stderr.extend_from_slice(&data);
+            },
+            Some(_) => { },
+            None => {
+                stdout.extend_from_slice(&data);
+            },
+        }
+    }).await?;
+    match res {
+        CmdResult::Status(0) => {
+            return Ok(RunCommandOutput {
+                stderr: stderr,
+                stdout: stdout,
+            });
+        },
+        _ => {
+            return Err(
+                loga::err_with(
+                    format!("Command ended with unexpected result: {:?}", res),
+                    ea!(stdout = String::from_utf8_lossy(&stdout), stderr = String::from_utf8_lossy(&stderr)),
+                ),
+            );
+        },
+    }
+}
+
+/// A simple method to run a command on an ssh session. Stderr/stdout are sent to
+/// the process's stderr/stdout.
+pub async fn run_command_inherit<
+    H: russh::client::Handler,
+>(log: &Log, conn: &Handle<H>, command: Vec<String>) -> Result<(), loga::Error> {
+    let mut stdout_remainder = vec![];
+    let mut stderr_remainder = vec![];
+    let mut stdout = stdout();
+    let mut stderr = stderr();
+    match run_command(log, conn, command, |data, ext| {
+        let is_stdout;
+        match ext {
+            None => {
+                is_stdout = true;
+            },
+            Some(1) => {
+                is_stdout = false;
+            },
+            Some(_) => {
+                return;
+            },
+        }
+        let mut prev = None;
+        for line in data.split(|x| *x == b'\n') {
+            if let Some(prev1) = prev {
+                if is_stdout {
+                    stdout.write_all(&stdout_remainder).ignore();
+                    stdout_remainder.clear();
+                    stdout.write_all(prev1).ignore();
+                } else {
+                    stderr.write_all(&stderr_remainder).ignore();
+                    stderr_remainder.clear();
+                    stderr.write_all(prev1).ignore();
+                }
+            }
+            prev = Some(line);
+        }
+        if let Some(prev1) = prev {
+            if is_stdout {
+                stdout_remainder.extend_from_slice(prev1);
+            } else {
+                stderr_remainder.extend_from_slice(prev1);
+            }
+        }
+    }).await? {
+        CmdResult::Status(0) => {
+            return Ok(());
+        },
+        res => {
+            return Err(loga::err(format!("Command ended with unexpected result: {:?}", res)));
+        },
     }
 }
 
@@ -287,22 +493,28 @@ pub async fn run_command(session: &mut Channel<Msg>, command: Vec<String>) -> Re
 ///
 /// If `sync` and the source is a directory, remote files not present locally will
 /// be deleted after other files have been uploaded.
-pub async fn upload(
-    session: &mut SshSess,
+pub async fn upload<
+    H: russh::client::Handler,
+>(
+    log: &Log,
+    conn: &russh::client::Handle<H>,
     sftp: &SftpSession,
     local: &Path,
     local_is_dir: bool,
     remote: &Path,
     skip_newer: bool,
+    skip_same_size: bool,
     sync: bool,
 ) -> Result<(), loga::Error> {
     if local_is_dir {
         // Get remote state
         struct RemoteEntry {
+            is_file: bool,
             modified: SystemTime,
+            size: Option<u64>,
         }
 
-        let mut remote_entries = if !sync && !skip_newer {
+        let mut remote_entries = if !sync && !skip_newer && !skip_same_size {
             HashMap::new()
         } else {
             let remote_str =
@@ -316,18 +528,18 @@ pub async fn upload(
                 Ok(d) => {
                     let mut remote_entries = HashMap::new();
                     for remote_entry in d {
-                        remote_entries.insert(
-                            OsString::from(remote_entry.file_name()),
-                            RemoteEntry {
-                                modified: remote_entry
-                                    .metadata()
-                                    .modified()
-                                    .context_with(
-                                        "Error reading remote file modified time",
-                                        ea!(path = remote.join(remote_entry.file_name()).dbg_str()),
-                                    )?,
-                            },
-                        );
+                        let remote_meta = remote_entry.metadata();
+                        eprintln!("remote entry {:?} in {:?}", remote_entry.file_name(), remote);
+                        remote_entries.insert(OsString::from(remote_entry.file_name()), RemoteEntry {
+                            is_file: remote_meta.is_regular(),
+                            size: remote_meta.size,
+                            modified: remote_meta
+                                .modified()
+                                .context_with(
+                                    "Error reading remote file modified time",
+                                    ea!(path = remote.join(remote_entry.file_name()).dbg_str()),
+                                )?,
+                        });
                     }
                     remote_entries
                 },
@@ -338,6 +550,7 @@ pub async fn upload(
                     let russh_sftp::protocol::StatusCode::NoSuchFile = &s.status_code else {
                         break 'reraise;
                     };
+                    log.log_with(loga::DEBUG, "Creating remote dir", ea!(dir = remote_str));
                     sftp
                         .create_dir(remote_str)
                         .await
@@ -363,30 +576,33 @@ pub async fn upload(
                     .await
                     .context_with("Error reading local metadata", ea!(path = local_entry.path().dbg_str()))?;
             let remote_entry = remote_entries.remove(&local_entry.file_name());
-            if skip_newer && remote_entry.is_some() &&
-                remote_entry.unwrap().modified >
-                    local_meta
-                        .modified()
-                        .context_with(
-                            "Error reading local file modified time",
-                            ea!(path = local_entry.path().dbg_str()),
-                        )? {
-                continue;
+            if let Some(remote_entry) = remote_entry {
+                if local_meta.is_file() && remote_entry.is_file {
+                    if skip_same_size && remote_entry.size == Some(local_meta.size()) {
+                        continue;
+                    }
+                    if skip_newer &&
+                        remote_entry.modified >
+                            local_meta
+                                .modified()
+                                .context_with(
+                                    "Error reading local file modified time",
+                                    ea!(path = local_entry.path().dbg_str()),
+                                )? {
+                        continue;
+                    }
+                }
             }
+            eprintln!("upload {:?} in {:?}", local_entry.file_name(), remote);
             upload(
-                session,
+                log,
+                conn,
                 sftp,
                 &local.join(local_entry.file_name()),
-                local_entry
-                    .file_type()
-                    .await
-                    .context_with(
-                        "Error getting local directory entry type",
-                        ea!(path = local_entry.path().dbg_str()),
-                    )?
-                    .is_dir(),
+                local_meta.is_dir(),
                 &remote.join(local_entry.file_name()),
                 skip_newer,
+                skip_same_size,
                 sync,
             )
                 .boxed_local()
@@ -395,6 +611,11 @@ pub async fn upload(
 
         // If syncing, delete old remote files
         if sync {
+            eprintln!(
+                "sync, deleting remaining {:?} in {:?}",
+                remote_entries.keys().map(|x| x.to_string_lossy().to_string()).collect::<Vec<_>>(),
+                remote
+            );
             for (name, _) in remote_entries {
                 let path = remote.join(name);
                 let str_path =
@@ -404,10 +625,11 @@ pub async fn upload(
                             "Remote path to recursively delete is invalid utf-8, but sftp requires utf-8 paths",
                             ea!(path = path.dbg_str()),
                         )?;
-                run_command(session, vec!["rm".to_string(), "-r".to_string(), str_path.to_string()]).await?;
+                run_command_capture(log, conn, vec!["rm".to_string(), "-r".to_string(), str_path.to_string()]).await?;
             }
         }
     } else {
+        log.log_with(loga::DEBUG, "Uploading file", ea!(local = local.dbg_str(), remote = remote.dbg_str()));
         let mut source =
             File::open(&local)
                 .await
@@ -441,11 +663,13 @@ pub async fn upload(
 /// If `sync` and the source is a directory, local files not present remotely will
 /// be deleted after other files have been downloaded.
 pub async fn download(
+    log: &Log,
     sftp: &SftpSession,
     remote: &Path,
     remote_is_dir: bool,
     local: &Path,
     skip_newer: bool,
+    skip_same_size: bool,
     sync: bool,
 ) -> Result<(), loga::Error> {
     let str_remote =
@@ -457,12 +681,15 @@ pub async fn download(
             )?;
     if remote_is_dir {
         struct LocalEntry {
+            is_file: bool,
             modified: SystemTime,
+            size: u64,
         }
 
-        let mut local_entries = if !sync && !skip_newer {
+        let mut local_entries = if !sync && !skip_newer && !skip_same_size {
             HashMap::new()
         } else {
+            log.log_with(loga::DEBUG, "Create dir", ea!(dir = local.dbg_str()));
             match create_dir(local).await {
                 Ok(_) => (),
                 Err(e) => {
@@ -486,10 +713,11 @@ pub async fn download(
                     .await
                     .context_with("Error reading entry from local directory for sync", ea!(path = local.dbg_str()))? {
                 let meta = entry.metadata().await.context("Error reading local file metadata")?;
-                local_entries.insert(
-                    entry.file_name(),
-                    LocalEntry { modified: meta.modified().context("Error reading local file time")? },
-                );
+                local_entries.insert(entry.file_name(), LocalEntry {
+                    is_file: meta.is_file(),
+                    modified: meta.modified().context("Error reading local file time")?,
+                    size: meta.size(),
+                });
             }
             local_entries
         };
@@ -499,20 +727,32 @@ pub async fn download(
             .context_with("Error reading remote directory", ea!(path = str_remote))? {
             let local_entry = local_entries.remove(&OsString::from(remote_entry.file_name()));
             let child_remote = remote.join(remote_entry.file_name());
-            if skip_newer && local_entry.is_some() &&
-                local_entry.unwrap().modified >
-                    remote_entry
-                        .metadata()
-                        .modified()
-                        .context_with("Error reading remote file modified time", ea!(path = child_remote.dbg_str()))? {
-                continue;
+            if let Some(local_entry) = local_entry {
+                if local_entry.is_file && remote_entry.metadata().is_regular() {
+                    if skip_same_size && Some(local_entry.size) == remote_entry.metadata().size {
+                        continue;
+                    }
+                    if skip_newer &&
+                        local_entry.modified >=
+                            remote_entry
+                                .metadata()
+                                .modified()
+                                .context_with(
+                                    "Error reading remote file modified time",
+                                    ea!(path = child_remote.dbg_str()),
+                                )? {
+                        continue;
+                    }
+                }
             }
             download(
+                log,
                 sftp,
                 &child_remote,
-                remote_entry.file_type().is_dir(),
+                remote_entry.metadata().is_dir(),
                 &local.join(remote_entry.file_name()),
                 skip_newer,
+                skip_same_size,
                 sync,
             )
                 .boxed_local()
@@ -520,11 +760,13 @@ pub async fn download(
         }
         if sync {
             for (name, _entry) in local_entries {
-                let path = remote.join(name);
+                let path = local.join(name);
+                log.log_with(loga::DEBUG, "Deleting tree", ea!(path = path.dbg_str()));
                 remove_dir_all(&path).await.context_with("Failed to sync-remove file", ea!(path = path.dbg_str()))?;
             }
         }
     } else {
+        log.log_with(loga::DEBUG, "Downloading file", ea!(local = local.dbg_str(), remote = str_remote));
         let mut source =
             sftp
                 .open_with_flags(str_remote, OpenFlags::READ)

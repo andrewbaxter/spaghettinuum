@@ -16,7 +16,7 @@ use {
     spaghettinuum::utils::ssh_util::{
         download,
         quote,
-        run_command,
+        run_command_capture,
         ssh_connect,
         upload,
         SshConn,
@@ -89,6 +89,9 @@ pub struct SshDownload {
     /// By default, newer files in the destination are skipped. This flag disables that
     /// behavior.
     pub no_skip_newer: Option<()>,
+    /// By default, files in the destination with the same size as the corresponding
+    /// local files are skipped. This flag disables that behavior.
+    pub no_skip_same_size: Option<()>,
     /// When transfering a directory, delete files in the destination that aren't in
     /// the source so that the directory contents are equal afterwards.
     pub sync: Option<()>,
@@ -113,6 +116,9 @@ pub struct SshUpload {
     /// By default, newer files in the destination are skipped. This flag disables that
     /// behavior.
     pub no_skip_newer: Option<()>,
+    /// By default, files in the destination with the same size as the corresponding
+    /// local files are skipped. This flag disables that behavior.
+    pub no_skip_same_size: Option<()>,
     /// When transfering a directory, delete files in the destination that aren't in
     /// the source so that the directory contents are equal afterwards.
     pub sync: Option<()>,
@@ -224,11 +230,12 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             ).await?;
         },
         Command::Download(args) => {
-            struct Inner(SshDownload);
+            struct Inner(SshDownload, Log);
 
             impl SshConnectHandler for Inner {
                 async fn run(self, conn: SshConn) -> Result<(), loga::Error> {
                     let config = self.0;
+                    let log = self.1;
 
                     // Prep (connection)
                     let sftp_session = conn.channel_open_session().await.context("Error opening sftp channel")?;
@@ -282,11 +289,13 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
 
                     // Transfer
                     download(
+                        &log,
                         &sftp,
                         &config.remote,
                         source_meta.is_dir(),
                         &local,
                         !config.no_skip_newer.is_some(),
+                        !config.no_skip_same_size.is_some(),
                         config.sync.is_some(),
                     ).await?;
                     return Ok(());
@@ -299,18 +308,18 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                 format!("{}.s", args.host),
                 args.port,
                 key.clone(),
-                Inner(args),
+                Inner(args, log.clone()),
             ).await?;
         },
         Command::Upload(args) => {
-            struct Inner(SshUpload);
+            struct Inner(SshUpload, Log);
 
             impl SshConnectHandler for Inner {
                 async fn run(self, conn: SshConn) -> Result<(), loga::Error> {
                     let config = self.0;
+                    let log = self.1;
 
                     // Prep (conn)
-                    let mut session = conn.channel_open_session().await.context("Error opening command channel")?;
                     let sftp_session = conn.channel_open_session().await.context("Error opening sftp channel")?;
                     sftp_session.request_subsystem(true, "sftp").await?;
                     let sftp = SftpSession::new(sftp_session.into_stream()).await.unwrap();
@@ -348,8 +357,9 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                                     ea!(path = remote.to_string_lossy()),
                                 )?
                         };
-                        run_command(
-                            &mut session,
+                        run_command_capture(
+                            &log,
+                            &conn,
                             vec![
                                 "mkdir".to_string(),
                                 "-p".to_string(),
@@ -366,12 +376,14 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
 
                     // Transfer
                     upload(
-                        &mut session,
+                        &log,
+                        &conn,
                         &sftp,
                         &config.local,
                         source_meta.is_dir(),
                         &remote,
                         !config.no_skip_newer.is_some(),
+                        !config.no_skip_same_size.is_some(),
                         config.sync.is_some(),
                     ).await?;
                     return Ok(());
@@ -384,7 +396,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                 format!("{}.s", args.host),
                 args.port,
                 key.clone(),
-                Inner(args),
+                Inner(args, log.clone()),
             ).await?;
         },
     }

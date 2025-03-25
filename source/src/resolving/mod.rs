@@ -147,7 +147,7 @@ pub fn default_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
             let Some(name) = &s.tls_dns_name else {
                 log.log_with(
                     loga::DEBUG,
-                    "System name server doesn't have ADN, skipping",
+                    "Found name server with no ADN while searching for system resolvers, skipping",
                     ea!(resolver = s.socket_addr.ip()),
                 );
                 continue;
