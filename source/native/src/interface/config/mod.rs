@@ -16,9 +16,6 @@ pub const ENV_API_ADMIN_TOKEN: &'static str = "SPAGH_TOKEN";
 /// The JSON config (itself, not a path), for `spagh-node` and `spagh-auto`.
 pub const ENV_CONFIG: &'static str = "SPAGH_CONFIG";
 
-/// Persisted identity types
-pub mod identity;
-
 /// Configs for running a `spagh` demon
 pub mod spagh;
 

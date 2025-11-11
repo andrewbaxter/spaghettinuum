@@ -1,20 +1,43 @@
 use {
     super::fs_util::read,
-    crate::interface::config::{
-        identity::LocalIdentitySecret,
-        shared::IdentitySecretArg,
-    },
+    crate::interface::config::shared::IdentitySecretArg,
     loga::{
         ea,
         Log,
         ResultContext,
     },
-    spaghettinuum::interface::identity::Identity,
-    std::sync::{
-        Arc,
-        Mutex,
+    rand::rngs::OsRng,
+    spaghettinuum::interface::identity::{
+        self,
+        Identity,
+        LocalIdentitySecret,
     },
+    std::{
+        path::Path,
+        sync::{
+            Arc,
+            Mutex,
+        },
+    },
+    tokio::fs::write,
 };
+
+pub fn new_local_identity_secret() -> (Identity, LocalIdentitySecret) {
+    let keypair = ed25519_dalek::SigningKey::generate(&mut OsRng {});
+    let ident = identity::v1::Ed25519Identity(keypair.verifying_key());
+    let secret = identity::v1::Ed25519IdentitySecret(keypair);
+    return (
+        Identity::V1(identity::v1::Identity::Ed25519(ident)),
+        LocalIdentitySecret::V1(identity::v1::LocalIdentitySecret::Ed25519(secret)),
+    );
+}
+
+pub async fn write_identity_secret(path: &Path, identity: &LocalIdentitySecret) -> Result<(), loga::Error> {
+    write(path, serde_json::to_string_pretty(identity).unwrap().as_bytes())
+        .await
+        .context("Failed to write identity secret to file")?;
+    return Ok(());
+}
 
 pub trait IdentitySigner: Send {
     fn identity(&mut self) -> Result<Identity, loga::Error>;

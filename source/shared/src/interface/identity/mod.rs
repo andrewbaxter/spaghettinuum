@@ -1,15 +1,20 @@
 use {
+    crate::versioned,
+    schemars::{
+        json_schema,
+        JsonSchema,
+    },
+    serde::{
+        Deserialize,
+        Serialize,
+    },
+    sha2::{
+        Digest,
+        Sha512,
+    },
     std::{
         fmt::Display,
         str::FromStr,
-    },
-    schemars::JsonSchema,
-    sha2::{
-        Sha512,
-        Digest,
-    },
-    crate::{
-        versioned,
     },
 };
 
@@ -35,19 +40,15 @@ versioned!(
 );
 
 impl JsonSchema for Identity {
-    fn schema_name() -> String {
-        return "Identity".to_string();
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        return "Identity".into();
     }
 
-    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        return schemars::schema::SchemaObject {
-            instance_type: Some(schemars::schema::InstanceType::String.into()),
-            metadata: Some(Box::new(schemars::schema::Metadata {
-                description: Some("An identity (zbase32 string)".to_string()),
-                ..Default::default()
-            })),
-            ..Default::default()
-        }.into();
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        return json_schema!({
+            "type":["string"],
+            "description": "An identity (zbase32 string)"
+        });
     }
 }
 
@@ -82,5 +83,33 @@ impl Identity {
         match self {
             Identity::V1(v) => v.verify(message, signature),
         }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum LocalIdentitySecret {
+    V1(v1::LocalIdentitySecret),
+}
+
+impl LocalIdentitySecret {
+    pub fn identity(&self) -> Identity {
+        match self {
+            LocalIdentitySecret::V1(s) => Identity::V1(s.identity()),
+        }
+    }
+
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        match self {
+            LocalIdentitySecret::V1(v) => v.sign(message).to_vec(),
+        }
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
+        return Ok(bincode::deserialize(data).map_err(|e| e.to_string())?);
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        return bincode::serialize(self).unwrap().to_vec();
     }
 }

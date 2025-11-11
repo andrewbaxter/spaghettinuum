@@ -27,11 +27,11 @@ impl<'a> Deserialize<'a> for BytesZb32 {
 }
 
 impl JsonSchema for BytesZb32 {
-    fn schema_name() -> String {
-        return format!("BytesZb32");
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        return format!("BytesZb32").into();
     }
 
-    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         return String::json_schema(generator);
     }
 }

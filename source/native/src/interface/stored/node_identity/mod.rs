@@ -1,11 +1,7 @@
 use {
     good_ormning_runtime::sqlite::GoodOrmningCustomString,
     schemars::{
-        schema::{
-            InstanceType,
-            Metadata,
-            SchemaObject,
-        },
+        json_schema,
         JsonSchema,
     },
     spaghettinuum::versioned,
@@ -41,19 +37,15 @@ impl std::fmt::Debug for NodeIdentity {
 }
 
 impl JsonSchema for NodeIdentity {
-    fn schema_name() -> String {
-        return "NodeIdentity".to_string();
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        return "NodeIdentity".into();
     }
 
-    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        return SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            metadata: Some(Box::new(Metadata {
-                description: Some("A node identity (zbase32 string)".to_string()),
-                ..Default::default()
-            })),
-            ..Default::default()
-        }.into();
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        return json_schema!({
+            "type":["string"],
+            "description": "A node identity (zbase32 string)",
+        });
     }
 }
 

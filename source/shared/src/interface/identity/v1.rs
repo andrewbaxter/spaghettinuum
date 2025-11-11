@@ -16,6 +16,11 @@ use {
     super::{
         hash_for_ed25519,
     },
+    ed25519_dalek::{
+        Signer,
+        SigningKey,
+    },
+    schemars::JsonSchema,
 };
 
 #[derive(Eq, PartialEq, Clone, Copy)]
@@ -114,5 +119,77 @@ impl Identity {
 
     pub fn from_bytes_unsafe(bytes: &[u8]) -> Self {
         bincode::deserialize(bytes).unwrap()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Ed25519IdentitySecret(pub SigningKey);
+
+impl Serialize for Ed25519IdentitySecret {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+        return Serialize::serialize(&zbase32::encode_full_bytes(&self.0.to_bytes()), serializer);
+    }
+}
+
+impl<'de> Deserialize<'de> for Ed25519IdentitySecret {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de> {
+        let t = String::deserialize(deserializer)?;
+        return Ok(
+            Ed25519IdentitySecret(
+                SigningKey::from_bytes(
+                    &<[u8; ed25519_dalek::SECRET_KEY_LENGTH]>::try_from(
+                        zbase32::decode_full_bytes_str(&t).map_err(|e| serde::de::Error::custom(&e.to_string()))?,
+                    ).map_err(|_| serde::de::Error::custom("Wrong secret key length"))?,
+                ),
+            ),
+        );
+    }
+}
+
+impl JsonSchema for Ed25519IdentitySecret {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        return std::any::type_name::<Ed25519IdentitySecret>().to_string().into();
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        return String::json_schema(generator);
+    }
+}
+
+impl Ed25519IdentitySecret {
+    pub fn identity(&self) -> Ed25519Identity {
+        return Ed25519Identity(self.0.verifying_key());
+    }
+
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        return self.0.sign(&hash_for_ed25519(message)).to_bytes().to_vec();
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum LocalIdentitySecret {
+    Ed25519(Ed25519IdentitySecret),
+}
+
+impl LocalIdentitySecret {
+    pub fn identity(&self) -> Identity {
+        match self {
+            LocalIdentitySecret::Ed25519(e) => {
+                return Identity::Ed25519(e.identity());
+            },
+        }
+    }
+}
+
+impl LocalIdentitySecret {
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        match self {
+            LocalIdentitySecret::Ed25519(i) => i.sign(message),
+        }
     }
 }

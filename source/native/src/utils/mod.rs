@@ -21,7 +21,6 @@ pub mod pgp;
 pub mod misc_tests;
 pub mod system_addr;
 pub mod unstable_ip;
-pub mod local_identity;
 pub mod identity_secret;
 pub mod tls_util;
 pub mod publish_util;

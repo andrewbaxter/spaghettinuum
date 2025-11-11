@@ -6,11 +6,7 @@ use {
         ResultContext,
     },
     schemars::{
-        schema::{
-            InstanceType,
-            Metadata,
-            SchemaObject,
-        },
+        json_schema,
         JsonSchema,
     },
     serde::{
@@ -118,21 +114,15 @@ impl<'t> Deserialize<'t> for StrSocketAddr {
 }
 
 impl JsonSchema for StrSocketAddr {
-    fn schema_name() -> String {
-        return "StrSocketAddr".to_string();
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        return "StrSocketAddr".into();
     }
 
-    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        return SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            metadata: Some(Box::new(Metadata {
-                description: Some(
-                    "An ip address or domain (ex: \"localhost\") which resolves to an address".to_string(),
-                ),
-                ..Default::default()
-            })),
-            ..Default::default()
-        }.into();
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        return json_schema!({
+            "type":["string"],
+            "description": "An ip address or domain (ex: \"localhost\") which resolves to an address",
+        });
     }
 }
 
@@ -289,21 +279,15 @@ mod test_adn_socket_addr {
 }
 
 impl JsonSchema for AdnSocketAddr {
-    fn schema_name() -> String {
-        return "AdnSocketAddr".to_string();
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        return "AdnSocketAddr".into();
     }
 
-    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        return SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            metadata: Some(Box::new(Metadata {
-                description: Some(
-                    "Either just an IP address (and port) as it would appear as in a URL host part (IPv6 surrounded by `[]`), followed by `#` then the ADN (authentication domain name - that will appear on the server's TLS certificate). Default ports may change based on the context and presence of the ADN.".to_string(),
-                ),
-                ..Default::default()
-            })),
-            ..Default::default()
-        }.into();
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        return json_schema!({
+            "type":["string"],
+            "description": "Either just an IP address (and port) as it would appear as in a URL host part (IPv6 surrounded by `[]`), followed by `#` then the ADN (authentication domain name - that will appear on the server's TLS certificate). Default ports may change based on the context and presence of the ADN.",
+        });
     }
 }
 

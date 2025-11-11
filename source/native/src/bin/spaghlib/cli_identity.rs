@@ -8,9 +8,10 @@ use {
         ResultContext,
     },
     serde_json::json,
-    spaghettinuum_native::{
-        interface::config::identity::LocalIdentitySecret,
-        utils::local_identity::write_identity_secret,
+    spaghettinuum::interface::identity::LocalIdentitySecret,
+    spaghettinuum_native::utils::identity_secret::{
+        new_local_identity_secret,
+        write_identity_secret,
     },
     std::path::PathBuf,
 };
@@ -48,7 +49,7 @@ pub enum Args {
 pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
     match config {
         Args::NewLocal(args) => {
-            let (ident, secret) = LocalIdentitySecret::new();
+            let (ident, secret) = new_local_identity_secret();
             write_identity_secret(&args.path, &secret).await.stack_context(&log, "Error creating local identity")?;
             println!("{}", serde_json::to_string_pretty(&json!({
                 "id": ident.to_string()

@@ -24,10 +24,7 @@ use {
     loga::Log,
     spaghettinuum_native::{
         interface::{
-            config::{
-                identity::LocalIdentitySecret,
-                shared::StrSocketAddr,
-            },
+            config::shared::StrSocketAddr,
             stored::{
                 self,
                 announcement::latest::{
@@ -40,6 +37,7 @@ use {
         },
         service::node::Node,
         utils::{
+            identity_secret::new_local_identity_secret,
             signed::IdentSignatureMethods,
         },
     },
@@ -94,7 +92,7 @@ async fn main() {
             _ = tokio:: time:: sleep(Duration::from_secs(60)) => {
             }
         }
-        let (ident, mut ident_secret) = LocalIdentitySecret::new();
+        let (ident, mut ident_secret) = new_local_identity_secret();
         let message_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(169, 168, 167, 165), 1111));
         let (_, message_signature) =
             stored::announcement::latest::Announcement::sign(&mut ident_secret, AnnouncementContent {
