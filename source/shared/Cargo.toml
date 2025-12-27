@@ -15,3 +15,6 @@ ed25519-dalek = { version = "2", features = ["serde", "digest", "rand_core"] }
 zbase32 = "0.1"
 serde_json = "1"
 schemars = { version = "1" }
+
+[lints.clippy]
+all = "allow"

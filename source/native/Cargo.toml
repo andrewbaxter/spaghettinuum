@@ -132,3 +132,6 @@ good-ormning = { version = "0.4", features = ["sqlite", "jiff"] }
 
 [package.metadata.docs.rs]
 features = ["docsrs"]
+
+[lints.clippy]
+all = "allow"
