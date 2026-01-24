@@ -28,7 +28,13 @@ The DHT is roughly based on Kademlia with some common modifications:
 
 When multiple values are found for a query, the one with the latest data (as signed by the publishing identity) is preferred.
 
-It uses UDP since much of the protocol is designed around an unreliable network.
+Unlike the original Kademlia, this uses TCP. The reasons for the switch were:
+
+- The only key type that can fit flexibly in a UDP packet is ED25519
+- The protocol may be modified to support more keys or key chains, multiple values for lookup failover
+- UDP was dropped deterministically in various odd situations: e.g. right after the network comes up the initial search packets would always be lost. I'm hoping that this will be less likely for TCP.
+
+I couldn't find any data comparing overhead (time, size) of TCP and UDP, but I think it's probably not significant for most users given the nature of the protocol and the fact that values can be cached. Some responses can use the same connection which should reduce the overhead.
 
 ## Publisher and announcements
 

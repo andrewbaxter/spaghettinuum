@@ -21,6 +21,7 @@ use {
                 },
             },
         },
+        ta_res,
         utils::{
             db_util::setup_db,
             signed::{
@@ -35,21 +36,24 @@ use {
     },
     constant_time_eq::constant_time_eq,
     flowcontrol::shed,
-    futures::channel::mpsc::{
-        unbounded,
-        UnboundedSender,
+    futures::{
+        TryFutureExt,
+        channel::mpsc::{
+            UnboundedSender,
+            unbounded,
+        },
     },
     generic_array::{
         ArrayLength,
         GenericArray,
     },
     loga::{
-        conversion::ResultIgnore,
-        ea,
         DebugDisplay,
         ErrContext,
         Log,
         ResultContext,
+        conversion::ResultIgnore,
+        ea,
     },
     manual_future::{
         ManualFuture,
@@ -64,22 +68,22 @@ use {
     spaghettinuum::interface::identity::Identity,
     std::{
         collections::{
-            hash_map::Entry,
             HashMap,
             HashSet,
+            hash_map::Entry,
         },
         fmt::Debug,
         net::SocketAddr,
         path::Path,
         str::FromStr,
         sync::{
+            Arc,
+            Mutex,
             atomic::{
                 AtomicBool,
                 AtomicUsize,
                 Ordering,
             },
-            Arc,
-            Mutex,
         },
         time::{
             Duration,
@@ -89,14 +93,100 @@ use {
     },
     taskmanager::TaskManager,
     tokio::{
-        net::UdpSocket,
+        io::{
+            AsyncRead,
+            AsyncReadExt,
+            AsyncWrite,
+            AsyncWriteExt,
+        },
+        net::{
+            TcpListener,
+            TcpStream,
+        },
         select,
+        spawn,
         sync::watch,
-        time::sleep,
+        time::{
+            sleep,
+            timeout,
+        },
     },
 };
 
 pub mod db;
+
+const MESSAGE_SIZE_LIMIT: u64 = 10 * 1024 * 1024;
+const TIMEOUT_SECS: u64 = 10;
+
+async fn read_message<S: Unpin + AsyncRead>(s: &mut S) -> Result<Option<wire::node::Protocol>, loga::Error> {
+    return timeout(Duration::from_secs(TIMEOUT_SECS), async {
+        let len = match s.read_u64().await {
+            Ok(l) => l,
+            Err(e) => {
+                match e.kind() {
+                    std::io::ErrorKind::ConnectionReset |
+                    std::io::ErrorKind::NetworkUnreachable |
+                    std::io::ErrorKind::ConnectionAborted |
+                    std::io::ErrorKind::NotConnected |
+                    std::io::ErrorKind::NetworkDown |
+                    std::io::ErrorKind::BrokenPipe |
+                    std::io::ErrorKind::StaleNetworkFileHandle |
+                    std::io::ErrorKind::TimedOut |
+                    std::io::ErrorKind::WriteZero |
+                    std::io::ErrorKind::Interrupted => {
+                        return Ok(None);
+                    },
+                    _ => {
+                        return Err(e.context("Failed to read message size"));
+                    },
+                }
+            },
+        };
+        if len > MESSAGE_SIZE_LIMIT {
+            return Err(loga::err("Received too-large message"));
+        }
+        let mut buf = vec![];
+        buf.resize(len as usize, 0u8);
+        s.read_exact(&mut buf).await.context("Error reading message body")?;
+        return Ok(Some(wire::node::Protocol::from_bytes(&buf).map_err(loga::err)?));
+    }).await.map_err(loga::err).and_then(|x| x);
+}
+
+async fn send_message<S: Unpin + AsyncWrite>(log: &Log, s: &mut S, message: wire::node::Protocol) {
+    log.log_with(loga::DEBUG, "Sending", ea!(message = message.dbg_str()));
+    match timeout(Duration::from_secs(TIMEOUT_SECS), async {
+        ta_res!(());
+        let body = message.to_bytes();
+        let len =
+            (<usize as TryInto<u64>>::try_into(
+                body.len(),
+            )).context("Trying to send message that's too large (can't fit in u64)")?;
+        s.write_u64(len).await.context("Failed to write message size")?;
+        s.write_all(&body).await.context("Failed to write message body")?;
+        return Ok(());
+    }).await.map_err(loga::err).and_then(|x| x) {
+        Ok(()) => { },
+        Err(e) => {
+            log.log_err(loga::ERR, e.context("Error sending packet"));
+        },
+    }
+}
+
+async fn connect_send_message(log: &Log, dest: SocketAddr, message: wire::node::Protocol) {
+    let log = log.fork(ea!(peer = dest));
+    let mut c =
+        match timeout(Duration::from_secs(10), TcpStream::connect(dest).map_err(loga::err))
+            .await
+            .map_err(loga::err)
+            .and_then(|x| x) {
+            Ok(c) => c,
+            Err(e) => {
+                log.log_err(loga::DEBUG, e.context("Error connecting to peer to send message"));
+                return;
+            },
+        };
+    send_message(&log, &mut c, message).await;
+}
 
 pub fn default_bootstrap() -> Vec<wire::node::latest::NodeInfo> {
     return vec![wire::node::latest::NodeInfo {
@@ -243,7 +333,7 @@ struct NodeInner {
     buckets: Mutex<Buckets>,
     store: Mutex<HashMap<Identity, ValueState>>,
     dirty: AtomicBool,
-    socket: UdpSocket,
+    listener: TcpListener,
     next_req_id: AtomicUsize,
     find_timeouts: UnboundedSender<NextFindTimeout>,
     find_states: Mutex<HashMap<FindGoal, FindState>>,
@@ -399,7 +489,7 @@ impl Node {
         }
         let sock = {
             let log = log.fork(ea!(addr = bind_addr));
-            UdpSocket::bind(bind_addr.resolve()?).await.stack_context(&log, "Failed to open node UDP port")?
+            TcpListener::bind(bind_addr.resolve()?).await.stack_context(&log, "Failed to open node TCP port")?
         };
         let (find_timeout_write, find_timeout_recv) = unbounded::<NextFindTimeout>();
         let (ping_timeout_write, ping_timeout_recv) = unbounded::<NextPingTimeout>();
@@ -418,7 +508,7 @@ impl Node {
             buckets: Mutex::new(initial_buckets),
             dirty: AtomicBool::new(true),
             store: Mutex::new(HashMap::new()),
-            socket: sock,
+            listener: sock,
             next_req_id: AtomicUsize::new(0),
             find_timeouts: find_timeout_write,
             find_states: Mutex::new(HashMap::new()),
@@ -521,7 +611,11 @@ impl Node {
                                     bucket_i: leading_zeros,
                                 }),
                             };
-                            dir.send(&addr.0, wire::node::Protocol::V1(wire::node::latest::Message::Ping)).await;
+                            connect_send_message(
+                                &log,
+                                addr.0,
+                                wire::node::Protocol::V1(wire::node::latest::Message::Ping)
+                            ).await;
                             ping_timeout_write.unbounded_send(NextPingTimeout {
                                 end: Instant::now() + req_timeout(),
                                 key: (id, req_id),
@@ -591,37 +685,43 @@ impl Node {
             let log = log.fork(ea!(subsys = "listen"));
             let dir = dir.clone();
             let tm = tm.clone();
-            async move {
-                let mut buf = [0u8; 1024];
+            let work = async move {
                 loop {
-                    let packet = select!{
-                        _ = tm.until_terminate() => {
-                            return;
-                        }
-                        p = dir.0.as_ref().socket.recv_from(&mut buf) => p,
+                    let conn = dir.0.as_ref().listener.accept().await;
+                    let (mut conn, peer) = match conn {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log.log_err(loga::DEBUG, e.context("Error receiving connection"));
+                            continue;
+                        },
                     };
-                    match packet {
-                        Ok((len, addr)) => {
-                            match match wire::node::Protocol::from_bytes(&buf[..len]) {
-                                Ok(ver) => match dir.handle(ver, &addr).await {
-                                    Ok(()) => Ok(()),
-                                    Err(e) => Err(e),
-                                },
-                                Err(e) => Err(loga::err(e).context("Failed to bincode deserialize packet")),
-                            } {
+                    spawn({
+                        let dir = dir.clone();
+                        let log = log.fork(ea!(peer = peer));
+                        async move {
+                            match async {
+                                ta_res!(());
+                                while let Some(m) =
+                                    read_message(&mut conn).await.context("Failed to read message")? {
+                                    dir.handle(m, &mut conn, peer).await?;
+                                }
+                                return Ok(());
+                            }.await {
                                 Ok(()) => { },
                                 Err(e) => {
-                                    log.log_err(
-                                        loga::DEBUG,
-                                        e.context_with("Received invalid directory message", ea!(addr = addr)),
-                                    );
+                                    log.log_err(loga::WARN, e.context("Error during connection"));
                                 },
                             }
-                        },
-                        Err(e) => {
-                            log.log_err(loga::WARN, e.context("Error receiving packet"));
-                        },
-                    };
+                        }
+                    });
+                }
+            };
+            async move {
+                select!{
+                    _ = tm.until_terminate() => {
+                    },
+                    _ = work => {
+                    }
                 }
             }
         });
@@ -724,17 +824,16 @@ impl Node {
                         });
                     },
                     NearestNodeEntryNode::Node(node) => {
-                        self
-                            .send(
-                                &node.address.0,
-                                wire::node::Protocol::V1(
-                                    wire::node::latest::Message::Store(wire::node::latest::StoreRequest {
-                                        key: key.clone(),
-                                        value: value.clone(),
-                                    }),
-                                ),
-                            )
-                            .await;
+                        connect_send_message(
+                            &self.0.log,
+                            node.address.0,
+                            wire::node::Protocol::V1(
+                                wire::node::latest::Message::Store(wire::node::latest::StoreRequest {
+                                    key: key.clone(),
+                                    value: value.clone(),
+                                }),
+                            ),
+                        ).await;
                     },
                 }
             }
@@ -754,7 +853,7 @@ impl Node {
         self.0.dirty.store(true, Ordering::Relaxed);
     }
 
-    async fn start_challenge(&self, id: node_identity::NodeIdentity, addr: &SocketAddr) {
+    async fn start_challenge(&self, id: node_identity::NodeIdentity, addr: SocketAddr) {
         // store state by key, with futures
         let timeout = Instant::now() + req_timeout();
         let (challenge, req_id) = {
@@ -777,7 +876,11 @@ impl Node {
             };
             (challenge, state.req_id)
         };
-        self.send(addr, wire::node::Protocol::V1(wire::node::latest::Message::Challenge(challenge))).await;
+        connect_send_message(
+            &self.0.log,
+            addr,
+            wire::node::Protocol::V1(wire::node::latest::Message::Challenge(challenge)),
+        ).await;
         self.0.challenge_timeouts.unbounded_send(NextChallengeTimeout {
             end: timeout,
             key: (id, req_id),
@@ -874,18 +977,15 @@ impl Node {
             state.req_id
         };
         for d in defer {
-            self
-                .send(
-                    &d.addr,
-                    wire::node::Protocol::V1(
-                        wire::node::latest::Message::FindRequest(wire::node::latest::FindRequest {
-                            challenge: d.challenge,
-                            goal: goal,
-                            sender: self.0.own_ident.clone(),
-                        }),
-                    ),
-                )
-                .await;
+            connect_send_message(
+                &self.0.log,
+                d.addr,
+                wire::node::Protocol::V1(wire::node::latest::Message::FindRequest(wire::node::latest::FindRequest {
+                    challenge: d.challenge,
+                    goal: goal,
+                    sender: self.0.own_ident.clone(),
+                })),
+            ).await;
         }
         match self.0.find_timeouts.unbounded_send(NextFindTimeout {
             updated: updated,
@@ -1191,33 +1291,29 @@ impl Node {
                 store.extend(lock.iter().map(|(k, v)| (k.clone(), v.value.clone())));
             }
             for (k, v) in store.into_iter() {
-                self
-                    .send(
-                        &addr,
-                        wire::node::Protocol::V1(wire::node::latest::Message::Store(wire::node::latest::StoreRequest {
-                            key: k,
-                            value: v,
-                        })),
-                    )
-                    .await;
+                connect_send_message(
+                    &log,
+                    addr,
+                    wire::node::Protocol::V1(wire::node::latest::Message::Store(wire::node::latest::StoreRequest {
+                        key: k,
+                        value: v,
+                    })),
+                ).await;
             }
         }
         if let Some(s) = state {
             self.complete_state(s).await;
         }
         for d in defer_next_req {
-            self
-                .send(
-                    &d.addr,
-                    wire::node::Protocol::V1(
-                        wire::node::latest::Message::FindRequest(wire::node::latest::FindRequest {
-                            challenge: d.challenge,
-                            goal: goal,
-                            sender: self.0.own_ident.clone(),
-                        }),
-                    ),
-                )
-                .await;
+            connect_send_message(
+                &log,
+                d.addr,
+                wire::node::Protocol::V1(wire::node::latest::Message::FindRequest(wire::node::latest::FindRequest {
+                    challenge: d.challenge,
+                    goal: goal,
+                    sender: self.0.own_ident.clone(),
+                })),
+            ).await;
         }
     }
 
@@ -1278,8 +1374,13 @@ impl Node {
         return nodes;
     }
 
-    async fn handle(&self, m: wire::node::Protocol, reply_to: &SocketAddr) -> Result<(), loga::Error> {
-        let log = self.0.log.fork(ea!(from_addr = reply_to, message = m.dbg_str()));
+    async fn handle(
+        &self,
+        m: wire::node::Protocol,
+        conn: &mut TcpStream,
+        peer: SocketAddr,
+    ) -> Result<(), loga::Error> {
+        let log = self.0.log.fork(ea!(message = m.dbg_str()));
         log.log(loga::DEBUG, "Received");
         match m {
             wire::node::Protocol::V1(v1) => match v1 {
@@ -1299,25 +1400,24 @@ impl Node {
                             break self.0.store.lock().unwrap().get(&ident).map(|v| v.value.clone());
                         },
                     };
-                    self
-                        .send(
-                            reply_to,
-                            wire::node::Protocol::V1(
-                                wire::node::latest::Message::FindResponse(wire::node::latest::FindResponse {
-                                    sender: self.0.own_ident.clone(),
-                                    content: <wire
-                                    ::node
-                                    ::latest
-                                    ::BincodeSignature<wire::node::latest::FindResponseContent, NodeIdentity>>::sign(
-                                        &self.0.own_secret,
-                                        body,
-                                    ),
-                                }),
-                            ),
-                        )
-                        .await;
+                    send_message(
+                        &log,
+                        conn,
+                        wire::node::Protocol::V1(
+                            wire::node::latest::Message::FindResponse(wire::node::latest::FindResponse {
+                                sender: self.0.own_ident.clone(),
+                                content: <wire
+                                ::node
+                                ::latest
+                                ::BincodeSignature<wire::node::latest::FindResponseContent, NodeIdentity>>::sign(
+                                    &self.0.own_secret,
+                                    body,
+                                ),
+                            }),
+                        ),
+                    ).await;
                     if self.add_good_node(m.sender.clone(), None) {
-                        self.start_challenge(m.sender, reply_to).await;
+                        self.start_challenge(m.sender, peer).await;
                     }
                 },
                 wire::node::latest::Message::FindResponse(m) => {
@@ -1368,12 +1468,11 @@ impl Node {
                     };
                 },
                 wire::node::latest::Message::Ping => {
-                    self
-                        .send(
-                            reply_to,
-                            wire::node::Protocol::V1(wire::node::latest::Message::Pung(self.0.own_ident.clone())),
-                        )
-                        .await;
+                    send_message(
+                        &log,
+                        conn,
+                        wire::node::Protocol::V1(wire::node::latest::Message::Pung(self.0.own_ident.clone())),
+                    ).await;
                 },
                 wire::node::latest::Message::Pung(k) => {
                     let state = match self.0.ping_states.lock().unwrap().entry(k.clone()) {
@@ -1383,17 +1482,16 @@ impl Node {
                     self.set_node_unresponsive(k, state.bucket_i, false);
                 },
                 wire::node::latest::Message::Challenge(challenge) => {
-                    self
-                        .send(
-                            reply_to,
-                            wire::node::Protocol::V1(
-                                wire::node::latest::Message::ChallengeResponse(wire::node::latest::ChallengeResponse {
-                                    sender: self.0.own_ident.clone(),
-                                    signature: self.0.own_secret.sign(&challenge),
-                                }),
-                            ),
-                        )
-                        .await;
+                    send_message(
+                        &log,
+                        conn,
+                        wire::node::Protocol::V1(
+                            wire::node::latest::Message::ChallengeResponse(wire::node::latest::ChallengeResponse {
+                                sender: self.0.own_ident.clone(),
+                                signature: self.0.own_secret.sign(&challenge),
+                            }),
+                        ),
+                    ).await;
                 },
                 wire::node::latest::Message::ChallengeResponse(resp) => {
                     self.handle_challenge_resp(resp).await;
@@ -1503,16 +1601,5 @@ impl Node {
             break false;
         };
         return new_node;
-    }
-
-    async fn send(&self, addr: &SocketAddr, data: wire::node::Protocol) {
-        let bytes = data.to_bytes();
-        self.0.log.log_with(loga::DEBUG, "Sending", ea!(to_addr = addr, message = data.dbg_str()));
-        self
-            .0
-            .socket
-            .send_to(&bytes, addr)
-            .await
-            .log_with(&self.0.log, loga::DEBUG, "Error sending node message", ea!(to_addr = addr));
     }
 }
