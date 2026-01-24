@@ -72,14 +72,18 @@ use {
         uri_parts,
     },
     loga::{
-        conversion::ResultIgnore,
-        ea,
         DebugDisplay,
         Log,
         ResultContext,
+        conversion::ResultIgnore,
+        ea,
     },
     p256::pkcs8::EncodePrivateKey,
     rustls::server::ResolvesServerCert,
+    spaghettinuum::{
+        byteszb32::BytesZb32,
+        jsonsig::JsonSignature,
+    },
     std::{
         collections::HashMap,
         path::Path,
@@ -109,8 +113,8 @@ use {
         },
     },
     tokio_stream::{
-        wrappers::WatchStream,
         StreamExt,
+        wrappers::WatchStream,
     },
     x509_cert::spki::SubjectPublicKeyInfoOwned,
 };
@@ -164,19 +168,20 @@ pub async fn request_cert(
     let priv_pem = encode_priv_pem(priv_key.to_pkcs8_der().unwrap().as_bytes());
     let pub_pem;
     if let Some(certifier_opts) = options.certifier {
-        let text = serde_json::to_vec(&wire::certify::latest::CertRequestParams {
+        let message = serde_json::to_string(&wire::certify::latest::CertRequestParams {
             stamp: SystemTime::now().into(),
             sig_ext: sig_ext,
-            spki_der: requester_spki_der,
+            spki_der: BytesZb32(requester_spki_der),
         }).unwrap();
-        log.log_with(loga::DEBUG, "Unsigned cert request params", ea!(params = String::from_utf8_lossy(&text)));
+        log.log_with(loga::DEBUG, "Unsigned cert request params", ea!(params = message));
         let (ident, signature) =
-            message_signer.lock().unwrap().sign(&text).context("Error signing cert request params")?;
+            message_signer.lock().unwrap().sign(message.as_bytes()).context("Error signing cert request params")?;
         let body = serde_json::to_vec(&wire::certify::CertRequest::V1(wire::certify::latest::CertRequest {
             identity: ident,
-            params: wire::certify::latest::SignedCertRequestParams {
-                sig: signature,
-                text: text,
+            params: JsonSignature {
+                signature: BytesZb32(signature),
+                message: message,
+                _p: Default::default(),
             },
         })).unwrap();
         let url = Uri::from_str(CERTIFIER_URL).unwrap();

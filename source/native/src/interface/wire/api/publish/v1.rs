@@ -2,42 +2,24 @@ use {
     crate::interface::stored::{
         self,
         record::{
-            record_utils::RecordKey,
             RecordValue,
+            record_utils::RecordKey,
         },
     },
     schemars::JsonSchema,
     serde::{
-        de::DeserializeOwned,
         Deserialize,
         Serialize,
     },
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::{
+        interface::identity::Identity,
+        jsonsig::JsonSignature,
+    },
     std::{
         collections::HashSet,
-        marker::PhantomData,
         net::SocketAddr,
     },
 };
-
-#[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone, JsonSchema)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct JsonSignature<T: Serialize + DeserializeOwned, I> {
-    pub message: String,
-    pub signature: Vec<u8>,
-    #[serde(skip)]
-    pub _p: PhantomData<(T, I)>,
-}
-
-impl<T: Serialize + DeserializeOwned, I> std::fmt::Debug for JsonSignature<T, I> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f
-            .debug_struct("JsonSignature")
-            .field("message", &self.message)
-            .field("signature", &self.signature)
-            .finish()
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]

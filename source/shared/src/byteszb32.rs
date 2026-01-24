@@ -7,7 +7,13 @@ use {
 };
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BytesZb32(Vec<u8>);
+pub struct BytesZb32(pub Vec<u8>);
+
+impl std::fmt::Debug for BytesZb32 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("BytesZb32").field(&zbase32::encode_full_bytes(&self.0)).finish()
+    }
+}
 
 impl Serialize for BytesZb32 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -28,7 +34,7 @@ impl<'a> Deserialize<'a> for BytesZb32 {
 
 impl JsonSchema for BytesZb32 {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        return format!("BytesZb32").into();
+        return format!("BytesZbase32").into();
     }
 
     fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {

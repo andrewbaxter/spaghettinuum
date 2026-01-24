@@ -13,10 +13,14 @@ use {
         wire,
     },
     serde::{
-        de::DeserializeOwned,
         Serialize,
+        de::DeserializeOwned,
     },
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::{
+        byteszb32::BytesZb32,
+        interface::identity::Identity,
+        jsonsig::JsonSignature,
+    },
 };
 
 pub trait IdentSignatureMethods<B: DeserializeOwned, I>
@@ -73,21 +77,19 @@ impl<
     }
 }
 
-impl<
-    B: Serialize + DeserializeOwned,
-> IdentSignatureMethods<B, Identity> for wire::api::publish::v1::JsonSignature<B, Identity> {
+impl<B: Serialize + DeserializeOwned> IdentSignatureMethods<B, Identity> for JsonSignature<B, Identity> {
     fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(Identity, Self), loga::Error> {
         let message = serde_json::to_string(&body).unwrap();
         let (ident, signature) = signer.sign(message.as_bytes())?;
         return Ok((ident, Self {
             message: message,
-            signature: signature,
+            signature: BytesZb32(signature),
             _p: Default::default(),
         }));
     }
 
     fn verify(&self, identity: &Identity) -> Result<B, ()> {
-        identity.verify(self.message.as_bytes(), &self.signature).map_err(|_| ())?;
+        identity.verify(self.message.as_bytes(), &self.signature.0).map_err(|_| ())?;
         return Ok(serde_json::from_str(&self.message).map_err(|_| ())?);
     }
 

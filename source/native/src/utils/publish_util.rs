@@ -11,13 +11,13 @@ use {
                 self,
                 announcement::latest::AnnouncementPublisher,
                 record::{
+                    RecordValue,
                     dns_record::{
-                        build_dns_key,
                         RecordType,
+                        build_dns_key,
                     },
                     record_utils::RecordKey,
                     v1::Minutes,
-                    RecordValue,
                 },
                 shared::SerialAddr,
             },
@@ -27,19 +27,22 @@ use {
             },
         },
         resolving::{
-            connect_publisher_node,
             UrlPair,
+            connect_publisher_node,
         },
         service::publisher::API_ROUTE_PUBLISH,
     },
     htwrap::htreq,
     loga::{
-        ea,
         DebugDisplay,
         Log,
         ResultContext,
+        ea,
     },
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::{
+        interface::identity::Identity,
+        jsonsig::JsonSignature,
+    },
     std::{
         collections::{
             HashMap,
@@ -154,15 +157,12 @@ pub async fn remote_publish(
     args: PublishArgs,
 ) -> Result<(), loga::Error> {
     let (identity, signed_request_content) =
-        wire::api::publish::v1::JsonSignature::sign(
-            &mut *identity_signer.lock().unwrap(),
-            wire::api::publish::latest::PublishRequestContent {
-                missing_ttl: args.missing_ttl,
-                clear_all: args.clear_all,
-                clear: args.clear,
-                set: args.set.into_iter().collect(),
-            },
-        ).stack_context(&log, "Failed to sign publish request content")?;
+        JsonSignature::sign(&mut *identity_signer.lock().unwrap(), wire::api::publish::latest::PublishRequestContent {
+            missing_ttl: args.missing_ttl,
+            clear_all: args.clear_all,
+            clear: args.clear,
+            set: args.set.into_iter().collect(),
+        }).stack_context(&log, "Failed to sign publish request content")?;
     let request = wire::api::publish::latest::PublishRequest {
         identity: identity,
         content: signed_request_content,
