@@ -2,21 +2,21 @@ use {
     crate::{
         interface::{
             config::{
-                spagh::DEFAULT_API_PORT,
                 ENV_RESOLVER_PAIRS,
+                spagh::DEFAULT_API_PORT,
             },
             stored::record::{
                 self,
                 delegate_record::{
-                    build_delegate_key,
                     Delegate,
+                    build_delegate_key,
                 },
                 dns_record::build_dns_key,
                 record_utils::{
-                    join_query_record_keys,
-                    split_dns_name,
                     RecordKey,
                     RecordRoot,
+                    join_query_record_keys,
+                    split_dns_name,
                 },
             },
             wire::{
@@ -26,9 +26,9 @@ use {
         },
         service::resolver::API_ROUTE_RESOLVE,
         utils::tls_util::{
-            cert_pem_hash,
             SpaghTlsClientVerifier,
             UnverifyingVerifier,
+            cert_pem_hash,
         },
     },
     flowcontrol::{
@@ -39,10 +39,11 @@ use {
     htwrap::{
         htreq::{
             self,
-            connect_ips,
-            uri_parts,
             Conn,
             Ips,
+            Limits,
+            connect_ips,
+            uri_parts,
         },
         url::{
             IpUrl,
@@ -51,10 +52,10 @@ use {
     },
     idna::punycode,
     loga::{
-        ea,
         ErrContext,
         Log,
         ResultContext,
+        ea,
     },
     rand::{
         seq::SliceRandom,
@@ -182,11 +183,16 @@ pub fn default_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
 
 /// Connect to a publisher node which either might be colocated with the resolver
 /// (full url pair) or standalone, resolved via a separate resolver (just a url).
-pub async fn connect_publisher_node(log: &Log, resolvers: &[UrlPair], pair: &UrlPair) -> Result<Conn, loga::Error> {
+pub async fn connect_publisher_node(
+    limits: Limits,
+    log: &Log,
+    resolvers: &[UrlPair],
+    pair: &UrlPair,
+) -> Result<Conn, loga::Error> {
     let log = log.fork(ea!(url = pair));
     let (scheme, host, port) = htreq::uri_parts(&pair.url).stack_context(&log, "Invalid url")?;
     if pair.address.is_some() {
-        return Ok(connect_resolver_node(pair).await?);
+        return Ok(connect_resolver_node(limits, pair).await?);
     } else {
         let ResolveTlsRes { ips, certs } =
             resolve_for_tls(&log, resolvers, &host).await.stack_context(&log, "Error resolving host")?;
@@ -196,6 +202,7 @@ pub async fn connect_publisher_node(log: &Log, resolvers: &[UrlPair], pair: &Url
         }
         return Ok(
             connect_ips(
+                limits,
                 ips,
                 rustls::ClientConfig::builder()
                     .dangerous()
@@ -217,7 +224,12 @@ pub async fn connect_publisher_node(log: &Log, resolvers: &[UrlPair], pair: &Url
 /// Connect to some http server that publishes its ip and tls certs over
 /// spaghettinuum. This is the ideal way to connect to such sites, it uses
 /// distributed certificate verification.
-pub async fn connect_content(log: &Log, resolvers: &[UrlPair], url: &Uri) -> Result<Conn, loga::Error> {
+pub async fn connect_content(
+    limits: Limits,
+    log: &Log,
+    resolvers: &[UrlPair],
+    url: &Uri,
+) -> Result<Conn, loga::Error> {
     let (scheme, host, port) = uri_parts(&url)?;
     let ResolveTlsRes { ips, certs } = resolve_for_tls(log, resolvers, &host).await?;
     let mut cert_hashes = HashSet::new();
@@ -226,6 +238,7 @@ pub async fn connect_content(log: &Log, resolvers: &[UrlPair], url: &Uri) -> Res
     }
     return Ok(
         htreq::connect_ips(
+            limits,
             ips,
             rustls::ClientConfig::builder()
                 .dangerous()
@@ -246,7 +259,7 @@ pub async fn connect_content(log: &Log, resolvers: &[UrlPair], url: &Uri) -> Res
 /// provided via other channels.
 ///
 /// As a fallback, skip verification on non-named hosts (similar to DoT fallbacks).
-pub async fn connect_resolver_node(pair: &UrlPair) -> Result<Conn, loga::Error> {
+pub async fn connect_resolver_node(limits: Limits, pair: &UrlPair) -> Result<Conn, loga::Error> {
     let (scheme, host, port) = uri_parts(&pair.url).context("API URL incomplete")?;
     let verifier = if matches!(host, htreq::Host::Name(_)) {
         Arc::new(SpaghTlsClientVerifier {
@@ -258,6 +271,7 @@ pub async fn connect_resolver_node(pair: &UrlPair) -> Result<Conn, loga::Error> 
     };
     return Ok(
         connect_ips(
+            limits,
             Ips::from(pair.address.unwrap()),
             rustls::ClientConfig::builder()
                 .dangerous()
@@ -284,6 +298,10 @@ pub async fn resolve(
     additional_keys: &[RecordKey],
 ) -> Result<(htreq::Ips, HashMap<RecordKey, wire::resolve::v1::ResolveValue>), loga::Error> {
     let log = log.fork(ea!(name = name));
+    let limits = Limits {
+        read_body_size: 1024 * 1024,
+        ..Default::default()
+    };
     if resolvers.is_empty() { }
     let (root, mut path) =
         split_dns_name(
@@ -294,7 +312,7 @@ pub async fn resolve(
         RecordRoot::Dns(name) => {
             return Ok(
                 (
-                    htreq::resolve(&htreq::Host::Name(name.to_string()))
+                    htreq::resolve(limits, &htreq::Host::Name(name.to_string()))
                         .await
                         .stack_context(&log, "Error resolving normal DNS name")?,
                     HashMap::new(),
@@ -331,10 +349,10 @@ pub async fn resolve(
             for resolver_url in resolvers {
                 match htreq::get_json::<wire::api::resolve::v1::ResolveResp>(
                     &log,
-                    &mut connect_resolver_node(&resolver_url).await?,
+                    limits,
+                    &mut connect_resolver_node(limits, &resolver_url).await?,
                     &resolver_url.url.join(&query_path),
                     &HashMap::new(),
-                    1024 * 1024,
                 ).await {
                     Ok(r) => {
                         break 'done r;
@@ -392,6 +410,7 @@ pub async fn resolve(
                                         );
                                     }
                                     break 'external htreq::resolve(
+                                        limits,
                                         &htreq::Host::Name(format!("{}.{}", dns_path.join("."), dns_root)),
                                     ).await?
                                 },

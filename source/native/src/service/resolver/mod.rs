@@ -5,10 +5,10 @@ use {
                 self,
                 dbidentity::DbIdentity,
                 record::record_utils::{
+                    RecordKey,
                     join_record_key,
                     split_query_record_keys,
                     split_record_key,
-                    RecordKey,
                 },
             },
             wire::{
@@ -22,11 +22,11 @@ use {
         ta_res,
         ta_vis_res,
         utils::{
+            ResultVisErr,
+            VisErr,
             db_util::setup_db,
             signed::IdentSignatureMethods,
             tls_util::cert_der_hash,
-            ResultVisErr,
-            VisErr,
         },
     },
     flowcontrol::shed,
@@ -34,6 +34,7 @@ use {
         htreq::{
             self,
             Conn,
+            Limits,
         },
         htserve::{
             self,
@@ -47,11 +48,11 @@ use {
     hyper::Uri,
     hyper_rustls::HttpsConnectorBuilder,
     loga::{
-        ea,
         DebugDisplay,
         ErrContext,
         Log,
         ResultContext,
+        ea,
     },
     moka::future::Cache,
     rand::{
@@ -337,7 +338,10 @@ impl Resolver {
         publishers.shuffle(&mut thread_rng());
         let mut values = None;
         let mut errs = vec![];
-        let resp_max_size = request_keys.len() * 128 * 1024;
+        let limits = Limits {
+            read_body_size: request_keys.len() * 128 * 1024,
+            ..Default::default()
+        };
         for publisher in publishers {
             let log = self.0.log.fork(ea!(publisher = publisher.addr));
             let log = &log;
@@ -387,6 +391,7 @@ impl Resolver {
                 let resp =
                     htreq::post_json::<wire::resolve::v1::ResolveResp>(
                         log,
+                        limits,
                         &mut conn,
                         &url,
                         &HashMap::new(),
@@ -394,7 +399,6 @@ impl Resolver {
                             ident: ident.clone(),
                             keys: request_keys.clone(),
                         }),
-                        resp_max_size,
                     )
                         .await
                         .context("Error getting response from publisher")?

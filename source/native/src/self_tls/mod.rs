@@ -68,6 +68,7 @@ use {
     http::Uri,
     htwrap::htreq::{
         self,
+        Limits,
         default_tls,
         uri_parts,
     },
@@ -188,16 +189,20 @@ pub async fn request_cert(
         let log = log.fork(ea!(url = url));
         let (scheme, host, port) = uri_parts(&url).stack_context(&log, "Incomplete url")?;
         let ips = dns_util::query(&certifier_opts.upstream_dns, &url).await?;
+        let limits = Limits {
+            read_body_size: 100 * 1024,
+            ..Default::default()
+        };
         let body =
             htreq::post(
                 &log,
-                &mut htreq::connect_ips(ips, default_tls(), scheme, host, port)
+                limits,
+                &mut htreq::connect_ips(limits, ips, default_tls(), scheme, host, port)
                     .await
                     .stack_context(&log, "Error connecting to certifier url")?,
                 &url,
                 &HashMap::new(),
                 body,
-                100 * 1024,
             ).await?;
         let resp =
             serde_json::from_slice::<wire::certify::latest::CertResponse>(

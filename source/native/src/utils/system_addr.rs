@@ -9,19 +9,20 @@ use {
     },
     http_body_util::Full,
     htwrap::htreq::{
-        default_tls,
-        uri_parts,
         Host,
         Ips,
+        Limits,
+        default_tls,
+        uri_parts,
     },
     hyper::{
-        body::Bytes,
         Request,
+        body::Bytes,
     },
     loga::{
-        ea,
         Log,
         ResultContext,
+        ea,
     },
     network_interface::{
         NetworkInterface,
@@ -134,16 +135,19 @@ pub async fn remote_resolve_global_ip(
     if ips.ipv4s.is_empty() && ips.ipv6s.is_empty() {
         return Err(log.err("Unable to resolve any lookup server addresses matching ipv4/6 requirements"));
     }
+    let limits = Limits {
+        read_body_size: 1024,
+        ..Default::default()
+    };
     let mut conn =
-        htwrap::htreq::connect_ips(ips, default_tls(), lookup_scheme, lookup_host.clone(), lookup_port)
+        htwrap::htreq::connect_ips(limits, ips, default_tls(), lookup_scheme, lookup_host.clone(), lookup_port)
             .await
             .context("Error connecting to lookup host")?;
     let resp =
         htwrap::htreq::send_simple(
             log,
+            limits,
             &mut conn,
-            1024,
-            Duration::from_secs(10),
             Request::builder()
                 .uri(lookup)
                 .header(hyper::header::HOST, lookup_host.to_string())

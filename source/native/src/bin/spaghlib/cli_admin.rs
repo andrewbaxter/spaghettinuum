@@ -1,19 +1,20 @@
 use {
     aargvark::{
-        traits_impls::AargvarkJson,
         Aargvark,
+        traits_impls::AargvarkJson,
     },
     htwrap::{
         htreq::{
             self,
             Conn,
+            Limits,
         },
         url::UriJoin,
     },
     loga::{
-        ea,
         Log,
         ResultContext,
+        ea,
     },
     serde::de::DeserializeOwned,
     spaghettinuum::interface::identity::Identity,
@@ -27,9 +28,9 @@ use {
         },
         publishing::system_publisher_url_pairs,
         resolving::{
+            UrlPair,
             connect_publisher_node,
             default_resolver_url_pairs,
-            UrlPair,
         },
         ta_res,
     },
@@ -113,6 +114,7 @@ async fn api_list<
     T: DeserializeOwned,
 >(
     log: &Log,
+    limits: Limits,
     conn: &mut Conn,
     base_url: &UrlPair,
     path: &str,
@@ -120,7 +122,7 @@ async fn api_list<
 ) -> Result<Vec<T>, loga::Error> {
     let mut out = vec![];
     let admin_headers = admin_headers()?;
-    let mut res = htreq::get(log, conn, &base_url.url.join(path), &admin_headers, 1024 * 1024).await?;
+    let mut res = htreq::get(log, limits, conn, &base_url.url.join(path), &admin_headers).await?;
     loop {
         let page: Vec<T> =
             serde_json::from_slice(&res).context("Failed to parse response page from publisher admin")?;
@@ -135,16 +137,17 @@ async fn api_list<
         res =
             htreq::get(
                 log,
+                limits,
                 conn,
                 &base_url.url.join(format!("{}?after={}", path, after)),
                 &admin_headers,
-                1024 * 1024,
             ).await?;
     }
     return Ok(out);
 }
 
 pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
+    let limits = Limits::default();
     let resolvers = default_resolver_url_pairs(log)?;
     let publishers = system_publisher_url_pairs(log)?;
     match config {
@@ -154,10 +157,10 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                 log.log_with(loga::DEBUG, "Sending health detail request (GET)", ea!(url = pair));
                 htreq::get(
                     log,
-                    &mut connect_publisher_node(log, &resolvers, &pair).await?,
+                    limits,
+                    &mut connect_publisher_node(limits, log, &resolvers, &pair).await?,
                     &pair.url,
                     &admin_headers()?,
-                    10 * 1024,
                 ).await?;
             }
         },
@@ -167,11 +170,11 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                 log.log_with(loga::DEBUG, "Sending register request (POST)", ea!(url = pair));
                 htreq::post_json::<()>(
                     log,
-                    &mut connect_publisher_node(log, &resolvers, &pair).await?,
+                    limits,
+                    &mut connect_publisher_node(limits, log, &resolvers, &pair).await?,
                     &pair.url,
                     &admin_headers()?,
                     AdminAllowIdentityBody { group: config.group.clone().unwrap_or_default() },
-                    100,
                 ).await?;
             }
         },
@@ -181,10 +184,10 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                 log.log_with(loga::DEBUG, "Sending unregister request (POST)", ea!(url = pair));
                 htreq::delete(
                     log,
-                    &mut connect_publisher_node(log, &resolvers, &pair).await?,
+                    limits,
+                    &mut connect_publisher_node(limits, log, &resolvers, &pair).await?,
                     &pair.url,
                     &admin_headers()?,
-                    100,
                 ).await?;
             }
         },
@@ -196,7 +199,8 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                     let out =
                         api_list::<AdminIdentity>(
                             log,
-                            &mut connect_publisher_node(log, &resolvers, &pair)
+                            limits,
+                            &mut connect_publisher_node(limits, log, &resolvers, &pair)
                                 .await
                                 .context("Error connecting to server")?,
                             &pair,
@@ -226,7 +230,8 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                     let out =
                         api_list::<Identity>(
                             log,
-                            &mut connect_publisher_node(log, &resolvers, &pair)
+                            limits,
+                            &mut connect_publisher_node(limits, log, &resolvers, &pair)
                                 .await
                                 .context("Error connecting to server")?,
                             &pair,
@@ -258,10 +263,10 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                         "{}",
                         htreq::get_text(
                             log,
-                            &mut connect_publisher_node(log, &resolvers, &pair).await?,
+                            limits,
+                            &mut connect_publisher_node(limits, log, &resolvers, &pair).await?,
                             &pair.url,
                             &admin_headers()?,
-                            1024 * 1024,
                         ).await?
                     );
                     return Ok(());
@@ -279,10 +284,13 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
         Args::SyncAllowedIdentities(sync) => {
             for pair in publishers {
                 let mut conn =
-                    connect_publisher_node(log, &resolvers, &pair).await.context("Error connecting to server")?;
+                    connect_publisher_node(limits, log, &resolvers, &pair)
+                        .await
+                        .context("Error connecting to server")?;
                 let identities =
                     api_list::<AdminIdentity>(
                         log,
+                        limits,
                         &mut conn,
                         &pair,
                         "publish/admin/allowed_identities",
@@ -303,20 +311,20 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                         }
                         htreq::post(
                             log,
+                            limits,
                             &mut conn,
                             &pair.url.join(format!("publish/admin/allowed_identities/{}", identity_id)),
                             &admin_headers()?,
                             vec![],
-                            100,
                         ).await?;
                     }
                     for identity_id in have {
                         htreq::delete(
                             log,
+                            limits,
                             &mut conn,
                             &pair.url.join(format!("publish/admin/allowed_identities/{}", identity_id)),
                             &admin_headers()?,
-                            100,
                         ).await?;
                     }
                 }

@@ -1,6 +1,9 @@
 use {
     aargvark::Aargvark,
-    htwrap::htreq,
+    htwrap::htreq::{
+        self,
+        Limits,
+    },
     loga::Log,
     spaghettinuum_native::{
         publishing::system_publisher_url_pairs,
@@ -59,15 +62,16 @@ async fn main() {
         match args.command {
             Command::Ping(args) => {
                 let resolvers = default_resolver_url_pairs(log)?;
+                let limits = Limits::default();
                 if args.publisher.is_none() {
                     for pair in resolvers {
                         let pair = pair.join("health");
                         htreq::get(
                             log,
-                            &mut connect_resolver_node(&pair).await?,
+                            limits,
+                            &mut connect_resolver_node(limits, &pair).await?,
                             &pair.url,
                             &HashMap::new(),
-                            100,
                         ).await?;
                     }
                 } else {
@@ -75,10 +79,10 @@ async fn main() {
                         let pair = pair.join("health");
                         htreq::get(
                             log,
-                            &mut connect_publisher_node(log, &resolvers, &pair).await?,
+                            limits,
+                            &mut connect_publisher_node(limits, log, &resolvers, &pair).await?,
                             &pair.url,
                             &HashMap::new(),
-                            100,
                         ).await?;
                     }
                 }

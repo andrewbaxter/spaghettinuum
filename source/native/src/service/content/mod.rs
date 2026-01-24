@@ -12,18 +12,21 @@ use {
     async_trait::async_trait,
     flowcontrol::shed,
     http::{
-        uri::PathAndQuery,
         Method,
         Request,
         Response,
         Uri,
+        uri::PathAndQuery,
     },
     http_body_util::{
-        combinators::BoxBody,
         BodyExt,
+        combinators::BoxBody,
     },
     htwrap::{
-        htreq,
+        htreq::{
+            self,
+            Limits,
+        },
         htserve::{
             self,
             handler::Handler,
@@ -31,15 +34,15 @@ use {
     },
     hyper::body::Bytes,
     loga::{
-        ea,
         ErrContext,
         Log,
         ResultContext,
+        ea,
     },
     path_absolutize::Absolutize,
     rustls::{
-        server::ResolvesServerCert,
         ServerConfig,
+        server::ResolvesServerCert,
     },
     std::{
         collections::BTreeMap,
@@ -126,7 +129,7 @@ impl htserve::handler::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler 
     async fn handle(&self, args: htserve::handler::HandlerArgs<'_>) -> Response<BoxBody<Bytes, RespErr>> {
         match async {
             ta_res!(Response < BoxBody < Bytes, RespErr >>);
-            let (mut sender, conn) = htreq::connect(&self.upstream_url).await?.inner.unwrap();
+            let (mut sender, conn) = htreq::connect(Limits::default(), &self.upstream_url).await?.inner.unwrap();
 
             // # Adjust request - merge base path, forwarding headers
             let req = {

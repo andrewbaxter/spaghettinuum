@@ -1,11 +1,14 @@
 use {
     aargvark::Aargvark,
-    htwrap::htreq,
+    htwrap::htreq::{
+        self,
+        Limits,
+    },
     itertools::Itertools,
     loga::{
-        ea,
         Log,
         ResultContext,
+        ea,
     },
     spaghettinuum_native::{
         resolving::{
@@ -41,16 +44,20 @@ pub async fn run_get(log: &Log, config: Args) -> Result<(), loga::Error> {
                     ),
                 );
             log.log_with(loga::DEBUG, "Sending query request", ea!(url = pair));
+            let limits = Limits {
+                read_body_size: 1024 * 1024,
+                ..Default::default()
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(
                     &serde_json::from_slice::<serde_json::Value>(
                         &htreq::get(
                             log,
-                            &mut connect_resolver_node(&pair).await?,
+                            limits,
+                            &mut connect_resolver_node(limits, &pair).await?,
                             &pair.url,
                             &HashMap::new(),
-                            1024 * 1024,
                         ).await?,
                     ).stack_context(log, "Response could not be parsed as JSON")?,
                 ).unwrap()

@@ -32,7 +32,10 @@ use {
         },
         service::publisher::API_ROUTE_PUBLISH,
     },
-    htwrap::htreq,
+    htwrap::htreq::{
+        self,
+        Limits,
+    },
     loga::{
         DebugDisplay,
         Log,
@@ -83,16 +86,25 @@ pub async fn announce(
     publishers: &[UrlPair],
     identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
 ) -> Result<(), loga::Error> {
+    let limits = Limits {
+        read_body_size: 100,
+        ..Default::default()
+    };
     let mut publishers_info = vec![];
     for s in publishers {
         let url = s.join("publish/v1/info");
         let info_body =
             htreq::get(
                 &log,
-                &mut connect_publisher_node(&log, resolvers, &url).await.context("Error connecting to publisher")?,
+                Limits {
+                    read_body_size: 100 * 1024,
+                    ..Default::default()
+                },
+                &mut connect_publisher_node(limits, &log, resolvers, &url)
+                    .await
+                    .context("Error connecting to publisher")?,
                 &url.url,
                 &HashMap::new(),
-                100 * 1024,
             )
                 .await
                 .context("Error getting publisher info")?;
@@ -124,11 +136,13 @@ pub async fn announce(
         let url = s.join("publish/v1/announce");
         htreq::post(
             log,
-            &mut connect_publisher_node(log, resolvers, &url).await.context("Error connecting to publisher")?,
+            limits,
+            &mut connect_publisher_node(limits, log, resolvers, &url)
+                .await
+                .context("Error connecting to publisher")?,
             &url.url,
             &HashMap::new(),
             serde_json::to_vec(&request).unwrap(),
-            100,
         )
             .await
             .context("Error making announce request")?;
@@ -167,6 +181,10 @@ pub async fn remote_publish(
         identity: identity,
         content: signed_request_content,
     };
+    let limits = Limits {
+        read_body_size: 100,
+        ..Default::default()
+    };
     for s in publishers {
         let url = s.join(format!("{}/v1/publish", API_ROUTE_PUBLISH));
         log.log_with(
@@ -176,11 +194,13 @@ pub async fn remote_publish(
         );
         htreq::post(
             log,
-            &mut connect_publisher_node(&log, resolvers, &url).await.context("Error connecting to publisher")?,
+            limits,
+            &mut connect_publisher_node(limits, &log, resolvers, &url)
+                .await
+                .context("Error connecting to publisher")?,
             &url.url,
             &HashMap::new(),
             serde_json::to_vec(&request).unwrap(),
-            100,
         )
             .await
             .context("Error making publish request")?;

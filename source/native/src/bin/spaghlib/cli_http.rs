@@ -1,31 +1,34 @@
 use {
     aargvark::{
-        traits_impls::AargvarkFile,
         Aargvark,
+        traits_impls::AargvarkFile,
     },
     http::{
         Method,
         Uri,
     },
     http_body_util::Full,
-    htwrap::htreq,
+    htwrap::htreq::{
+        self,
+        Limits,
+    },
     hyper::body::Bytes,
     loga::{
-        ea,
         DebugDisplay,
         Log,
         ResultContext,
+        ea,
     },
     serde_json::json,
     spaghettinuum_native::{
         resolving::{
+            ResolveTlsRes,
             default_resolver_url_pairs,
             resolve_for_tls,
-            ResolveTlsRes,
         },
         utils::tls_util::{
-            cert_pem_hash,
             SpaghTlsClientVerifier,
+            cert_pem_hash,
         },
     },
     std::{
@@ -35,6 +38,7 @@ use {
         },
         path::PathBuf,
         time::Duration,
+        usize,
     },
     tokio::{
         fs::File,
@@ -138,8 +142,16 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
     }
 
     // Now make the actual request
+    let limits = Limits {
+        resolve_time: Duration::MAX,
+        connect_time: Duration::MAX,
+        read_header_time: Duration::MAX,
+        read_body_time: Duration::MAX,
+        read_body_size: usize::MAX,
+    };
     let mut conn =
         htreq::connect_ips(
+            limits,
             ips,
             rustls::ClientConfig::builder()
                 .dangerous()
@@ -149,7 +161,7 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
             host,
             port,
         ).await?;
-    let (status, headers, continue_send) = htreq::send(log, &mut conn, Duration::MAX, final_req).await?;
+    let (status, headers, continue_send) = htreq::send(log, limits, &mut conn, final_req).await?;
     log.log_with(loga::DEBUG, "Received header", ea!(status = status, headers = headers.dbg_str()));
     match config.output {
         Some(p) => {
