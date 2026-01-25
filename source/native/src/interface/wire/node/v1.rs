@@ -69,6 +69,17 @@ impl<'a> Deserialize<'a> for DhtCoord {
     }
 }
 
+pub trait Req {
+    fn into_req(self) -> Message;
+}
+
+pub trait ReqResp {
+    type Resp: DeserializeOwned;
+
+    fn into_req(self) -> Message;
+}
+
+// Find
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum FindGoal {
@@ -96,7 +107,6 @@ pub struct NodeInfo {
 pub struct FindResponseContent {
     pub goal: FindGoal,
     pub challenge: Vec<u8>,
-    pub sender: NodeIdentity,
     pub nodes: Vec<NodeInfo>,
     pub value: Option<Announcement>,
 }
@@ -108,6 +118,15 @@ pub struct FindResponse {
     pub content: BincodeSignature<FindResponseContent, NodeIdentity>,
 }
 
+impl ReqResp for FindRequest {
+    type Resp = FindResponse;
+
+    fn into_req(self) -> Message {
+        return Message::Find(self);
+    }
+}
+
+// # Store
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct StoreRequest {
@@ -122,6 +141,30 @@ pub struct StoreResponse {
     pub value: Announcement,
 }
 
+impl Req for StoreRequest {
+    fn into_req(self) -> Message {
+        return Message::Store(self);
+    }
+}
+
+// # Ping
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct PingRequest;
+
+impl ReqResp for PingRequest {
+    type Resp = NodeIdentity;
+
+    fn into_req(self) -> Message {
+        return Message::Ping(self);
+    }
+}
+
+// # Challenge
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct Challenge(pub Vec<u8>);
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ChallengeResponse {
@@ -129,16 +172,22 @@ pub struct ChallengeResponse {
     pub signature: Vec<u8>,
 }
 
+impl ReqResp for Challenge {
+    type Resp = ChallengeResponse;
+
+    fn into_req(self) -> Message {
+        return Message::Challenge(self);
+    }
+}
+
+// # Assembly
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Message {
-    FindRequest(FindRequest),
-    FindResponse(FindResponse),
+    Find(FindRequest),
     Store(StoreRequest),
-    Ping,
-    Pung(NodeIdentity),
-    Challenge(Vec<u8>),
-    ChallengeResponse(ChallengeResponse),
+    Ping(PingRequest),
+    Challenge(Challenge),
 }
 
 impl Message {

@@ -17,7 +17,9 @@ use {
                 self,
                 node::{
                     latest::FindGoal,
-                    v1::DhtCoord,
+                    v1::{
+                        DhtCoord,
+                    },
                 },
             },
         },
@@ -73,7 +75,9 @@ use {
             hash_map::Entry,
         },
         fmt::Debug,
-        net::SocketAddr,
+        net::{
+            SocketAddr,
+        },
         path::Path,
         str::FromStr,
         sync::{
@@ -118,7 +122,7 @@ pub mod db;
 const MESSAGE_SIZE_LIMIT: u64 = 10 * 1024 * 1024;
 const TIMEOUT_SECS: u64 = 10;
 
-async fn read_message<S: Unpin + AsyncRead>(s: &mut S) -> Result<Option<wire::node::Protocol>, loga::Error> {
+async fn read_message<S: Unpin + AsyncRead>(s: &mut S) -> Result<Option<Vec<u8>>, loga::Error> {
     return timeout(Duration::from_secs(TIMEOUT_SECS), async {
         let len = match s.read_u64().await {
             Ok(l) => l,
@@ -133,6 +137,7 @@ async fn read_message<S: Unpin + AsyncRead>(s: &mut S) -> Result<Option<wire::no
                     std::io::ErrorKind::StaleNetworkFileHandle |
                     std::io::ErrorKind::TimedOut |
                     std::io::ErrorKind::WriteZero |
+                    std::io::ErrorKind::UnexpectedEof |
                     std::io::ErrorKind::Interrupted => {
                         return Ok(None);
                     },
@@ -148,44 +153,77 @@ async fn read_message<S: Unpin + AsyncRead>(s: &mut S) -> Result<Option<wire::no
         let mut buf = vec![];
         buf.resize(len as usize, 0u8);
         s.read_exact(&mut buf).await.context("Error reading message body")?;
-        return Ok(Some(wire::node::Protocol::from_bytes(&buf).map_err(loga::err)?));
+        return Ok(Some(buf));
     }).await.map_err(loga::err).and_then(|x| x);
 }
 
-async fn send_message<S: Unpin + AsyncWrite>(log: &Log, s: &mut S, message: wire::node::Protocol) {
-    log.log_with(loga::DEBUG, "Sending", ea!(message = message.dbg_str()));
-    match timeout(Duration::from_secs(TIMEOUT_SECS), async {
+async fn send_message<S: Unpin + AsyncWrite + AsyncRead>(s: &mut S, message: Vec<u8>) -> Result<(), loga::Error> {
+    timeout(Duration::from_secs(TIMEOUT_SECS), async {
         ta_res!(());
-        let body = message.to_bytes();
         let len =
             (<usize as TryInto<u64>>::try_into(
-                body.len(),
+                message.len(),
             )).context("Trying to send message that's too large (can't fit in u64)")?;
         s.write_u64(len).await.context("Failed to write message size")?;
-        s.write_all(&body).await.context("Failed to write message body")?;
+        s.write_all(&message).await.context("Failed to write message body")?;
         return Ok(());
-    }).await.map_err(loga::err).and_then(|x| x) {
-        Ok(()) => { },
-        Err(e) => {
-            log.log_err(loga::ERR, e.context("Error sending packet"));
-        },
-    }
+    }).await.map_err(loga::err).and_then(|x| x)?;
+    return Ok(());
 }
 
-async fn connect_send_message(log: &Log, dest: SocketAddr, message: wire::node::Protocol) {
+async fn connect_send_req<M: wire::node::latest::Req>(log: &Log, dest: SocketAddr, message: M) {
     let log = log.fork(ea!(peer = dest));
-    let mut c =
-        match timeout(Duration::from_secs(10), TcpStream::connect(dest).map_err(loga::err))
-            .await
-            .map_err(loga::err)
-            .and_then(|x| x) {
-            Ok(c) => c,
+    let message = wire::node::Protocol::V1(message.into_req()).to_bytes();
+    log.log_with(loga::DEBUG, "Sending", ea!(message = String::from_utf8_lossy(&message)));
+    match async {
+        ta_res!(());
+        let mut s =
+            timeout(Duration::from_secs(10), TcpStream::connect(dest).map_err(loga::err))
+                .await
+                .map_err(loga::err)
+                .and_then(|x| x)?;
+        send_message(&mut s, message).await?;
+        return Ok(());
+    }.await {
+        Ok(s) => s,
+        Err(e) => {
+            log.log_err(loga::DEBUG, e);
+            return;
+        },
+    };
+}
+
+fn connect_send_req_resp<
+    M: wire::node::latest::ReqResp,
+    F: Send + std::future::Future<Output = Result<(), loga::Error>>,
+    N: 'static + Send + FnOnce(M::Resp) -> F,
+>(log: &Log, dest: SocketAddr, message: M, handle_resp: N) {
+    let log = log.fork(ea!(peer = dest));
+    let message = wire::node::Protocol::V1(message.into_req()).to_bytes();
+    spawn(async move {
+        match async {
+            log.log_with(loga::DEBUG, "Sending", ea!(message = String::from_utf8_lossy(&message)));
+            let mut s =
+                timeout(Duration::from_secs(10), TcpStream::connect(dest).map_err(loga::err))
+                    .await
+                    .map_err(loga::err)
+                    .and_then(|x| x)?;
+            send_message(&mut s, message).await?;
+            let resp =
+                bincode::deserialize(
+                    &read_message(&mut s)
+                        .await?
+                        .ok_or_else(|| loga::err("Expected response but none received (connection ended)"))?,
+                ).context("Error parsing response")?;
+            handle_resp(resp).await?;
+            return Ok(());
+        }.await {
+            Ok(()) => { },
             Err(e) => {
-                log.log_err(loga::DEBUG, e.context("Error connecting to peer to send message"));
-                return;
+                log.log_err(loga::DEBUG, e);
             },
-        };
-    send_message(&log, &mut c, message).await;
+        }
+    });
 }
 
 pub fn default_bootstrap() -> Vec<wire::node::latest::NodeInfo> {
@@ -611,15 +649,18 @@ impl Node {
                                     bucket_i: leading_zeros,
                                 }),
                             };
-                            connect_send_message(
-                                &log,
-                                addr.0,
-                                wire::node::Protocol::V1(wire::node::latest::Message::Ping)
-                            ).await;
                             ping_timeout_write.unbounded_send(NextPingTimeout {
                                 end: Instant::now() + req_timeout(),
                                 key: (id, req_id),
                             }).ignore();
+                            connect_send_req_resp(&log, addr.0, wire::node::latest::PingRequest, cap_fn!((k)(dir) {
+                                let state = match dir.0.ping_states.lock().unwrap().entry(k.clone()) {
+                                    Entry::Occupied(s) => s.remove(),
+                                    Entry::Vacant(_) => return Ok(()),
+                                };
+                                dir.set_node_unresponsive(k, state.bucket_i, false);
+                                return Ok(());
+                            }));
                         }
                     }
                     select!{
@@ -703,6 +744,7 @@ impl Node {
                                 ta_res!(());
                                 while let Some(m) =
                                     read_message(&mut conn).await.context("Failed to read message")? {
+                                    let m = wire::node::Protocol::from_bytes(&m).map_err(loga::err)?;
                                     dir.handle(m, &mut conn, peer).await?;
                                 }
                                 return Ok(());
@@ -824,16 +866,10 @@ impl Node {
                         });
                     },
                     NearestNodeEntryNode::Node(node) => {
-                        connect_send_message(
-                            &self.0.log,
-                            node.address.0,
-                            wire::node::Protocol::V1(
-                                wire::node::latest::Message::Store(wire::node::latest::StoreRequest {
-                                    key: key.clone(),
-                                    value: value.clone(),
-                                }),
-                            ),
-                        ).await;
+                        connect_send_req(&self.0.log, node.address.0, wire::node::latest::StoreRequest {
+                            key: key.clone(),
+                            value: value.clone(),
+                        }).await;
                     },
                 }
             }
@@ -876,12 +912,29 @@ impl Node {
             };
             (challenge, state.req_id)
         };
-        connect_send_message(
-            &self.0.log,
-            addr,
-            wire::node::Protocol::V1(wire::node::latest::Message::Challenge(challenge)),
-        ).await;
-        self.0.challenge_timeouts.unbounded_send(NextChallengeTimeout {
+        let dir = self;
+        connect_send_req_resp(&self.0.log, addr, wire::node::latest::Challenge(challenge), cap_fn!((resp)(dir) {
+            // Lookup request state
+            let mut borrowed_states = dir.0.challenge_states.lock().unwrap();
+            let state_entry = match borrowed_states.entry(resp.sender.clone()) {
+                Entry::Occupied(s) => s,
+                Entry::Vacant(_) => {
+                    // Happens normally if outgoing replaced for a better peer and then the request is
+                    // resolved before resp comes back
+                    return Ok(());
+                },
+            };
+            let state = state_entry.get();
+
+            // Confirm sender is legit routable, add to own routing table
+            if resp.sender.verify(&state.challenge, &resp.signature).is_err() {
+                return Err(loga::err("Bad sender signature"));
+            }
+            let state = state_entry.remove();
+            dir.add_good_node(resp.sender.clone(), Some(state.node));
+            return Ok(());
+        }));
+        dir.0.challenge_timeouts.unbounded_send(NextChallengeTimeout {
             end: timeout,
             key: (id, req_id),
         }).ignore();
@@ -977,15 +1030,17 @@ impl Node {
             state.req_id
         };
         for d in defer {
-            connect_send_message(
-                &self.0.log,
-                d.addr,
-                wire::node::Protocol::V1(wire::node::latest::Message::FindRequest(wire::node::latest::FindRequest {
-                    challenge: d.challenge,
-                    goal: goal,
-                    sender: self.0.own_ident.clone(),
-                })),
-            ).await;
+            connect_send_req_resp(&self.0.log, d.addr, wire::node::latest::FindRequest {
+                challenge: d.challenge,
+                goal: goal,
+                sender: self.0.own_ident.clone(),
+            }, {
+                let dir = self;
+                cap_fn!((resp)(dir) {
+                    dir.handle_find_resp(resp).await;
+                    return Ok(());
+                })
+            });
         }
         match self.0.find_timeouts.unbounded_send(NextFindTimeout {
             updated: updated,
@@ -1003,6 +1058,277 @@ impl Node {
                 }
             },
         };
+    }
+
+    fn handle_find_resp(
+        &self,
+        resp: wire::node::latest::FindResponse,
+    ) -> impl Send + std::future::Future<Output = ()> {
+        let dir = self.clone();
+        async move {
+            let Ok(content) = resp.content.verify(&resp.sender) else {
+                dir.0.log.log(loga::DEBUG, "Find response has invalid signature");
+                return;
+            };
+            let log = dir.0.log.fork(ea!(action = "find_response", from_node_ident = resp.sender.dbg_str()));
+            let goal;
+
+            struct Defer {
+                challenge: Vec<u8>,
+                addr: SocketAddr,
+            }
+
+            let mut defer_next_req = vec![];
+            let mut transfer_stored_addr: Option<SocketAddr> = None;
+            let state = {
+                // Lookup request state, discard if unsolicited (or obsolete) find response
+                let mut borrowed_states = dir.0.find_states.lock().unwrap();
+                let mut state_entry = match borrowed_states.entry(content.goal.clone()) {
+                    Entry::Occupied(s) => s,
+                    Entry::Vacant(_) => {
+                        log.log(loga::DEBUG, "No request state matching response target");
+                        return;
+                    },
+                };
+                let state = state_entry.get_mut();
+                goal = state.goal;
+                let mut outstanding_entry: Option<OutstandingNodeEntry> = None;
+                state.outstanding.retain(|e| {
+                    if e.node.ident == resp.sender {
+                        if constant_time_eq(&content.challenge, &e.challenge) {
+                            outstanding_entry = Some(e.clone());
+                            return false;
+                        } else {
+                            log.log_with(
+                                loga::DEBUG,
+                                "Wrong challenge",
+                                ea!(
+                                    want = zbase32::encode_full_bytes(&e.challenge),
+                                    got = zbase32::encode_full_bytes(&content.challenge)
+                                ),
+                            );
+                        }
+                    }
+                    return true;
+                });
+                let outstanding_entry = match outstanding_entry {
+                    Some(e) => e,
+                    None => {
+                        // 1. May have been dropped because there are better candidates
+                        //
+                        // 2. Entry skipped because wrong challenge
+                        return;
+                    },
+                };
+
+                // Confirm sender is legit routable, possibly add to own routing table
+                let (_, sender_dist) = dist(&node_ident_coord(&outstanding_entry.node.ident), &dir.0.own_coord);
+                if dir.add_good_node(outstanding_entry.node.ident.clone(), Some(outstanding_entry.node.clone())) {
+                    if !dir
+                        .get_closest_peers(dir.0.own_coord, NEIGHBORHOOD)
+                        .iter()
+                        .any(|p| dist(&node_ident_coord(&p.ident), &dir.0.own_coord).1 < sender_dist) {
+                        // Incidental work; added sender as a close peer, and sender is the closest peer
+                        // so need to replicate all state to it (i.e. it is one of N closest nodes to all
+                        // data on this node)
+                        transfer_stored_addr = Some(outstanding_entry.node.address.0.clone());
+                    }
+                }
+
+                // The node responded and is legit, add it to the nearest node set
+                loop {
+                    let mut replace_nearest = false;
+                    if state.nearest.len() == NEIGHBORHOOD {
+                        if sender_dist >= state.nearest.last().unwrap().dist {
+                            break;
+                        }
+                        replace_nearest = true;
+                    }
+                    if state.nearest.iter().any(|e| match &e.node {
+                        NearestNodeEntryNode::Self_ => dir.0.own_ident == outstanding_entry.node.ident,
+                        NearestNodeEntryNode::Node(f) => f.ident == outstanding_entry.node.ident,
+                    }) {
+                        break;
+                    }
+                    if replace_nearest {
+                        state.nearest.pop();
+                    }
+                    state.nearest.push(NearestNodeEntry {
+                        dist: sender_dist,
+                        node: NearestNodeEntryNode::Node(outstanding_entry.node.clone()),
+                    });
+                    state.nearest.sort_by_key(|e| e.dist);
+                    break;
+                }
+
+                // Send requests to each of the next hop nodes that are closer than what we've
+                // seen + that don't already have outgoing requests...
+                let goal_coord = match &goal {
+                    FindGoal::Coord(c) => *c,
+                    FindGoal::Identity(i) => ident_coord(i),
+                };
+                for n in content.nodes {
+                    if !state.seen.insert(n.ident.clone()) {
+                        // Already considered/requested this node previously - this overlaps info in
+                        // nearest/outstanding partially, but if we reject a response (ex: bad signature)
+                        // it will never go into the nearest/outstanding collections so we could request
+                        // it repeatedly. This is an explicit check on that.
+                        continue;
+                    }
+                    let candidate_hash = node_ident_coord(&n.ident);
+                    let (bucket_i, candidate_dist) = dist(&candidate_hash, &goal_coord);
+
+                    // If nearest list is full and found node is farther away than any current nodes,
+                    // drop it
+                    if state.nearest.len() == NEIGHBORHOOD && candidate_dist >= state.nearest.last().unwrap().dist {
+                        continue;
+                    }
+
+                    // If outstanding list is full and found node is farther away than any current
+                    // nodes, drop it
+                    let mut replace_outstanding = false;
+                    if state.outstanding.len() == PARALLEL {
+                        if candidate_dist >= state.outstanding.last().unwrap().dist {
+                            continue;
+                        }
+
+                        // Not farther away, we can pop the farther one off and add the found node below
+                        replace_outstanding = true;
+                    }
+
+                    // If found node already in nearest, drop (ignore) it
+                    if state.nearest.iter().any(|e| n.ident == *match &e.node {
+                        NearestNodeEntryNode::Self_ => &dir.0.own_ident,
+                        NearestNodeEntryNode::Node(f) => &f.ident,
+                    }) {
+                        continue;
+                    }
+
+                    // If found node already in outstanding, drop (ignore) it
+                    if state.outstanding.iter().any(|e| e.node.ident == n.ident) {
+                        continue;
+                    }
+                    let challenge = generate_challenge();
+                    if replace_outstanding {
+                        state.outstanding.pop();
+                    }
+                    state.outstanding.push(OutstandingNodeEntry {
+                        dist: candidate_dist,
+                        challenge: challenge.clone(),
+                        node: n.clone(),
+                        bucket_i,
+                    });
+                    state.outstanding.sort_by_key(|e| e.dist);
+                    defer_next_req.push(Defer {
+                        challenge: challenge,
+                        addr: n.address.0.clone(),
+                    });
+                }
+
+                // Process received value
+                if let (Some(value), FindGoal::Identity(goal_identity)) = (content.value, goal) {
+                    shed!{
+                        let found_published;
+                        match &value {
+                            stored::announcement::Announcement::V1(found) => {
+                                let Ok(content) = found.verify(&goal_identity) else {
+                                    log.log(loga::DEBUG, "Got value with bad signature");
+                                    break;
+                                };
+                                found_published = content.announced;
+                            },
+                        }
+                        match &mut state.value {
+                            Some(state_value) => {
+                                let have_published;
+                                match state_value {
+                                    stored::announcement::Announcement::V1(have_value) => {
+                                        have_published = have_value.parse_unwrap().announced;
+                                    },
+                                }
+                                if have_published >= found_published {
+                                    log.log_with(
+                                        loga::DEBUG,
+                                        "Received value older than one we already have",
+                                        ea!(
+                                            have_published = have_published.dbg_str(),
+                                            found_published = found_published.dbg_str()
+                                        ),
+                                    );
+                                    break;
+                                }
+                            },
+                            _ => (),
+                        }
+                        log.log_with(
+                            loga::DEBUG,
+                            "Found better value for find, replacing",
+                            ea!(old = state.value.dbg_str(), new = state.value.dbg_str(), goal = state.goal.dbg_str()),
+                        );
+                        state.value = Some(value);
+                    };
+                }
+
+                // If done, cleanup or else update timeouts
+                if state.outstanding.is_empty() {
+                    // Remove outstanding state to complete it
+                    Some(state_entry.remove())
+                } else {
+                    // New things to do, bump updated time and re-queue
+                    state.updated = Instant::now();
+                    match dir.0.find_timeouts.unbounded_send(NextFindTimeout {
+                        updated: state.updated,
+                        key: (state.goal.clone(), state.req_id),
+                    }) {
+                        Ok(_) => { },
+                        Err(e) => {
+                            let e = e.into_send_error();
+                            if e.is_disconnected() {
+                                // nop
+                            } else if e.is_full() {
+                                unreachable!();
+                            } else {
+                                unreachable!();
+                            }
+                        },
+                    };
+                    None
+                }
+            };
+
+            // Send deferred messages now that locks are released
+            if let Some(addr) = transfer_stored_addr {
+                let mut store = HashMap::new();
+                {
+                    let lock = dir.0.store.lock().unwrap();
+                    store.extend(lock.iter().map(|(k, v)| (k.clone(), v.value.clone())));
+                }
+                for (k, v) in store.into_iter() {
+                    connect_send_req(&log, addr, wire::node::latest::StoreRequest {
+                        key: k,
+                        value: v,
+                    }).await;
+                }
+            }
+            if let Some(s) = state {
+                dir.complete_state(s).await;
+            }
+            for d in defer_next_req {
+                connect_send_req_resp(&log, d.addr, wire::node::latest::FindRequest {
+                    challenge: d.challenge,
+                    goal: goal,
+                    sender: dir.0.own_ident.clone(),
+                }, {
+                    let dir = dir.clone();
+                    move |resp| {
+                        async move {
+                            dir.handle_find_resp(resp).await;
+                            return Ok(());
+                        }
+                    }
+                });
+            }
+        }
     }
 
     async fn complete_state(&self, state: FindState) {
@@ -1025,295 +1351,6 @@ impl Node {
                 value: state.value.clone(),
                 nearest: state.nearest.clone(),
             }).await;
-        }
-    }
-
-    async fn handle_challenge_resp(&self, resp: wire::node::latest::ChallengeResponse) {
-        let log = self.0.log.fork(ea!(action = "challenge_response", from_node_ident = resp.sender.dbg_str()));
-
-        // Lookup request state
-        let mut borrowed_states = self.0.challenge_states.lock().unwrap();
-        let state_entry = match borrowed_states.entry(resp.sender.clone()) {
-            Entry::Occupied(s) => s,
-            Entry::Vacant(_) => {
-                // Happens normally if outgoing replaced for a better peer and then the request is
-                // resolved before resp comes back
-                return;
-            },
-        };
-        let state = state_entry.get();
-
-        // Confirm sender is legit routable, add to own routing table
-        if resp.sender.verify(&state.challenge, &resp.signature).is_err() {
-            log.log(loga::DEBUG, "Bad sender signature");
-            return;
-        }
-        let state = state_entry.remove();
-        self.add_good_node(resp.sender.clone(), Some(state.node));
-    }
-
-    async fn handle_find_resp(&self, resp: wire::node::latest::FindResponse) {
-        let Ok(content) = resp.content.verify(&resp.sender) else {
-            self.0.log.log(loga::DEBUG, "Find response has invalid signature");
-            return;
-        };
-        let log: Log = self.0.log.fork(ea!(action = "find_response", from_node_ident = resp.sender.dbg_str()));
-        let goal;
-        let mut defer_next_req = vec![];
-        let mut transfer_stored_addr: Option<SocketAddr> = None;
-        let state = {
-            // Lookup request state, discard if unsolicited (or obsolete) find response
-            let mut borrowed_states = self.0.find_states.lock().unwrap();
-            let mut state_entry = match borrowed_states.entry(content.goal.clone()) {
-                Entry::Occupied(s) => s,
-                Entry::Vacant(_) => {
-                    log.log(loga::DEBUG, "No request state matching response target");
-                    return;
-                },
-            };
-            let state = state_entry.get_mut();
-            goal = state.goal;
-            let mut outstanding_entry: Option<OutstandingNodeEntry> = None;
-            state.outstanding.retain(|e| {
-                if e.node.ident == resp.sender {
-                    if constant_time_eq(&content.challenge, &e.challenge) {
-                        outstanding_entry = Some(e.clone());
-                        return false;
-                    } else {
-                        log.log_with(
-                            loga::DEBUG,
-                            "Wrong challenge",
-                            ea!(
-                                want = zbase32::encode_full_bytes(&e.challenge),
-                                got = zbase32::encode_full_bytes(&content.challenge)
-                            ),
-                        );
-                    }
-                }
-                return true;
-            });
-            let outstanding_entry = match outstanding_entry {
-                Some(e) => e,
-                None => {
-                    // 1. May have been dropped because there are better candidates
-                    //
-                    // 2. Entry skipped because wrong challenge
-                    return;
-                },
-            };
-
-            // Confirm sender is legit routable, possibly add to own routing table
-            let (_, sender_dist) = dist(&node_ident_coord(&outstanding_entry.node.ident), &self.0.own_coord);
-            if self.add_good_node(outstanding_entry.node.ident.clone(), Some(outstanding_entry.node.clone())) {
-                if !self
-                    .get_closest_peers(self.0.own_coord, NEIGHBORHOOD)
-                    .iter()
-                    .any(|p| dist(&node_ident_coord(&p.ident), &self.0.own_coord).1 < sender_dist) {
-                    // Incidental work; added sender as a close peer, and sender is the closest peer
-                    // so need to replicate all state to it (i.e. it is one of N closest nodes to all
-                    // data on this node)
-                    transfer_stored_addr = Some(outstanding_entry.node.address.0.clone());
-                }
-            }
-
-            // The node responded and is legit, add it to the nearest node set
-            loop {
-                let mut replace_nearest = false;
-                if state.nearest.len() == NEIGHBORHOOD {
-                    if sender_dist >= state.nearest.last().unwrap().dist {
-                        break;
-                    }
-                    replace_nearest = true;
-                }
-                if state.nearest.iter().any(|e| match &e.node {
-                    NearestNodeEntryNode::Self_ => self.0.own_ident == outstanding_entry.node.ident,
-                    NearestNodeEntryNode::Node(f) => f.ident == outstanding_entry.node.ident,
-                }) {
-                    break;
-                }
-                if replace_nearest {
-                    state.nearest.pop();
-                }
-                state.nearest.push(NearestNodeEntry {
-                    dist: sender_dist,
-                    node: NearestNodeEntryNode::Node(outstanding_entry.node.clone()),
-                });
-                state.nearest.sort_by_key(|e| e.dist);
-                break;
-            }
-
-            // Send requests to each of the next hop nodes that are closer than what we've
-            // seen + that don't already have outgoing requests...
-            let goal_coord = match &goal {
-                FindGoal::Coord(c) => *c,
-                FindGoal::Identity(i) => ident_coord(i),
-            };
-            for n in content.nodes {
-                if !state.seen.insert(n.ident.clone()) {
-                    // Already considered/requested this node previously - this overlaps info in
-                    // nearest/outstanding partially, but if we reject a response (ex: bad signature)
-                    // it will never go into the nearest/outstanding collections so we could request
-                    // it repeatedly. This is an explicit check on that.
-                    continue;
-                }
-                let candidate_hash = node_ident_coord(&n.ident);
-                let (bucket_i, candidate_dist) = dist(&candidate_hash, &goal_coord);
-
-                // If nearest list is full and found node is farther away than any current nodes,
-                // drop it
-                if state.nearest.len() == NEIGHBORHOOD && candidate_dist >= state.nearest.last().unwrap().dist {
-                    continue;
-                }
-
-                // If outstanding list is full and found node is farther away than any current
-                // nodes, drop it
-                let mut replace_outstanding = false;
-                if state.outstanding.len() == PARALLEL {
-                    if candidate_dist >= state.outstanding.last().unwrap().dist {
-                        continue;
-                    }
-
-                    // Not farther away, we can pop the farther one off and add the found node below
-                    replace_outstanding = true;
-                }
-
-                // If found node already in nearest, drop (ignore) it
-                if state.nearest.iter().any(|e| n.ident == *match &e.node {
-                    NearestNodeEntryNode::Self_ => &self.0.own_ident,
-                    NearestNodeEntryNode::Node(f) => &f.ident,
-                }) {
-                    continue;
-                }
-
-                // If found node already in outstanding, drop (ignore) it
-                if state.outstanding.iter().any(|e| e.node.ident == n.ident) {
-                    continue;
-                }
-                let challenge = generate_challenge();
-                if replace_outstanding {
-                    state.outstanding.pop();
-                }
-                state.outstanding.push(OutstandingNodeEntry {
-                    dist: candidate_dist,
-                    challenge: challenge.clone(),
-                    node: n.clone(),
-                    bucket_i,
-                });
-                state.outstanding.sort_by_key(|e| e.dist);
-
-                struct Defer {
-                    challenge: Vec<u8>,
-                    addr: SocketAddr,
-                }
-
-                defer_next_req.push(Defer {
-                    challenge: challenge,
-                    addr: n.address.0.clone(),
-                });
-            }
-
-            // Process received value
-            if let (Some(value), FindGoal::Identity(goal_identity)) = (content.value, goal) {
-                shed!{
-                    let found_published;
-                    match &value {
-                        stored::announcement::Announcement::V1(found) => {
-                            let Ok(content) = found.verify(&goal_identity) else {
-                                log.log(loga::DEBUG, "Got value with bad signature");
-                                break;
-                            };
-                            found_published = content.announced;
-                        },
-                    }
-                    match &mut state.value {
-                        Some(state_value) => {
-                            let have_published;
-                            match state_value {
-                                stored::announcement::Announcement::V1(have_value) => {
-                                    have_published = have_value.parse_unwrap().announced;
-                                },
-                            }
-                            if have_published >= found_published {
-                                log.log_with(
-                                    loga::DEBUG,
-                                    "Received value older than one we already have",
-                                    ea!(
-                                        have_published = have_published.dbg_str(),
-                                        found_published = found_published.dbg_str()
-                                    ),
-                                );
-                                break;
-                            }
-                        },
-                        _ => (),
-                    }
-                    log.log_with(
-                        loga::DEBUG,
-                        "Found better value for find, replacing",
-                        ea!(old = state.value.dbg_str(), new = state.value.dbg_str(), goal = state.goal.dbg_str()),
-                    );
-                    state.value = Some(value);
-                };
-            }
-
-            // If done, cleanup or else update timeouts
-            if state.outstanding.is_empty() {
-                // Remove outstanding state to complete it
-                Some(state_entry.remove())
-            } else {
-                // New things to do, bump updated time and re-queue
-                state.updated = Instant::now();
-                match self.0.find_timeouts.unbounded_send(NextFindTimeout {
-                    updated: state.updated,
-                    key: (state.goal.clone(), state.req_id),
-                }) {
-                    Ok(_) => { },
-                    Err(e) => {
-                        let e = e.into_send_error();
-                        if e.is_disconnected() {
-                            // nop
-                        } else if e.is_full() {
-                            unreachable!();
-                        } else {
-                            unreachable!();
-                        }
-                    },
-                };
-                None
-            }
-        };
-
-        // Send deferred messages now that locks are released
-        if let Some(addr) = transfer_stored_addr {
-            let mut store = HashMap::new();
-            {
-                let lock = self.0.store.lock().unwrap();
-                store.extend(lock.iter().map(|(k, v)| (k.clone(), v.value.clone())));
-            }
-            for (k, v) in store.into_iter() {
-                connect_send_message(
-                    &log,
-                    addr,
-                    wire::node::Protocol::V1(wire::node::latest::Message::Store(wire::node::latest::StoreRequest {
-                        key: k,
-                        value: v,
-                    })),
-                ).await;
-            }
-        }
-        if let Some(s) = state {
-            self.complete_state(s).await;
-        }
-        for d in defer_next_req {
-            connect_send_message(
-                &log,
-                d.addr,
-                wire::node::Protocol::V1(wire::node::latest::Message::FindRequest(wire::node::latest::FindRequest {
-                    challenge: d.challenge,
-                    goal: goal,
-                    sender: self.0.own_ident.clone(),
-                })),
-            ).await;
         }
     }
 
@@ -1380,15 +1417,14 @@ impl Node {
         conn: &mut TcpStream,
         peer: SocketAddr,
     ) -> Result<(), loga::Error> {
-        let log = self.0.log.fork(ea!(message = m.dbg_str()));
+        let log = self.0.log.fork(ea!(message = m.dbg_str(), peer = peer));
         log.log(loga::DEBUG, "Received");
         match m {
             wire::node::Protocol::V1(v1) => match v1 {
-                wire::node::latest::Message::FindRequest(m) => {
+                wire::node::latest::Message::Find(m) => {
                     let body = wire::node::latest::FindResponseContent {
                         challenge: m.challenge,
                         goal: m.goal,
-                        sender: self.0.own_ident.clone(),
                         nodes: self.get_closest_peers(match m.goal {
                             FindGoal::Coord(c) => c,
                             FindGoal::Identity(i) => ident_coord(&i),
@@ -1400,28 +1436,19 @@ impl Node {
                             break self.0.store.lock().unwrap().get(&ident).map(|v| v.value.clone());
                         },
                     };
-                    send_message(
-                        &log,
-                        conn,
-                        wire::node::Protocol::V1(
-                            wire::node::latest::Message::FindResponse(wire::node::latest::FindResponse {
-                                sender: self.0.own_ident.clone(),
-                                content: <wire
-                                ::node
-                                ::latest
-                                ::BincodeSignature<wire::node::latest::FindResponseContent, NodeIdentity>>::sign(
-                                    &self.0.own_secret,
-                                    body,
-                                ),
-                            }),
+                    send_message(conn, bincode::serialize(&wire::node::latest::FindResponse {
+                        sender: self.0.own_ident.clone(),
+                        content: <wire
+                        ::node
+                        ::latest
+                        ::BincodeSignature<wire::node::latest::FindResponseContent, NodeIdentity>>::sign(
+                            &self.0.own_secret,
+                            body,
                         ),
-                    ).await;
+                    }).unwrap()).await.log(&self.0.log, loga::DEBUG, "Error replying to find");
                     if self.add_good_node(m.sender.clone(), None) {
                         self.start_challenge(m.sender, peer).await;
                     }
-                },
-                wire::node::latest::Message::FindResponse(m) => {
-                    self.handle_find_resp(m).await;
                 },
                 wire::node::latest::Message::Store(m) => {
                     log.log_with(loga::DEBUG, "Storing", ea!(value = m.key.dbg_str()));
@@ -1467,34 +1494,16 @@ impl Node {
                         },
                     };
                 },
-                wire::node::latest::Message::Ping => {
-                    send_message(
-                        &log,
-                        conn,
-                        wire::node::Protocol::V1(wire::node::latest::Message::Pung(self.0.own_ident.clone())),
-                    ).await;
-                },
-                wire::node::latest::Message::Pung(k) => {
-                    let state = match self.0.ping_states.lock().unwrap().entry(k.clone()) {
-                        Entry::Occupied(s) => s.remove(),
-                        Entry::Vacant(_) => return Ok(()),
-                    };
-                    self.set_node_unresponsive(k, state.bucket_i, false);
+                wire::node::latest::Message::Ping(_) => {
+                    send_message(conn, bincode::serialize(&self.0.own_ident).unwrap())
+                        .await
+                        .log(&self.0.log, loga::DEBUG, "Error replying to ping");
                 },
                 wire::node::latest::Message::Challenge(challenge) => {
-                    send_message(
-                        &log,
-                        conn,
-                        wire::node::Protocol::V1(
-                            wire::node::latest::Message::ChallengeResponse(wire::node::latest::ChallengeResponse {
-                                sender: self.0.own_ident.clone(),
-                                signature: self.0.own_secret.sign(&challenge),
-                            }),
-                        ),
-                    ).await;
-                },
-                wire::node::latest::Message::ChallengeResponse(resp) => {
-                    self.handle_challenge_resp(resp).await;
+                    send_message(conn, bincode::serialize(&wire::node::latest::ChallengeResponse {
+                        sender: self.0.own_ident.clone(),
+                        signature: self.0.own_secret.sign(&challenge.0),
+                    }).unwrap()).await.log(&self.0.log, loga::DEBUG, "Error replying to challenge");
                 },
             },
         };
