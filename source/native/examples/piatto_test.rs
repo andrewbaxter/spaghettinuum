@@ -64,17 +64,18 @@ async fn main() {
     async fn inner() -> Result<(), loga::Error> {
         let root = current_dir().unwrap().join("piatto_test");
         create_dir_all(&root).await.unwrap();
-        let tm = taskmanager::TaskManager::new();
         let mut nodes = vec![];
         let mut prev_node = None;
+        let tm = taskmanager::TaskManager::new();
         for i in 0 .. 1000 {
             let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 1, 1).saturating_add(i), 43890));
             let path = root.join(format!("node_{}", i));
+            let tm1 = tm.sub(format!("task{}", i));
             create_dir_all(&path).await.unwrap();
             let node =
                 Node::new(
                     &Log::new(),
-                    &tm,
+                    &tm1,
                     StrSocketAddr::from(addr.clone()),
                     &prev_node.take().map(|(addr, id)| NodeInfo {
                         address: addr,

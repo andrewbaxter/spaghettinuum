@@ -173,8 +173,9 @@ async fn send_message<S: Unpin + AsyncWrite + AsyncRead>(s: &mut S, message: Vec
 
 async fn connect_send_req<M: wire::node::latest::Req>(log: &Log, dest: SocketAddr, message: M) {
     let log = log.fork(ea!(peer = dest));
-    let message = wire::node::Protocol::V1(message.into_req()).to_bytes();
-    log.log_with(loga::DEBUG, "Sending", ea!(message = String::from_utf8_lossy(&message)));
+    let message = wire::node::Protocol::V1(message.into_req());
+    log.log_with(loga::DEBUG, "Sending", ea!(message = message.dbg_str()));
+    let message = message.to_bytes();
     match async {
         ta_res!(());
         let mut s =
@@ -199,10 +200,11 @@ fn connect_send_req_resp<
     N: 'static + Send + FnOnce(M::Resp) -> F,
 >(log: &Log, dest: SocketAddr, message: M, handle_resp: N) {
     let log = log.fork(ea!(peer = dest));
-    let message = wire::node::Protocol::V1(message.into_req()).to_bytes();
+    let message = wire::node::Protocol::V1(message.into_req());
+    log.log_with(loga::DEBUG, "Sending", ea!(message = message.dbg_str()));
+    let message = message.to_bytes();
     spawn(async move {
         match async {
-            log.log_with(loga::DEBUG, "Sending", ea!(message = String::from_utf8_lossy(&message)));
             let mut s =
                 timeout(Duration::from_secs(10), TcpStream::connect(dest).map_err(loga::err))
                     .await
