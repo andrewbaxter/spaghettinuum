@@ -19,7 +19,7 @@ docsrs = []
 
 [dependencies]
 manual_future = "0.1"
-rand = "0.8"
+rand = "0.9"
 generic-array = "0.14"
 array-init = "2"
 futures = "0.3"
