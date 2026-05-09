@@ -5,7 +5,7 @@ use {
         Pool,
         Runtime,
     },
-    good_ormning_runtime::GoodError,
+    good_ormning::runtime::GoodError,
     loga::{
         ea,
         ErrContext,
@@ -17,10 +17,9 @@ use {
     tokio::fs::create_dir_all,
 };
 
-pub async fn setup_db(
-    p: &Path,
-    migrate: fn(&mut rusqlite::Connection) -> Result<(), GoodError>,
-) -> Result<Pool, loga::Error> {
+pub async fn setup_db<
+    F: Send + 'static + FnOnce(&mut rusqlite::Connection) -> Result<(), GoodError>,
+>(p: &Path, migrate: F) -> Result<Pool, loga::Error> {
     let log = &Log::new().fork(ea!(path = p.to_string_lossy()));
     if let Some(parent) = p.parent() {
         create_dir_all(parent).await.stack_context(log, "Error creating parent directories for database")?;

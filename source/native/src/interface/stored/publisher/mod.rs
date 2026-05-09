@@ -1,7 +1,9 @@
-use good_ormning_runtime::sqlite::GoodOrmningCustomString;
-use serde::{
-    Deserialize,
-    Serialize,
+use {
+    good_ormning::runtime::sqlite::GoodOrmningCustomString,
+    serde::{
+        Deserialize,
+        Serialize,
+    },
 };
 
 pub mod v1;

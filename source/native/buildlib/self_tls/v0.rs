@@ -1,70 +1,20 @@
 use good_ormning::sqlite::{
     Version,
-    Query,
-    schema::{
-        field::{
-            field_str,
-            field_i32,
-        },
-        constraint::{
-            ConstraintType,
-            PrimaryKeyDef,
-        },
-    },
-    query::{
-        insert::InsertConflict,
-        expr::Expr,
-        helpers::{
-            set_field,
-        },
-    },
-    new_insert,
-    QueryResCount,
-    new_update,
-    new_select,
+    schema::field::field_i32,
+    types::type_str,
 };
 
-pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
-    let mut v_ = Version::default();
-    let v = &mut v_;
-    let singleton_api_certs = v.table("z488Y1LA8", "singleton_api_certs");
-    let singleton_unique = singleton_api_certs.field(v, "zO911YAXM", "unique", field_i32().build());
-    let singleton_state =
-        singleton_api_certs.field(
-            v,
-            "z6FBFBQ15",
-            "state",
-            field_str().custom("crate::interface::stored::self_tls::RefreshTlsState").opt().build(),
-        );
-    singleton_api_certs.constraint(
-        v,
-        "zFUG0I2A0",
-        "singleton_unique",
-        ConstraintType::PrimaryKey(PrimaryKeyDef { fields: vec![singleton_unique.clone()] }),
-    );
-    if let Some(queries) = &mut queries {
-        queries.push(
-            new_insert(
-                &singleton_api_certs,
-                vec![
-                    (singleton_unique.clone(), Expr::LitI32(0)),
-                    (singleton_state.clone(), Expr::LitNull(singleton_state.0.type_.type_.type_.clone()))
-                ],
-            )
-                .on_conflict(InsertConflict::DoNothing)
-                .build_query("api_certs_setup", QueryResCount::None),
-        );
-        queries.push(
-            new_select(&singleton_api_certs)
-                .return_field(&singleton_state)
-                .build_query("api_certs_get", QueryResCount::One),
-        );
-        queries.push(
-            new_update(
-                &singleton_api_certs,
-                vec![set_field("state", &singleton_state)],
-            ).build_query("api_certs_set", QueryResCount::None),
-        );
-    }
-    return v_;
+pub fn build() -> Version {
+    let v = Version::new();
+    let singleton_api_certs = v.table("singleton_api_certs");
+    let singleton_unique = singleton_api_certs.field("unique", field_i32().build());
+    let state_type =
+        v
+            .custom_type("RefreshTlsState")
+            .rust_type("crate::interface::stored::self_tls::RefreshTlsState")
+            .base_type(type_str().opt().build())
+            .field_type();
+    singleton_api_certs.field("state", state_type);
+    singleton_api_certs.primary_key("singleton_unique", &[&singleton_unique]);
+    return v.build();
 }

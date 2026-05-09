@@ -117,7 +117,7 @@ use {
     },
 };
 
-pub mod db;
+good_ormning::good_module!(pub db, "node");
 
 const MESSAGE_SIZE_LIMIT: u64 = 10 * 1024 * 1024;
 const TIMEOUT_SECS: u64 = 10;
@@ -473,35 +473,71 @@ impl Node {
             addrs: HashMap::new(),
         };
         let db_pool =
-            setup_db(&cache_dir.join("node.sqlite3"), db::migrate)
+            setup_db(&cache_dir.join("node.sqlite3"), |conn| db::migrate(conn, None).map(|_| ()))
                 .await
                 .stack_context(log, "Error initializing database")?;
         let db = db_pool.get().await.stack_context(log, "Error getting database connection")?;
         let (own_ident, own_secret) =
             db
-                .interact(
-                    |conn| -> Result<(NodeIdentity, node_identity::NodeSecret), good_ormning_runtime::GoodError> {
-                        match db::secret_get(conn)? {
-                            Some(s) => return Ok((s.get_identity(), s)),
-                            None => {
-                                let (own_ident, own_secret) = node_identity::NodeIdentity::new();
-                                db::secret_ensure(conn, &own_secret)?;
-                                return Ok((own_ident, own_secret));
-                            },
-                        }
-                    },
-                )
+                .interact(|conn| {
+                    let mut db = db::DbNode(conn);
+
+                    //# genemichaels-external: sql-formatter-sqlite
+                    let secret_row = good_ormning::sqlite::good_query_opt!(
+                        db,
+                        "node",
+                        "SELECT secret FROM secret";
+                        &mut db
+                    )?;
+                    match secret_row {
+                        Some(row) => return Ok((row.get_identity(), row)) as
+                            Result<_, good_ormning::runtime::GoodError>,
+                        None => {
+                            let (own_ident, own_secret) = node_identity::NodeIdentity::new();
+
+                            //# genemichaels-external: sql-formatter-sqlite
+                            good_ormning::sqlite::good_query!(
+                                db,
+                                "node",
+                                "DELETE FROM secret";
+                                &mut db
+                            )?;
+
+                            //# genemichaels-external: sql-formatter-sqlite
+                            good_ormning::sqlite::good_query!(
+                                db,
+                                "node",
+                                "INSERT INTO secret (\"unique\", secret) VALUES (0, $1)";
+                                &mut db,
+                                p1: NodeSecret = & own_secret
+                            )?;
+                            return Ok((own_ident, own_secret));
+                        },
+                    }
+                })
                 .await
                 .stack_context(log, "Error interacting with database")?
                 .stack_context(log, "Error retrieving secret")?;
         log.log_with(loga::INFO, "Starting", ea!(own_node_ident = own_ident));
         let own_coord = node_ident_coord(&own_ident);
         {
-            for e in db
-                .interact(|conn| db::neighbors_get(&conn))
-                .await
-                .stack_context(log, "Error interacting with database")?
-                .stack_context(log, "Error retrieving old neighbors")? {
+            let neighbor_rows =
+                db
+                    .interact(|conn| {
+                        let mut db = db::DbNode(conn);
+
+                        //# genemichaels-external: sql-formatter-sqlite
+                        good_ormning::sqlite::good_query_many!(
+                            db,
+                            "node",
+                            "SELECT neighbor FROM neighbors";
+                            &mut db
+                        )
+                    })
+                    .await
+                    .stack_context(log, "Error interacting with database")?
+                    .stack_context(log, "Error retrieving old neighbors")?;
+            for e in neighbor_rows {
                 let state = match e {
                     wire::node::NodeState::V1(s) => s,
                 };
@@ -571,11 +607,44 @@ impl Node {
             let db_pool = db_pool.clone();
             match async {
                 db_pool.get().await.context("Error getting db connection")?.interact(move |conn| {
-                    db::secret_ensure(conn, &dir.0.own_secret)?;
-                    db::neighbors_clear(conn)?;
+                    let mut db = db::DbNode(conn);
+
+                    //# genemichaels-external: sql-formatter-sqlite
+                    good_ormning::sqlite::good_query!(
+                        db,
+                        "node",
+                        "DELETE FROM secret";
+                        &mut db
+                    )?;
+
+                    //# genemichaels-external: sql-formatter-sqlite
+                    good_ormning::sqlite::good_query!(
+                        db,
+                        "node",
+                        "INSERT INTO secret (\"unique\", secret) VALUES (0, $1)";
+                        &mut db,
+                        p1: NodeSecret = & dir.0.own_secret
+                    )?;
+
+                    //# genemichaels-external: sql-formatter-sqlite
+                    good_ormning::sqlite::good_query!(
+                        db,
+                        "node",
+                        "DELETE FROM neighbors";
+                        &mut db
+                    )?;
                     for bucket in dir.0.buckets.lock().unwrap().buckets.clone().into_iter() {
                         for n in bucket {
-                            db::neighbors_insert(conn, &wire::node::NodeState::V1(n))?;
+                            let state = wire::node::NodeState::V1(n);
+
+                            //# genemichaels-external: sql-formatter-sqlite
+                            good_ormning::sqlite::good_query!(
+                                db,
+                                "node",
+                                "INSERT INTO neighbors (neighbor) VALUES ($1)";
+                                &mut db,
+                                p1: NodeState = & state
+                            )?;
                         }
                     }
                     return Ok(()) as Result<_, loga::Error>;

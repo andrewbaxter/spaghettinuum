@@ -81,7 +81,7 @@ use {
     tower_service::Service,
 };
 
-pub mod db;
+good_ormning::good_module!(pub db, "resolver");
 pub mod dns;
 
 #[derive(Debug)]
@@ -181,7 +181,7 @@ impl Resolver {
         publisher: Option<(SocketAddr, Arc<Publisher>)>,
     ) -> Result<Resolver, loga::Error> {
         let db_pool =
-            setup_db(&cache_dir.join("resolver.sqlite3"), db::migrate)
+            setup_db(&cache_dir.join("resolver.sqlite3"), |conn| db::migrate(conn, None).map(|_| ()))
                 .await
                 .stack_context(log, "Error initializing database")?;
         let cache = Cache::builder().weigher(|_key, pair: &(SystemTime, Option<String>)| -> u32 {
@@ -202,7 +202,18 @@ impl Resolver {
                         .get()
                         .await
                         .stack_context(log, "Error gettting db connection")?
-                        .interact(move |db| db::cache_list(db, e))
+                        .interact(move |conn| {
+                            let mut db = db::DbResolver(conn);
+
+                            //# genemichaels-external: sql-formatter-sqlite
+                            good_ormning::sqlite::good_query_many!(
+                                db,
+                                "resolver",
+                                "SELECT rowid, identity, key, expires, value FROM cache_persist WHERE rowid < $1 ORDER BY rowid DESC LIMIT 50";
+                                &mut db,
+                                p1: i64 = e
+                            )
+                        })
                         .await?? {
                         edge = Some(row.rowid);
                         cache
@@ -241,15 +252,31 @@ impl Resolver {
                     tm1.until_terminate().await;
                     db_pool.get().await.stack_context(log, "Error gettting db connection")?.interact({
                         let cache = cache.clone();
-                        move |db| {
-                            db::cache_clear(db)?;
+                        move |conn| {
+                            let mut db = db::DbResolver(conn);
+
+                            //# genemichaels-external: sql-formatter-sqlite
+                            good_ormning::sqlite::good_query!(
+                                db,
+                                "resolver",
+                                "DELETE FROM cache_persist";
+                                &mut db
+                            )?;
                             for (k, v) in cache.iter() {
-                                db::cache_push(
+                                let db_identity = DbIdentity(k.0.clone());
+                                let key = join_record_key(&k.1);
+                                let expires: crate::utils::time_util::UtcSecs = v.0.into();
+
+                                //# genemichaels-external: sql-formatter-sqlite
+                                good_ormning::sqlite::good_query!(
                                     db,
-                                    &DbIdentity(k.0.clone()),
-                                    &join_record_key(&k.1),
-                                    &v.0.into(),
-                                    v.1.as_ref().map(|v| v.as_str()),
+                                    "resolver",
+                                    "INSERT INTO cache_persist (identity, key, expires, value) VALUES ($1, $2, $3, $4)";
+                                    &mut db,
+                                    p1: ident = & db_identity,
+                                    p2: string = key.as_str(),
+                                    p3: UtcSecs = & expires,
+                                    p4: opt string = v.1.as_ref().map(|v| v.as_str())
                                 )?;
                             }
                             return Ok(()) as Result<_, loga::Error>;

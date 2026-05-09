@@ -1,5 +1,5 @@
 use {
-    good_ormning_runtime::sqlite::GoodOrmningCustomString,
+    good_ormning::runtime::sqlite::GoodOrmningCustomString,
     schemars::{
         json_schema,
         JsonSchema,

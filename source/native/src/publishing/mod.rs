@@ -41,11 +41,7 @@ pub fn system_publisher_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
             ).map_err(
                 |x| loga::err_with(
                     "Publishers env var isn't valid utf-8",
-                    ea!(
-                        err = x.utf8_error(),
-                        env = ENV_PUBLISHER_URLS,
-                        value = String::from_utf8_lossy(x.as_bytes())
-                    ),
+                    ea!(err = x.utf8_error(), env = ENV_PUBLISHER_URLS, value = String::from_utf8_lossy(x.as_bytes())),
                 ),
             )?;
         let mut publishers = HashSet::new();

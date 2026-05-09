@@ -196,14 +196,16 @@ impl<'t> Deserialize<'t> for AdnSocketAddr {
 
 #[cfg(test)]
 mod test_adn_socket_addr {
-    use std::{
-        net::{
-            Ipv4Addr,
-            Ipv6Addr,
+    use {
+        std::{
+            net::{
+                Ipv4Addr,
+                Ipv6Addr,
+            },
+            str::FromStr,
         },
-        str::FromStr,
+        super::AdnSocketAddr,
     };
-    use super::AdnSocketAddr;
 
     #[test]
     fn adn_socket_addr_roundtrip_ipv4() {

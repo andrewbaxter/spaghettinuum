@@ -151,9 +151,7 @@ pub async fn start_dns_bridge(
                     match request.query().query_type() {
                         hickory_proto::rr::RecordType::A => {
                             for n in &self1.global_ipv4 {
-                                answers.push(
-                                    Record::from_rdata(request.query().name().into(), 60, RData::A(A(*n))),
-                                );
+                                answers.push(Record::from_rdata(request.query().name().into(), 60, RData::A(A(*n))),);
                             }
                         },
                         hickory_proto::rr::RecordType::AAAA => {

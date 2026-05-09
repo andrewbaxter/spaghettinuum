@@ -1,13 +1,15 @@
-use std::net::{
-    IpAddr,
-    Ipv4Addr,
-    Ipv6Addr,
-    SocketAddr,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-    Serializer,
+use {
+    serde::{
+        Deserialize,
+        Serialize,
+        Serializer,
+    },
+    std::net::{
+        IpAddr,
+        Ipv4Addr,
+        Ipv6Addr,
+        SocketAddr,
+    },
 };
 
 #[derive(Serialize, Deserialize)]

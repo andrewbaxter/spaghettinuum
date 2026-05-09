@@ -1,5 +1,5 @@
 use {
-    good_ormning_runtime::sqlite::GoodOrmningCustomI64,
+    good_ormning::runtime::sqlite::GoodOrmningCustomI64,
     schemars::JsonSchema,
     serde::{
         Deserialize,

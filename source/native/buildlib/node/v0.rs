@@ -1,68 +1,32 @@
 use good_ormning::sqlite::{
     Version,
-    Query,
-    schema::field::{
-        field_str,
-        field_i32,
-    },
-    query::{
-        insert::InsertConflict,
-        expr::Expr,
-        helpers::set_field,
-    },
-    new_insert,
-    QueryResCount,
-    new_select,
-    new_delete,
+    schema::field::field_i32,
+    types::type_str,
 };
 
-pub fn build(mut queries: Option<&mut Vec<Query>>) -> Version {
-    let mut v_ = Version::default();
-    let v = &mut v_;
+pub fn build() -> Version {
+    let v = Version::new();
 
-    // Persisted node scret, maybe avoid some reliability churn
-    let secret = v.table("z8OGO6MLD", "secret");
-    let secret_unique = secret.field(v, "zWX8E3UUW", "unique", field_i32().build());
-    let secret_secret =
-        secret.field(
-            v,
-            "zNNMCRDDB",
-            "secret",
-            field_str().custom("crate::interface::stored::node_identity::NodeSecret").build(),
-        );
-    if let Some(queries) = &mut queries {
-        queries.push(
-            new_insert(&secret, vec![(secret_unique.clone(), Expr::LitI32(0)), set_field("secret", &secret_secret)])
-                .on_conflict(InsertConflict::DoUpdate(vec![set_field("secret", &secret_secret)]))
-                .build_query("secret_ensure", QueryResCount::None),
-        );
-        queries.push(
-            new_select(&secret).return_field(&secret_secret).build_query("secret_get", QueryResCount::MaybeOne),
-        );
-    }
+    // Persisted node secret, maybe avoid some reliability churn
+    let secret = v.table("secret");
+    let secret_unique = secret.field("unique", field_i32().build());
+    let node_secret_type =
+        v
+            .custom_type("NodeSecret")
+            .rust_type("crate::interface::stored::node_identity::NodeSecret")
+            .base_type(type_str().build())
+            .field_type();
+    secret.field("secret", node_secret_type);
+    secret.primary_key("secret_pk", &[&secret_unique]);
 
-    // Persistend neighbors
-    let neighbors = v.table("zDY20L3FM", "neighbors");
-    let neighbors_neighbor =
-        neighbors.field(
-            v,
-            "zF8F58Y52",
-            "neighbor",
-            field_str().custom("crate::interface::wire::node::NodeState").build(),
-        );
-    if let Some(queries) = &mut queries {
-        queries.push(
-            new_insert(
-                &neighbors,
-                vec![set_field("neighbor", &neighbors_neighbor)],
-            ).build_query("neighbors_insert", QueryResCount::None),
-        );
-        queries.push(new_delete(&neighbors).build_query("neighbors_clear", QueryResCount::None));
-        queries.push(
-            new_select(&neighbors)
-                .return_fields(&[&neighbors_neighbor])
-                .build_query("neighbors_get", QueryResCount::Many),
-        );
-    }
-    return v_;
+    // Persisted neighbors
+    let neighbors = v.table("neighbors");
+    let node_state_type =
+        v
+            .custom_type("NodeState")
+            .rust_type("crate::interface::wire::node::NodeState")
+            .base_type(type_str().build())
+            .field_type();
+    neighbors.field("neighbor", node_state_type);
+    return v.build();
 }

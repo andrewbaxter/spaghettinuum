@@ -1,1 +1,0 @@
-include!(concat!(env!("OUT_DIR"), "/src/service/publisher/db.rs"));

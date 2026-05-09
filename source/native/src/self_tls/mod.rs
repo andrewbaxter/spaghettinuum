@@ -120,7 +120,7 @@ use {
     x509_cert::spki::SubjectPublicKeyInfoOwned,
 };
 
-pub mod db;
+good_ormning::good_module!(pub db, "self_tls");
 
 pub const CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";
 
@@ -331,11 +331,36 @@ pub async fn stream_persistent_certs(
     create_dir_all(cache_dir)
         .await
         .context_with("Error creating htserve cache dir", ea!(path = cache_dir.to_string_lossy()))?;
-    let db_pool = db_util::setup_db(&cache_dir.join("self_tls.sqlite3"), db::migrate).await?;
-    db_pool.tx(|conn| Ok(db::api_certs_setup(conn)?)).await?;
+    let db_pool =
+        db_util::setup_db(
+            &cache_dir.join("self_tls.sqlite3"),
+            |conn| db::migrate(conn, None).map(|_| ()),
+        ).await?;
+    db_pool.tx(|conn| {
+        let mut db = db::DbSelfTls(conn);
+
+        //# genemichaels-external: sql-formatter-sqlite
+        good_ormning::sqlite::good_query!(
+            db,
+            "self_tls",
+            "INSERT OR IGNORE INTO singleton_api_certs (\"unique\", state) VALUES (0, NULL)";
+            &mut db
+        )?;
+        Ok(())
+    }).await?;
 
     // Prepare initial state, either restoring or getting from scratch
-    let state = match db_pool.tx(|conn| Ok(db::api_certs_get(conn)?)).await? {
+    let state = match db_pool.tx(|conn| {
+        let mut db = db::DbSelfTls(conn);
+
+        //# genemichaels-external: sql-formatter-sqlite
+        Ok(good_ormning::sqlite::good_query_one!(
+            db,
+            "self_tls",
+            "SELECT state FROM singleton_api_certs";
+            &mut db
+        )?)
+    }).await? {
         Some(s) => match s {
             stored::self_tls::RefreshTlsState::V1(s) => {
                 s
@@ -365,7 +390,20 @@ pub async fn stream_persistent_certs(
             };
             db_pool.tx({
                 let state = state.clone();
-                move |conn| Ok(db::api_certs_set(conn, Some(&stored::self_tls::RefreshTlsState::V1(state)))?)
+                move |conn| {
+                    let state_val = stored::self_tls::RefreshTlsState::V1(state);
+                    let mut db = db::DbSelfTls(conn);
+
+                    //# genemichaels-external: sql-formatter-sqlite
+                    good_ormning::sqlite::good_query!(
+                        db,
+                        "self_tls",
+                        "UPDATE singleton_api_certs SET state = $1";
+                        &mut db,
+                        p1: opt RefreshTlsState = Some(&state_val)
+                    )?;
+                    Ok(())
+                }
             }).await.context("Error storing fresh initial state")?;
             state
         },
