@@ -338,12 +338,15 @@ pub async fn stream_persistent_certs(
         ).await?;
     db_pool.tx(|conn| {
         let mut db = db::DbSelfTls(conn);
-
-        //# genemichaels-external: sql-formatter-sqlite
         good_ormning::sqlite::good_query!(
             db,
             "self_tls",
-            "INSERT OR IGNORE INTO singleton_api_certs (\"unique\", state) VALUES (0, NULL)";
+            //# genemichaels-external: sql-formatter-sqlite
+            r#"INSERT OR IGNORE INTO
+                 singleton_api_certs ("unique", state)
+               VALUES
+                 (0, NULL)
+               "#;
             &mut db
         )?;
         Ok(())
@@ -352,12 +355,15 @@ pub async fn stream_persistent_certs(
     // Prepare initial state, either restoring or getting from scratch
     let state = match db_pool.tx(|conn| {
         let mut db = db::DbSelfTls(conn);
-
-        //# genemichaels-external: sql-formatter-sqlite
         Ok(good_ormning::sqlite::good_query_one!(
             db,
             "self_tls",
-            "SELECT state FROM singleton_api_certs";
+            //# genemichaels-external: sql-formatter-sqlite
+            r#"SELECT
+                 state
+               FROM
+                 singleton_api_certs
+               "#;
             &mut db
         )?)
     }).await? {
@@ -393,14 +399,15 @@ pub async fn stream_persistent_certs(
                 move |conn| {
                     let state_val = stored::self_tls::RefreshTlsState::V1(state);
                     let mut db = db::DbSelfTls(conn);
-
-                    //# genemichaels-external: sql-formatter-sqlite
                     good_ormning::sqlite::good_query!(
                         db,
                         "self_tls",
-                        "UPDATE singleton_api_certs SET state = $1";
-                        &mut db,
-                        p1: opt RefreshTlsState = Some(&state_val)
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"UPDATE singleton_api_certs
+                           SET
+                             state = ${opt refresh_tls_state =Some(&state_val)}
+                           "#;
+                        &mut db
                     )?;
                     Ok(())
                 }

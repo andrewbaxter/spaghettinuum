@@ -204,14 +204,26 @@ impl Resolver {
                         .stack_context(log, "Error gettting db connection")?
                         .interact(move |conn| {
                             let mut db = db::DbResolver(conn);
-
-                            //# genemichaels-external: sql-formatter-sqlite
                             good_ormning::sqlite::good_query_many!(
                                 db,
                                 "resolver",
-                                "SELECT rowid, identity, key, expires, value FROM cache_persist WHERE rowid < $1 ORDER BY rowid DESC LIMIT 50";
-                                &mut db,
-                                p1: i64 = e
+                                //# genemichaels-external: sql-formatter-sqlite
+                                r#"SELECT
+                                     rowid,
+                                     identity,
+                                     key,
+                                     expires,
+                                     value
+                                   FROM
+                                     cache_persist
+                                   WHERE
+                                     rowid < ${i64 = e}
+                                   ORDER BY
+                                     rowid DESC
+                                   LIMIT
+                                     50
+                                   "#;
+                                &mut db
                             )
                         })
                         .await?? {
@@ -254,29 +266,33 @@ impl Resolver {
                         let cache = cache.clone();
                         move |conn| {
                             let mut db = db::DbResolver(conn);
-
-                            //# genemichaels-external: sql-formatter-sqlite
                             good_ormning::sqlite::good_query!(
                                 db,
                                 "resolver",
-                                "DELETE FROM cache_persist";
+                                //# genemichaels-external: sql-formatter-sqlite
+                                r#"DELETE FROM cache_persist
+                                   "#;
                                 &mut db
                             )?;
                             for (k, v) in cache.iter() {
                                 let db_identity = DbIdentity(k.0.clone());
                                 let key = join_record_key(&k.1);
                                 let expires: crate::utils::time_util::UtcSecs = v.0.into();
-
-                                //# genemichaels-external: sql-formatter-sqlite
                                 good_ormning::sqlite::good_query!(
                                     db,
                                     "resolver",
-                                    "INSERT INTO cache_persist (identity, key, expires, value) VALUES ($1, $2, $3, $4)";
-                                    &mut db,
-                                    p1: ident = & db_identity,
-                                    p2: string = key.as_str(),
-                                    p3: UtcSecs = & expires,
-                                    p4: opt string = v.1.as_ref().map(|v| v.as_str())
+                                    //# genemichaels-external: sql-formatter-sqlite
+                                    r#"INSERT INTO
+                                         cache_persist (identity, key, expires, value)
+                                       VALUES
+                                         (
+                                           ${ident = &db_identity},
+                                           ${string = key.as_str()},
+                                           ${utc_secs =&expires},
+                                           ${opt string = v.1.as_ref().map(|v| v.as_str())}
+                                         )
+                                       "#;
+                                    &mut db
                                 )?;
                             }
                             return Ok(()) as Result<_, loga::Error>;

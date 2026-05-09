@@ -481,12 +481,15 @@ impl Node {
             db
                 .interact(|conn| {
                     let mut db = db::DbNode(conn);
-
-                    //# genemichaels-external: sql-formatter-sqlite
                     let secret_row = good_ormning::sqlite::good_query_opt!(
                         db,
                         "node",
-                        "SELECT secret FROM secret";
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"SELECT
+                             secret
+                           FROM
+                             secret
+                           "#;
                         &mut db
                     )?;
                     match secret_row {
@@ -494,22 +497,24 @@ impl Node {
                             Result<_, good_ormning::runtime::GoodError>,
                         None => {
                             let (own_ident, own_secret) = node_identity::NodeIdentity::new();
-
-                            //# genemichaels-external: sql-formatter-sqlite
                             good_ormning::sqlite::good_query!(
                                 db,
                                 "node",
-                                "DELETE FROM secret";
+                                //# genemichaels-external: sql-formatter-sqlite
+                                r#"DELETE FROM secret
+                                   "#;
                                 &mut db
                             )?;
-
-                            //# genemichaels-external: sql-formatter-sqlite
                             good_ormning::sqlite::good_query!(
                                 db,
                                 "node",
-                                "INSERT INTO secret (\"unique\", secret) VALUES (0, $1)";
-                                &mut db,
-                                p1: NodeSecret = & own_secret
+                                //# genemichaels-external: sql-formatter-sqlite
+                                r#"INSERT INTO
+                                     secret ("unique", secret)
+                                   VALUES
+                                     (0, ${node_secret =&own_secret})
+                                   "#;
+                                &mut db
                             )?;
                             return Ok((own_ident, own_secret));
                         },
@@ -525,12 +530,15 @@ impl Node {
                 db
                     .interact(|conn| {
                         let mut db = db::DbNode(conn);
-
-                        //# genemichaels-external: sql-formatter-sqlite
                         good_ormning::sqlite::good_query_many!(
                             db,
                             "node",
-                            "SELECT neighbor FROM neighbors";
+                            //# genemichaels-external: sql-formatter-sqlite
+                            r#"SELECT
+                                 neighbor
+                               FROM
+                                 neighbors
+                               "#;
                             &mut db
                         )
                     })
@@ -608,42 +616,46 @@ impl Node {
             match async {
                 db_pool.get().await.context("Error getting db connection")?.interact(move |conn| {
                     let mut db = db::DbNode(conn);
-
-                    //# genemichaels-external: sql-formatter-sqlite
                     good_ormning::sqlite::good_query!(
                         db,
                         "node",
-                        "DELETE FROM secret";
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"DELETE FROM secret
+                           "#;
                         &mut db
                     )?;
-
-                    //# genemichaels-external: sql-formatter-sqlite
                     good_ormning::sqlite::good_query!(
                         db,
                         "node",
-                        "INSERT INTO secret (\"unique\", secret) VALUES (0, $1)";
-                        &mut db,
-                        p1: NodeSecret = & dir.0.own_secret
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"INSERT INTO
+                             secret ("unique", secret)
+                           VALUES
+                             (0, ${node_secret =&dir.0.own_secret})
+                           "#;
+                        &mut db
                     )?;
-
-                    //# genemichaels-external: sql-formatter-sqlite
                     good_ormning::sqlite::good_query!(
                         db,
                         "node",
-                        "DELETE FROM neighbors";
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"DELETE FROM neighbors
+                           "#;
                         &mut db
                     )?;
                     for bucket in dir.0.buckets.lock().unwrap().buckets.clone().into_iter() {
                         for n in bucket {
                             let state = wire::node::NodeState::V1(n);
-
-                            //# genemichaels-external: sql-formatter-sqlite
                             good_ormning::sqlite::good_query!(
                                 db,
                                 "node",
-                                "INSERT INTO neighbors (neighbor) VALUES ($1)";
-                                &mut db,
-                                p1: NodeState = & state
+                                //# genemichaels-external: sql-formatter-sqlite
+                                r#"INSERT INTO
+                                     neighbors (neighbor)
+                                   VALUES
+                                     (${node_state =&state})
+                                   "#;
+                                &mut db
                             )?;
                         }
                     }

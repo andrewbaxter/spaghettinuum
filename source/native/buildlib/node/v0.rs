@@ -12,7 +12,7 @@ pub fn build() -> Version {
     let secret_unique = secret.field("unique", field_i32().build());
     let node_secret_type =
         v
-            .custom_type("NodeSecret")
+            .custom_type("node_secret")
             .rust_type("crate::interface::stored::node_identity::NodeSecret")
             .base_type(type_str().build())
             .field_type();
@@ -23,7 +23,7 @@ pub fn build() -> Version {
     let neighbors = v.table("neighbors");
     let node_state_type =
         v
-            .custom_type("NodeState")
+            .custom_type("node_state")
             .rust_type("crate::interface::wire::node::NodeState")
             .base_type(type_str().build())
             .field_type();

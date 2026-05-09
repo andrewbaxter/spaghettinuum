@@ -18,13 +18,13 @@ pub fn build() -> Version {
     let certs = v.table("certs");
     let certs_unique = certs.field("unique", field_i32().build());
     v
-        .custom_type("Certs")
+        .custom_type("certs")
         .rust_type("crate::interface::stored::publisher::Certs")
         .base_type(type_str().build());
     certs.field(
         "certs",
         v
-            .custom_type("Certs")
+            .custom_type("certs")
             .rust_type("crate::interface::stored::publisher::Certs")
             .base_type(type_str().build())
             .field_type(),
@@ -35,13 +35,13 @@ pub fn build() -> Version {
     let announce = v.table("announce");
     let announce_ident = announce.field("identity", field_ident(&v));
     v
-        .custom_type("Announcement")
+        .custom_type("announcement")
         .rust_type("crate::interface::stored::announcement::Announcement")
         .base_type(type_str().build());
     announce.field(
         "value",
         v
-            .custom_type("Announcement")
+            .custom_type("announcement")
             .rust_type("crate::interface::stored::announcement::Announcement")
             .base_type(type_str().build())
             .field_type(),
@@ -62,13 +62,13 @@ pub fn build() -> Version {
         let publish_ident = publish.field("identity", field_ident(&v));
         let publish_key = publish.field("key", field_str().build());
         v
-            .custom_type("RecordValue")
+            .custom_type("record_value")
             .rust_type("crate::interface::stored::record::RecordValue")
             .base_type(type_str().build());
         publish.field(
             "values",
             v
-                .custom_type("RecordValue")
+                .custom_type("record_value")
                 .rust_type("crate::interface::stored::record::RecordValue")
                 .base_type(type_str().build())
                 .field_type(),

@@ -146,12 +146,15 @@ impl Publisher {
         let certs = {
             match db_pool.tx(|conn| {
                 let mut db = db::DbPublisher(conn);
-
-                //# genemichaels-external: sql-formatter-sqlite
                 Ok(good_ormning::sqlite::good_query_opt!(
                     db,
                     "publisher",
-                    "SELECT certs FROM certs";
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"SELECT
+                         certs
+                       FROM
+                         certs
+                       "#;
                     &mut db
                 )?)
             }).await.stack_context(log, "Error looking up certs")? {
@@ -180,22 +183,24 @@ impl Publisher {
                         move |conn| {
                             let certs_val = stored::publisher::Certs::V1(certs.clone());
                             let mut db = db::DbPublisher(conn);
-
-                            //# genemichaels-external: sql-formatter-sqlite
                             good_ormning::sqlite::good_query!(
                                 db,
                                 "publisher",
-                                "DELETE FROM certs";
+                                //# genemichaels-external: sql-formatter-sqlite
+                                r#"DELETE FROM certs
+                                   "#;
                                 &mut db
                             )?;
-
-                            //# genemichaels-external: sql-formatter-sqlite
                             good_ormning::sqlite::good_query!(
                                 db,
                                 "publisher",
-                                "INSERT INTO certs (\"unique\", certs) VALUES (0, $1)";
-                                &mut db,
-                                p1: Certs =& certs_val
+                                //# genemichaels-external: sql-formatter-sqlite
+                                r#"INSERT INTO
+                                     certs ("unique", certs)
+                                   VALUES
+                                     (0, ${certs =&certs_val})
+                                   "#;
+                                &mut db
                             )?;
                             Ok(())
                         }
@@ -345,13 +350,18 @@ impl Publisher {
 
                                         // Check once more if local announcement is older, in case it was updated while
                                         // doing the node.put
-                                        //# genemichaels-external: sql-formatter-sqlite
                                         let local_announcement = good_ormning::sqlite::good_query_opt!(
                                             db,
                                             "publisher",
-                                            "SELECT value FROM announce WHERE identity = $1";
-                                            &mut db,
-                                            p1: ident =& db_identity
+                                            //# genemichaels-external: sql-formatter-sqlite
+                                            r#"SELECT
+                                                 value
+                                               FROM
+                                                 announce
+                                               WHERE
+                                                 identity = ${ident = &db_identity}
+                                               "#;
+                                            &mut db
                                         )?;
                                         let Some(local_announcement) = local_announcement else {
                                             return Ok(());
@@ -373,23 +383,25 @@ impl Publisher {
                                                 local_announced = local_announced.dbg_str()
                                             ),
                                         );
-
-                                        //# genemichaels-external: sql-formatter-sqlite
                                         good_ormning::sqlite::good_query!(
                                             db,
                                             "publisher",
-                                            "DELETE FROM announce WHERE identity = $1";
-                                            &mut db,
-                                            p1: ident =& db_identity
+                                            //# genemichaels-external: sql-formatter-sqlite
+                                            r#"DELETE FROM announce
+                                               WHERE
+                                                 identity = ${ident = &db_identity}
+                                               "#;
+                                            &mut db
                                         )?;
-
-                                        //# genemichaels-external: sql-formatter-sqlite
                                         good_ormning::sqlite::good_query!(
                                             db,
                                             "publisher",
-                                            "DELETE FROM publish_values WHERE identity = $1";
-                                            &mut db,
-                                            p1: ident =& db_identity
+                                            //# genemichaels-external: sql-formatter-sqlite
+                                            r#"DELETE FROM publish_values
+                                               WHERE
+                                                 identity = ${ident = &db_identity}
+                                               "#;
+                                            &mut db
                                         )?;
                                         return Ok(());
                                     }
@@ -440,15 +452,22 @@ impl Publisher {
             let announcement = announcement.clone();
             move |conn| {
                 let mut db = db::DbPublisher(conn);
-
-                //# genemichaels-external: sql-formatter-sqlite
                 good_ormning::sqlite::good_query!(
                     db,
                     "publisher",
-                    "INSERT INTO announce (identity, value) VALUES ($1, $2) ON CONFLICT (identity) DO UPDATE SET value = excluded.value";
-                    &mut db,
-                    p1: ident =& db_identity,
-                    p2: Announcement =& announcement
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"INSERT INTO
+                         announce (identity, value)
+                       VALUES
+                         (
+                           ${ident = &db_identity},
+                           ${announcement =&announcement}
+                         )
+                       ON CONFLICT (identity) DO UPDATE
+                       SET
+                         value = excluded.value
+                       "#;
+                    &mut db
                 )?;
                 Ok(())
             }
@@ -461,23 +480,25 @@ impl Publisher {
             let db_identity = DbIdentity(identity.clone());
             move |conn| {
                 let mut db = db::DbPublisher(conn);
-
-                //# genemichaels-external: sql-formatter-sqlite
                 good_ormning::sqlite::good_query!(
                     db,
                     "publisher",
-                    "DELETE FROM announce WHERE identity = $1";
-                    &mut db,
-                    p1: ident =& db_identity
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"DELETE FROM announce
+                       WHERE
+                         identity = ${ident = &db_identity}
+                       "#;
+                    &mut db
                 )?;
-
-                //# genemichaels-external: sql-formatter-sqlite
                 good_ormning::sqlite::good_query!(
                     db,
                     "publisher",
-                    "DELETE FROM publish_values WHERE identity = $1";
-                    &mut db,
-                    p1: ident =& db_identity
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"DELETE FROM publish_values
+                       WHERE
+                         identity = ${ident = &db_identity}
+                       "#;
+                    &mut db
                 )?;
                 return Ok(());
             }
@@ -494,12 +515,20 @@ impl Publisher {
             None => {
                 self.db_pool.tx(move |conn| {
                     let mut db = db::DbPublisher(conn);
-
-                    //# genemichaels-external: sql-formatter-sqlite
                     Ok(good_ormning::sqlite::good_query_many!(
                         db,
                         "publisher",
-                        "SELECT identity, value FROM announce ORDER BY identity ASC LIMIT 50";
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"SELECT
+                             identity,
+                             value
+                           FROM
+                             announce
+                           ORDER BY
+                             identity ASC
+                           LIMIT
+                             50
+                           "#;
                         &mut db
                     )?)
                 }).await?.into_iter().map(|p| (p.identity.0, p.value)).collect()
@@ -508,14 +537,23 @@ impl Publisher {
                 let after_ident = DbIdentity(a);
                 self.db_pool.tx(move |conn| {
                     let mut db = db::DbPublisher(conn);
-
-                    //# genemichaels-external: sql-formatter-sqlite
                     Ok(good_ormning::sqlite::good_query_many!(
                         db,
                         "publisher",
-                        "SELECT identity, value FROM announce WHERE identity > $1 ORDER BY identity ASC LIMIT 50";
-                        &mut db,
-                        p1: ident =& after_ident
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"SELECT
+                             identity,
+                             value
+                           FROM
+                             announce
+                           WHERE
+                             identity > ${ident = &after_ident}
+                           ORDER BY
+                             identity ASC
+                           LIMIT
+                             50
+                           "#;
+                        &mut db
                     )?)
                 }).await?.into_iter().map(|p| (p.identity.0, p.value)).collect()
             },
@@ -533,52 +571,66 @@ impl Publisher {
                 let mut db = db::DbPublisher(conn);
                 if let Some(missing_ttl) = args.missing_ttl {
                     let missing_ttl_val = missing_ttl as i64;
-
-                    //# genemichaels-external: sql-formatter-sqlite
                     good_ormning::sqlite::good_query!(
                         db,
                         "publisher",
-                        "INSERT INTO publish_idents (identity, missing_ttl) VALUES ($1, $2) ON CONFLICT (identity) DO UPDATE SET missing_ttl = excluded.missing_ttl";
-                        &mut db,
-                        p1: ident =& db_identity,
-                        p2: i64 = missing_ttl_val
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"INSERT INTO
+                             publish_idents (identity, missing_ttl)
+                           VALUES
+                             (${ident = &db_identity}, ${i64 = missing_ttl_val})
+                           ON CONFLICT (identity) DO UPDATE
+                           SET
+                             missing_ttl = excluded.missing_ttl
+                           "#;
+                        &mut db
                     )?;
                 }
                 if args.clear_all {
-                    //# genemichaels-external: sql-formatter-sqlite
                     good_ormning::sqlite::good_query!(
                         db,
                         "publisher",
-                        "DELETE FROM publish_values WHERE identity = $1";
-                        &mut db,
-                        p1: ident =& db_identity
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"DELETE FROM publish_values
+                           WHERE
+                             identity = ${ident = &db_identity}
+                           "#;
+                        &mut db
                     )?;
                 }
                 for k in args.clear {
                     let key = join_record_key(&k);
-
-                    //# genemichaels-external: sql-formatter-sqlite
                     good_ormning::sqlite::good_query!(
                         db,
                         "publisher",
-                        "DELETE FROM publish_values WHERE identity = $1 AND key = $2";
-                        &mut db,
-                        p1: ident =& db_identity,
-                        p2: string = key.as_str()
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"DELETE FROM publish_values
+                           WHERE
+                             identity = ${ident = &db_identity}
+                             AND key = ${string = key.as_str()}
+                           "#;
+                        &mut db
                     )?;
                 }
                 for (k, v) in args.set {
                     let key = join_record_key(&k);
-
-                    //# genemichaels-external: sql-formatter-sqlite
                     good_ormning::sqlite::good_query!(
                         db,
                         "publisher",
-                        "INSERT INTO publish_values (identity, key, \"values\") VALUES ($1, $2, $3) ON CONFLICT (identity, key) DO UPDATE SET \"values\" = excluded.\"values\"";
-                        &mut db,
-                        p1: ident =& db_identity,
-                        p2: string = key.as_str(),
-                        p3: RecordValue =& v
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"INSERT INTO
+                             publish_values (identity, key, "values")
+                           VALUES
+                             (
+                               ${ident = &db_identity},
+                               ${string = key.as_str()},
+                               ${record_value =&v}
+                             )
+                           ON CONFLICT (identity, key) DO UPDATE
+                           SET
+                             "values" = excluded."values"
+                           "#;
+                        &mut db
                     )?;
                 }
                 return Ok(());
@@ -596,29 +648,37 @@ impl Publisher {
         return Ok(self.db_pool.tx(move |conn| {
             let mut db = db::DbPublisher(conn);
             let mut out = HashMap::new();
-
-            //# genemichaels-external: sql-formatter-sqlite
             let missing_ttl = good_ormning::sqlite::good_query_opt!(
                 db,
                 "publisher",
-                "SELECT missing_ttl FROM publish_idents WHERE identity = $1";
-                &mut db,
-                p1: ident =& db_identity
+                //# genemichaels-external: sql-formatter-sqlite
+                r#"SELECT
+                     missing_ttl
+                   FROM
+                     publish_idents
+                   WHERE
+                     identity = ${ident = &db_identity}
+                   "#;
+                &mut db
             )?.unwrap_or(0);
             let now = SystemTime::now();
             for k in keys {
                 let expires;
                 let data;
                 let key = join_record_key(&k);
-
-                //# genemichaels-external: sql-formatter-sqlite
                 match good_ormning::sqlite::good_query_opt!(
                     db,
                     "publisher",
-                    "SELECT \"values\" FROM publish_values WHERE identity = $1 AND key = $2";
-                    &mut db,
-                    p1: ident =& db_identity,
-                    p2: string = key.as_str()
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"SELECT
+                         "values"
+                       FROM
+                         publish_values
+                       WHERE
+                         identity = ${ident = &db_identity}
+                         AND key = ${string = key.as_str()}
+                       "#;
+                    &mut db
                 )? {
                     Some(v) => match v {
                         stored::record::RecordValue::V1(v) => {
@@ -650,24 +710,42 @@ impl Publisher {
             let mut db = db::DbPublisher(conn);
             Ok(match after {
                 None => {
-                    //# genemichaels-external: sql-formatter-sqlite
                     good_ormning::sqlite::good_query_many!(
                         db,
                         "publisher",
-                        "SELECT key FROM publish_values WHERE identity = $1 ORDER BY key ASC LIMIT 50";
-                        &mut db,
-                        p1: ident =& db_identity
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"SELECT
+                             key
+                           FROM
+                             publish_values
+                           WHERE
+                             identity = ${ident = &db_identity}
+                           ORDER BY
+                             key ASC
+                           LIMIT
+                             50
+                           "#;
+                        &mut db
                     )?.into_iter().collect()
                 },
                 Some(v) => {
-                    //# genemichaels-external: sql-formatter-sqlite
                     good_ormning::sqlite::good_query_many!(
                         db,
                         "publisher",
-                        "SELECT key FROM publish_values WHERE identity = $1 AND key > $2 ORDER BY key ASC LIMIT 50";
-                        &mut db,
-                        p1: ident =& db_identity,
-                        p2: string = v.as_str()
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"SELECT
+                             key
+                           FROM
+                             publish_values
+                           WHERE
+                             identity = ${ident = &db_identity}
+                             AND key > ${string = v.as_str()}
+                           ORDER BY
+                             key ASC
+                           LIMIT
+                             50
+                           "#;
+                        &mut db
                     )?.into_iter().collect()
                 },
             })
@@ -877,15 +955,22 @@ pub async fn build_api_publish_external_endpoints(
             let db_identity = DbIdentity(identity.clone());
             self.db_pool.get().await?.interact(move |conn| {
                 let mut db = admin_db::DbPublisherAdmin(conn);
-
-                //# genemichaels-external: sql-formatter-sqlite
                 good_ormning::sqlite::good_query!(
                     admin_db,
                     "publisher_admin",
-                    "INSERT INTO allowed_identities (identity, \"group\") VALUES ($1, $2) ON CONFLICT (identity) DO UPDATE SET \"group\" = excluded.\"group\"";
-                    &mut db,
-                    p1: ident =& db_identity,
-                    p2: string = group.as_str()
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"INSERT INTO
+                         allowed_identities (identity, "group")
+                       VALUES
+                         (
+                           ${ident = &db_identity},
+                           ${string = group.as_str()}
+                         )
+                       ON CONFLICT (identity) DO UPDATE
+                       SET
+                         "group" = excluded."group"
+                       "#;
+                    &mut db
                 )?;
                 return Ok(()) as Result<(), GoodError>;
             }).await??;
@@ -896,14 +981,15 @@ pub async fn build_api_publish_external_endpoints(
             let db_identity = DbIdentity(identity.clone());
             self.db_pool.get().await?.interact(move |conn| {
                 let mut db = admin_db::DbPublisherAdmin(conn);
-
-                //# genemichaels-external: sql-formatter-sqlite
                 good_ormning::sqlite::good_query!(
                     admin_db,
                     "publisher_admin",
-                    "DELETE FROM allowed_identities WHERE identity = $1";
-                    &mut db,
-                    p1: ident =& db_identity
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"DELETE FROM allowed_identities
+                       WHERE
+                         identity = ${ident = &db_identity}
+                       "#;
+                    &mut db
                 )?;
                 return Ok(()) as Result<(), GoodError>;
             }).await??;
@@ -919,12 +1005,20 @@ pub async fn build_api_publish_external_endpoints(
                 None => {
                     self.db_pool.get().await?.interact(|conn| {
                         let mut db = admin_db::DbPublisherAdmin(conn);
-
-                        //# genemichaels-external: sql-formatter-sqlite
                         good_ormning::sqlite::good_query_many!(
                             admin_db,
                             "publisher_admin",
-                            "SELECT identity, \"group\" FROM allowed_identities ORDER BY identity ASC LIMIT 50";
+                            //# genemichaels-external: sql-formatter-sqlite
+                            r#"SELECT
+                                 identity,
+                                 "group"
+                               FROM
+                                 allowed_identities
+                               ORDER BY
+                                 identity ASC
+                               LIMIT
+                                 50
+                               "#;
                             &mut db
                         )
                     }).await??.into_iter().map(|r| AdminIdentity {
@@ -936,14 +1030,23 @@ pub async fn build_api_publish_external_endpoints(
                     let after_ident = DbIdentity(a);
                     self.db_pool.get().await?.interact(move |conn| {
                         let mut db = admin_db::DbPublisherAdmin(conn);
-
-                        //# genemichaels-external: sql-formatter-sqlite
                         good_ormning::sqlite::good_query_many!(
                             admin_db,
                             "publisher_admin",
-                            "SELECT identity, \"group\" FROM allowed_identities WHERE identity > $1 ORDER BY identity ASC LIMIT 50";
-                            &mut db,
-                            p1: ident =& after_ident
+                            //# genemichaels-external: sql-formatter-sqlite
+                            r#"SELECT
+                                 identity,
+                                 "group"
+                               FROM
+                                 allowed_identities
+                               WHERE
+                                 identity > ${ident = &after_ident}
+                               ORDER BY
+                                 identity ASC
+                               LIMIT
+                                 50
+                               "#;
+                            &mut db
                         )
                     }).await??.into_iter().map(|r| AdminIdentity {
                         identity: r.identity.0,
@@ -960,14 +1063,18 @@ pub async fn build_api_publish_external_endpoints(
             let db_identity = DbIdentity(identity.clone());
             return Ok(self.db_pool.get().await?.interact(move |conn| {
                 let mut db = admin_db::DbPublisherAdmin(conn);
-
-                //# genemichaels-external: sql-formatter-sqlite
                 return Ok(good_ormning::sqlite::good_query_opt!(
                     admin_db,
                     "publisher_admin",
-                    "SELECT identity FROM allowed_identities WHERE identity = $1";
-                    &mut db,
-                    p1: ident =& db_identity
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"SELECT
+                         identity
+                       FROM
+                         allowed_identities
+                       WHERE
+                         identity = ${ident = &db_identity}
+                       "#;
+                    &mut db
                 )?.is_some()) as Result<bool, GoodError>;
             }).await??);
         }

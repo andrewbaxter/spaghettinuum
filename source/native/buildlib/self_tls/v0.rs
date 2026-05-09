@@ -10,7 +10,7 @@ pub fn build() -> Version {
     let singleton_unique = singleton_api_certs.field("unique", field_i32().build());
     let state_type =
         v
-            .custom_type("RefreshTlsState")
+            .custom_type("refresh_tls_state")
             .rust_type("crate::interface::stored::self_tls::RefreshTlsState")
             .base_type(type_str().opt().build())
             .field_type();
