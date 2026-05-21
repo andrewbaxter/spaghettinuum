@@ -114,7 +114,7 @@ htwrap = { version = "0.15" }
 async-trait = "0.1"
 http = "1"
 rustls-native-certs = "0.7"
-russh = "0.51"
+russh = "0.60"
 termion = "4"
 russh-config = "0.50"
 shell-escape = "0.1"
