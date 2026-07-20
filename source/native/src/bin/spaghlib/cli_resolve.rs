@@ -23,7 +23,7 @@ use {
 
 #[derive(Aargvark)]
 pub struct Args {
-    /// Identity to query
+    /// PublicKey to query
     pub identity: String,
     /// Keys published by the identity, to query
     pub keys: Vec<String>,

@@ -3,7 +3,7 @@ use {
         Deserialize,
         Serialize,
     },
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::interface::public_key::PublicKey,
 };
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
@@ -15,6 +15,6 @@ pub struct AdminAllowIdentityBody {
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AdminIdentity {
-    pub identity: Identity,
+    pub identity: PublicKey,
     pub group: String,
 }

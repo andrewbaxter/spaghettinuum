@@ -8,7 +8,7 @@ use {
         Deserialize,
         Serialize,
     },
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::interface::public_key::PublicKey,
     std::collections::HashMap,
 };
 
@@ -25,7 +25,7 @@ pub struct ResolveValue {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ResolveRequest {
-    pub ident: Identity,
+    pub ident: PublicKey,
     pub keys: Vec<RecordKey>,
 }
 

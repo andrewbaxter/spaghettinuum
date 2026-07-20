@@ -79,7 +79,7 @@ use {
         seq::SliceRandom,
         thread_rng,
     },
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::interface::public_key::PublicKey,
     std::{
         collections::HashMap,
         net::{
@@ -196,7 +196,7 @@ pub async fn start_dns_bridge(
                         async fn do_resolve(
                             self1: &Arc<HandlerInner>,
                             original_name: &LowerName,
-                            ident: &Identity,
+                            ident: &PublicKey,
                             path: RecordKey,
                             explicit_request_keys: Vec<RecordKey>,
                         ) -> Result<DoResolveRes, VisErr> {

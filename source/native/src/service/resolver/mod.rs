@@ -60,7 +60,7 @@ use {
         thread_rng,
     },
     rustls::ClientConfig,
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::interface::public_key::PublicKey,
     std::{
         collections::HashMap,
         net::SocketAddr,
@@ -154,7 +154,7 @@ impl rustls::client::danger::ServerCertVerifier for SingleKeyVerifier {
 struct Resolver_ {
     node: Node,
     log: Log,
-    cache: Cache<(Identity, RecordKey), (SystemTime, Option<String>)>,
+    cache: Cache<(PublicKey, RecordKey), (SystemTime, Option<String>)>,
     publisher: Option<(SocketAddr, Arc<Publisher>)>,
 }
 
@@ -312,7 +312,7 @@ impl Resolver {
 
     pub async fn get(
         &self,
-        ident: &Identity,
+        ident: &PublicKey,
         request_keys: Vec<RecordKey>,
     ) -> Result<wire::resolve::v1::ResolveKeyValues, loga::Error> {
         // First check cache. Only respond with cache answers if all keys are in cache
@@ -361,7 +361,7 @@ impl Resolver {
         };
 
         // Not in cache, find publisher via nodes
-        let resp = match self.0.node.get(ident.clone()).await {
+        let resp = match self.0.node.get(ident.id()).await {
             Some(v) => v,
             None => {
                 self
@@ -514,7 +514,7 @@ pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::handler::P
                 state
                     .resolver
                     .get(
-                        &Identity::from_str(&ident_src)
+                        &PublicKey::from_str(&ident_src)
                             .map_err(loga::err)
                             .context_with("Failed to parse identity", ea!(identity = ident_src))
                             .err_external()?,

@@ -17,7 +17,7 @@ use {
         ea,
     },
     serde::de::DeserializeOwned,
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::interface::public_key::PublicKey,
     spaghettinuum_native::{
         interface::{
             config::ENV_API_ADMIN_TOKEN,
@@ -89,7 +89,7 @@ pub enum Args {
     /// Any groups not in the JSON won't be synced - deleting a group won't remove all
     /// entries in the group.  In order to clear a group, you must specify an empty
     /// list for that group in the JSON.
-    SyncAllowedIdentities(AargvarkJson<HashMap<String, HashSet<Identity>>>),
+    SyncAllowedIdentities(AargvarkJson<HashMap<String, HashSet<PublicKey>>>),
 }
 
 fn admin_headers() -> Result<HashMap<String, String>, loga::Error> {
@@ -228,7 +228,7 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                 match async {
                     ta_res!(());
                     let out =
-                        api_list::<Identity>(
+                        api_list::<PublicKey>(
                             log,
                             limits,
                             &mut connect_publisher_node(limits, log, &resolvers, &pair)
@@ -298,7 +298,7 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                     )
                         .await
                         .stack_context(log, "Error listing allowed identities")?;
-                let mut have = HashMap::<String, HashSet<Identity>>::new();
+                let mut have = HashMap::<String, HashSet<PublicKey>>::new();
                 for entry in identities {
                     let group = have.entry(entry.group).or_default();
                     group.insert(entry.identity);

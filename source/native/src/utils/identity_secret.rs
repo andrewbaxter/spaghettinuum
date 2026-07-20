@@ -7,10 +7,10 @@ use {
         ResultContext,
     },
     rand::rngs::OsRng,
-    spaghettinuum::interface::identity::{
+    spaghettinuum::interface::public_key::{
         self,
-        Identity,
-        LocalIdentitySecret,
+        PublicKey,
+        LocalSecret,
     },
     std::{
         path::Path,
@@ -22,17 +22,17 @@ use {
     tokio::fs::write,
 };
 
-pub fn new_local_identity_secret() -> (Identity, LocalIdentitySecret) {
+pub fn new_local_identity_secret() -> (PublicKey, LocalSecret) {
     let keypair = ed25519_dalek::SigningKey::generate(&mut OsRng {});
-    let ident = identity::v1::Ed25519Identity(keypair.verifying_key());
-    let secret = identity::v1::Ed25519IdentitySecret(keypair);
+    let ident = public_key::v1::Ed25519PublicKey(keypair.verifying_key());
+    let secret = public_key::v1::Ed25519LocalSecret(keypair);
     return (
-        Identity::V1(identity::v1::Identity::Ed25519(ident)),
-        LocalIdentitySecret::V1(identity::v1::LocalIdentitySecret::Ed25519(secret)),
+        PublicKey::V1(public_key::v1::PublicKey::Ed25519(ident)),
+        LocalSecret::V1(public_key::v1::LocalSecret::Ed25519(secret)),
     );
 }
 
-pub async fn write_identity_secret(path: &Path, identity: &LocalIdentitySecret) -> Result<(), loga::Error> {
+pub async fn write_identity_secret(path: &Path, identity: &LocalSecret) -> Result<(), loga::Error> {
     write(path, serde_json::to_string_pretty(identity).unwrap().as_bytes())
         .await
         .context("Failed to write identity secret to file")?;
@@ -40,17 +40,17 @@ pub async fn write_identity_secret(path: &Path, identity: &LocalIdentitySecret) 
 }
 
 pub trait IdentitySigner: Send {
-    fn identity(&mut self) -> Result<Identity, loga::Error>;
-    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error>;
+    fn identity(&mut self) -> Result<PublicKey, loga::Error>;
+    fn sign(&mut self, data: &[u8]) -> Result<(PublicKey, Vec<u8>), loga::Error>;
 }
 
-impl IdentitySigner for LocalIdentitySecret {
-    fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error> {
-        return Ok((LocalIdentitySecret::identity(self), LocalIdentitySecret::sign(&self, data)));
+impl IdentitySigner for LocalSecret {
+    fn sign(&mut self, data: &[u8]) -> Result<(PublicKey, Vec<u8>), loga::Error> {
+        return Ok((LocalSecret::public_key(self), LocalSecret::sign(&self, data)));
     }
 
-    fn identity(&mut self) -> Result<Identity, loga::Error> {
-        return Ok(LocalIdentitySecret::identity(self));
+    fn identity(&mut self) -> Result<PublicKey, loga::Error> {
+        return Ok(LocalSecret::public_key(self));
     }
 }
 
@@ -74,9 +74,9 @@ mod card {
             crypto::Signer,
             types::HashAlgorithm,
         },
-        spaghettinuum::interface::identity::{
+        spaghettinuum::interface::public_key::{
             hash_for_ed25519,
-            Identity,
+            PublicKey,
         },
     };
 
@@ -87,7 +87,7 @@ mod card {
     }
 
     impl IdentitySigner for CardIdentitySigner {
-        fn identity(&mut self) -> Result<Identity, loga::Error> {
+        fn identity(&mut self) -> Result<PublicKey, loga::Error> {
             let mut transaction = self.card.transaction().context("Failed to start card transaction")?;
             transaction
                 .verify_user_for_signing(self.pin.as_bytes())
@@ -111,7 +111,7 @@ mod card {
             }
         }
 
-        fn sign(&mut self, data: &[u8]) -> Result<(Identity, Vec<u8>), loga::Error> {
+        fn sign(&mut self, data: &[u8]) -> Result<(PublicKey, Vec<u8>), loga::Error> {
             let mut transaction = self.card.transaction().context("Failed to start card transaction")?;
             transaction
                 .verify_user_for_signing(self.pin.as_bytes())
@@ -156,7 +156,7 @@ pub async fn get_identity_signer(ident: IdentitySecretArg) -> Result<Arc<Mutex<d
         IdentitySecretArg::Local(ident_config) => {
             let log = &Log::new().fork(ea!(path = ident_config.to_string_lossy()));
             let ident_data =
-                serde_json::from_slice::<LocalIdentitySecret>(
+                serde_json::from_slice::<LocalSecret>(
                     &read(&ident_config).await.stack_context(log, "Error reading identity file")?,
                 ).stack_context(log, "Error parsing json in identity file")?;
             return Ok(Arc::new(Mutex::new(ident_data)));

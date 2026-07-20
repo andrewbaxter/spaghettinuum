@@ -27,7 +27,7 @@ use {
         Sha256,
     },
     signature::SignerMut,
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::interface::public_key::PublicKey,
     std::{
         collections::HashSet,
         str::FromStr,
@@ -285,7 +285,7 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
                     raw_id_id = prefix;
                 },
             }
-            let Ok(id) = Identity::from_str(raw_id_id) else {
+            let Ok(id) = PublicKey::from_str(raw_id_id) else {
                 break;
             };
 

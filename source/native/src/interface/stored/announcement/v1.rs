@@ -8,7 +8,7 @@ use {
         Deserialize,
         Serialize,
     },
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::interface::public_key::PublicKey,
     std::marker::PhantomData,
 };
 
@@ -47,4 +47,24 @@ impl<T: Serialize + DeserializeOwned + std::fmt::Debug, I> std::fmt::Debug for B
     }
 }
 
-pub type Announcement = BincodeSignature<AnnouncementContent, Identity>;
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct Announcement {
+    pub public_key: PublicKey,
+    pub signed: BincodeSignature<AnnouncementContent, PublicKey>,
+}
+
+impl Announcement {
+    pub fn verify(&self) -> Result<AnnouncementContent, ()> {
+        self.public_key.verify(&self.signed.message, &self.signed.signature).map_err(|_| ())?;
+        return Ok(bincode::deserialize(&self.signed.message).map_err(|_| ())?);
+    }
+
+    pub fn parse_unwrap(&self) -> AnnouncementContent {
+        return bincode::deserialize(&self.signed.message).unwrap();
+    }
+
+    pub fn id(&self) -> spaghettinuum::interface::id::Id {
+        return self.public_key.id();
+    }
+}

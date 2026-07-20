@@ -1,7 +1,7 @@
 use {
     crate::{
         byteszb32::BytesZb32,
-        interface::identity::Identity,
+        interface::public_key::PublicKey,
     },
     schemars::JsonSchema,
     serde::{
@@ -31,9 +31,9 @@ impl<T: Serialize + DeserializeOwned, I> std::fmt::Debug for JsonSignature<T, I>
     }
 }
 
-impl<T: Serialize + DeserializeOwned> JsonSignature<T, Identity> {
-    pub fn verify(&self, identity: &Identity) -> Result<T, String> {
-        identity.verify(&self.message.as_bytes(), &self.signature.0).map_err(|e| e.to_string())?;
+impl<T: Serialize + DeserializeOwned> JsonSignature<T, PublicKey> {
+    pub fn verify(&self, public_key: &PublicKey) -> Result<T, String> {
+        public_key.verify(&self.message.as_bytes(), &self.signature.0).map_err(|e| e.to_string())?;
         return Ok(
             serde_json::from_str(
                 &self.message,

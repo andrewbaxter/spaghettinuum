@@ -9,7 +9,7 @@ use {
     },
     spaghettinuum::{
         byteszb32::BytesZb32,
-        interface::identity::Identity,
+        interface::public_key::PublicKey,
         jsonsig::JsonSignature,
     },
 };
@@ -25,8 +25,8 @@ pub struct CertRequestParams {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CertRequest {
-    pub identity: Identity,
-    pub params: JsonSignature<CertRequestParams, Identity>,
+    pub identity: PublicKey,
+    pub params: JsonSignature<CertRequestParams, PublicKey>,
 }
 
 #[derive(Serialize, Deserialize)]

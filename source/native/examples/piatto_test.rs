@@ -84,7 +84,7 @@ async fn main() {
                     &path,
                 ).await?;
             nodes.push(node.clone());
-            prev_node = Some((SerialAddr(addr), node.node_identity()));
+            prev_node = Some((SerialAddr(addr), node.node_public_key()));
         }
         select!{
             _ = tm.until_terminate() => {
@@ -95,21 +95,27 @@ async fn main() {
         }
         let (ident, mut ident_secret) = new_local_identity_secret();
         let message_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(169, 168, 167, 165), 1111));
-        let (_, message_signature) =
-            stored::announcement::latest::Announcement::sign(&mut ident_secret, AnnouncementContent {
+        let (_, message_signed) =
+            <stored::announcement::latest::BincodeSignature<
+                AnnouncementContent,
+                spaghettinuum::interface::public_key::PublicKey,
+            >>::sign(&mut ident_secret, AnnouncementContent {
                 publishers: vec![AnnouncementPublisher {
                     addr: SerialAddr(message_addr),
                     cert_hash: vec![],
                 }],
                 announced: SystemTime::now().into(),
             }).unwrap();
+        let announcement =
+            stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
+                public_key: ident,
+                signed: message_signed,
+            });
         select!{
             _ = tm.until_terminate() => {
                 return Ok(());
             },
-            _ = nodes.get(
-                0
-            ).unwrap().put(ident.clone(), stored::announcement::Announcement::V1(message_signature)) =>(),
+            _ = nodes.get(0).unwrap().put(ident.id(), announcement) =>(),
         };
         let mut i = 0;
         let found = loop {
@@ -117,7 +123,7 @@ async fn main() {
                 _ = tm.until_terminate() => {
                     return Ok(());
                 },
-                r = nodes.get(1).unwrap().get(ident.clone()) => r,
+                r = nodes.get(1).unwrap().get(ident.id()) => r,
             };
             match x {
                 Some(x) => break x,
@@ -140,6 +146,7 @@ async fn main() {
                 a.parse_unwrap().publishers.get(0).unwrap().addr.0
             },
         };
+        let _ = ident;
         assert_eq!(found_addr, message_addr);
         tm.join(&Log::new_root(loga::INFO)).await?;
         return Ok(());

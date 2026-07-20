@@ -8,7 +8,7 @@ use {
         ResultContext,
     },
     serde_json::json,
-    spaghettinuum::interface::identity::LocalIdentitySecret,
+    spaghettinuum::interface::public_key::LocalSecret,
     spaghettinuum_native::utils::identity_secret::{
         new_local_identity_secret,
         write_identity_secret,
@@ -40,7 +40,7 @@ pub enum Args {
     /// Create a new local (file) identity
     NewLocal(NewLocalIdentity),
     /// Show the id for a local identity
-    ShowLocal(AargvarkJson<LocalIdentitySecret>),
+    ShowLocal(AargvarkJson<LocalSecret>),
     /// List ids for usable pcsc cards (configured with curve25519/ed25519 signing keys)
     #[cfg(feature = "card")]
     ListCards,
@@ -57,7 +57,7 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
         },
         Args::ShowLocal(p) => {
             let secret = p.value;
-            let identity = secret.identity();
+            let identity = secret.public_key();
             println!("{}", serde_json::to_string_pretty(&json!({
                 "id": identity.to_string()
             })).unwrap());

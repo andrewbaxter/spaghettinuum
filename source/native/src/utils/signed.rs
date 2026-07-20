@@ -3,9 +3,9 @@ use {
     crate::interface::{
         stored::{
             self,
-            node_identity::{
-                NodeIdentity,
-                NodeIdentityMethods,
+            node_public_key::{
+                NodePublicKey,
+                NodePublicKeyMethods,
                 NodeSecret,
                 NodeSecretMethods,
             },
@@ -18,7 +18,7 @@ use {
     },
     spaghettinuum::{
         byteszb32::BytesZb32,
-        interface::identity::Identity,
+        interface::public_key::PublicKey,
         jsonsig::JsonSignature,
     },
 };
@@ -27,14 +27,14 @@ pub trait IdentSignatureMethods<B: DeserializeOwned, I>
 where
     Self: Sized {
     fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(I, Self), loga::Error>;
-    fn verify(&self, identity: &Identity) -> Result<B, ()>;
+    fn verify(&self, identity: &PublicKey) -> Result<B, ()>;
     fn parse_unwrap(&self) -> B;
 }
 
 impl<
     B: Serialize + DeserializeOwned,
-> IdentSignatureMethods<B, Identity> for stored::announcement::v1::BincodeSignature<B, Identity> {
-    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(Identity, Self), loga::Error> {
+> IdentSignatureMethods<B, PublicKey> for stored::announcement::v1::BincodeSignature<B, PublicKey> {
+    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(PublicKey, Self), loga::Error> {
         let message = bincode::serialize(&body).unwrap();
         let (ident, signature) = signer.sign(&message)?;
         return Ok((ident, Self {
@@ -44,7 +44,7 @@ impl<
         }));
     }
 
-    fn verify(&self, identity: &Identity) -> Result<B, ()> {
+    fn verify(&self, identity: &PublicKey) -> Result<B, ()> {
         identity.verify(&self.message, &self.signature).map_err(|_| ())?;
         return Ok(bincode::deserialize(&self.message).map_err(|_| ())?);
     }
@@ -56,8 +56,8 @@ impl<
 
 impl<
     B: Serialize + DeserializeOwned,
-> IdentSignatureMethods<B, Identity> for wire::node::v1::BincodeSignature<B, Identity> {
-    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(Identity, Self), loga::Error> {
+> IdentSignatureMethods<B, PublicKey> for wire::node::v1::BincodeSignature<B, PublicKey> {
+    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(PublicKey, Self), loga::Error> {
         let message = bincode::serialize(&body).unwrap();
         let (ident, signature) = signer.sign(&message)?;
         return Ok((ident, Self {
@@ -67,7 +67,7 @@ impl<
         }));
     }
 
-    fn verify(&self, identity: &Identity) -> Result<B, ()> {
+    fn verify(&self, identity: &PublicKey) -> Result<B, ()> {
         identity.verify(&self.message, &self.signature).map_err(|_| ())?;
         return Ok(bincode::deserialize(&self.message).map_err(|_| ())?);
     }
@@ -77,8 +77,8 @@ impl<
     }
 }
 
-impl<B: Serialize + DeserializeOwned> IdentSignatureMethods<B, Identity> for JsonSignature<B, Identity> {
-    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(Identity, Self), loga::Error> {
+impl<B: Serialize + DeserializeOwned> IdentSignatureMethods<B, PublicKey> for JsonSignature<B, PublicKey> {
+    fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(PublicKey, Self), loga::Error> {
         let message = serde_json::to_string(&body).unwrap();
         let (ident, signature) = signer.sign(message.as_bytes())?;
         return Ok((ident, Self {
@@ -88,7 +88,7 @@ impl<B: Serialize + DeserializeOwned> IdentSignatureMethods<B, Identity> for Jso
         }));
     }
 
-    fn verify(&self, identity: &Identity) -> Result<B, ()> {
+    fn verify(&self, identity: &PublicKey) -> Result<B, ()> {
         identity.verify(self.message.as_bytes(), &self.signature.0).map_err(|_| ())?;
         return Ok(serde_json::from_str(&self.message).map_err(|_| ())?);
     }
@@ -100,13 +100,13 @@ impl<B: Serialize + DeserializeOwned> IdentSignatureMethods<B, Identity> for Jso
 
 pub trait NodeIdentSignatureMethods<B: DeserializeOwned> {
     fn sign(identity: &NodeSecret, body: B) -> Self;
-    fn verify(&self, identity: &NodeIdentity) -> Result<B, ()>;
+    fn verify(&self, identity: &NodePublicKey) -> Result<B, ()>;
 }
 
 impl<
     B: Serialize + DeserializeOwned,
-> NodeIdentSignatureMethods<B> for wire::node::v1::BincodeSignature<B, NodeIdentity> {
-    fn verify(&self, identity: &NodeIdentity) -> Result<B, ()> {
+> NodeIdentSignatureMethods<B> for wire::node::v1::BincodeSignature<B, NodePublicKey> {
+    fn verify(&self, identity: &NodePublicKey) -> Result<B, ()> {
         identity.verify(&self.message, &self.signature).map_err(|_| ())?;
         return Ok(bincode::deserialize(&self.message).map_err(|_| ())?);
     }

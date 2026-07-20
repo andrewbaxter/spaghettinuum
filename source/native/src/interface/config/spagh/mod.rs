@@ -5,7 +5,7 @@ use {
         IdentitySecretArg,
         StrSocketAddr,
     },
-    crate::interface::stored::node_identity::NodeIdentity,
+    crate::interface::stored::node_public_key::NodePublicKey,
     schemars::JsonSchema,
     serde::{
         Deserialize,
@@ -25,7 +25,7 @@ pub struct BootstrapConfig {
     /// Peer address.
     pub addr: StrSocketAddr,
     /// Node ID at that address.
-    pub ident: NodeIdentity,
+    pub ident: NodePublicKey,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema, Default)]

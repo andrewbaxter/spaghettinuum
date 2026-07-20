@@ -18,7 +18,7 @@ use {
         Deserialize,
         Serialize,
     },
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::interface::public_key::PublicKey,
     std::{
         net::IpAddr,
         str::FromStr,
@@ -28,7 +28,7 @@ use {
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RecordRoot {
-    S(Identity),
+    S(PublicKey),
     Dns(String),
     Ip(IpAddr),
 }
@@ -181,7 +181,7 @@ pub fn split_dns_name(name: impl Into<hickory_resolver::Name>) -> Result<(Record
             );
         };
         let ident =
-            Identity::from_str(&ident_part)
+            PublicKey::from_str(&ident_part)
                 .map_err(loga::err)
                 .context_with("Couldn't parse ident in request", ea!(ident = ident_part))?;
         RecordRoot::S(ident)

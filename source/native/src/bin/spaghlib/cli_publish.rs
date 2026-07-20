@@ -63,13 +63,13 @@ pub struct NewLocalIdentity {
 
 #[derive(Aargvark)]
 pub struct UnsetAll {
-    /// Identity whose records to wipe
+    /// PublicKey whose records to wipe
     pub identity: IdentitySecretArg,
 }
 
 #[derive(Aargvark)]
 pub struct Set {
-    /// Identity to publish as
+    /// PublicKey to publish as
     pub identity: IdentitySecretArg,
     /// Data to publish.  Must be json in the structure
     /// `{KEY: {"ttl": MINUTES, "value": DATA}, ...}`. `KEY` is a string that's a
@@ -79,7 +79,7 @@ pub struct Set {
 
 #[derive(Aargvark)]
 pub struct SetCommon {
-    /// Identity to publish
+    /// PublicKey to publish
     pub identity: IdentitySecretArg,
     /// Dotted list of subdomains to publish under in DNS order (ex: 'a.b.c').
     pub path: Vec<NotFlag>,
@@ -100,7 +100,7 @@ pub struct SetCommon {
 
 #[derive(Aargvark)]
 pub struct Unset {
-    /// Identity whose keys to stop publishing
+    /// PublicKey whose keys to stop publishing
     pub identity: IdentitySecretArg,
     /// Keys to stop publishing
     pub keys: HashSet<String>,
@@ -113,7 +113,7 @@ pub struct ListKeys {
 
 #[derive(Aargvark)]
 pub struct Announce {
-    /// Identity to advertise this publisher for
+    /// PublicKey to advertise this publisher for
     pub identity: IdentitySecretArg,
 }
 

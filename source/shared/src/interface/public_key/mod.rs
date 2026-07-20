@@ -1,5 +1,8 @@
 use {
-    crate::versioned,
+    crate::{
+        interface::id::Id,
+        versioned,
+    },
     schemars::{
         json_schema,
         JsonSchema,
@@ -10,6 +13,7 @@ use {
     },
     sha2::{
         Digest,
+        Sha256,
         Sha512,
     },
     std::{
@@ -28,7 +32,7 @@ pub fn hash_for_ed25519(data: &[u8]) -> Vec<u8> {
 }
 
 versioned!(
-    Identity,
+    PublicKey,
     PartialEq,
     Eq,
     Clone,
@@ -36,35 +40,35 @@ versioned!(
     Hash,
     PartialOrd,
     Ord;
-    (V1, 1, v1::Identity)
+    (V1, 1, v1::PublicKey)
 );
 
-impl JsonSchema for Identity {
+impl JsonSchema for PublicKey {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        return "Identity".into();
+        return "PublicKey".into();
     }
 
     fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         return json_schema!({
             "type":["string"],
-            "description": "An identity (zbase32 string)"
+            "description": "A public key (zbase32 string)"
         });
     }
 }
 
-impl Display for Identity {
+impl Display for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         <dyn Display>::fmt(&zbase32::encode_full_bytes(&self.to_bytes()), f)
     }
 }
 
-impl std::fmt::Debug for Identity {
+impl std::fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         <dyn std::fmt::Debug>::fmt(&<dyn Display>::to_string(self), f)
     }
 }
 
-impl FromStr for Identity {
+impl FromStr for PublicKey {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -72,36 +76,44 @@ impl FromStr for Identity {
             Self::from_bytes(
                 &zbase32::decode_full_bytes_str(
                     s,
-                ).map_err(|e| format!("Failed to decode zbase32 for identity: {}", e))?,
+                ).map_err(|e| format!("Failed to decode zbase32 for public key: {}", e))?,
             )?,
         );
     }
 }
 
-impl Identity {
+impl PublicKey {
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), &'static str> {
         match self {
-            Identity::V1(v) => v.verify(message, signature),
+            PublicKey::V1(v) => v.verify(message, signature),
         }
+    }
+
+    pub fn id(&self) -> Id {
+        return Id::V1(crate::interface::id::v1::Id::Sha256(<Sha256 as Digest>::digest(&self.to_bytes()).to_vec()));
     }
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum LocalIdentitySecret {
-    V1(v1::LocalIdentitySecret),
+pub enum LocalSecret {
+    V1(v1::LocalSecret),
 }
 
-impl LocalIdentitySecret {
-    pub fn identity(&self) -> Identity {
+impl LocalSecret {
+    pub fn public_key(&self) -> PublicKey {
         match self {
-            LocalIdentitySecret::V1(s) => Identity::V1(s.identity()),
+            LocalSecret::V1(s) => PublicKey::V1(s.public_key()),
         }
+    }
+
+    pub fn id(&self) -> Id {
+        return self.public_key().id();
     }
 
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         match self {
-            LocalIdentitySecret::V1(v) => v.sign(message).to_vec(),
+            LocalSecret::V1(v) => v.sign(message).to_vec(),
         }
     }
 

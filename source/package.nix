@@ -39,7 +39,7 @@ pkgs.callPackage (
     ];
     fenix =
       import
-        (fetchTarball "https://github.com/nix-community/fenix/archive/93523fa073f781d3d02d326cdbb85f8709b00c40.zip")
+        (fetchTarball "https://github.com/nix-community/fenix/archive/480c95c3c9ca478e857f7153639010fb54ec73e8.zip")
         { };
     toolchain = fenix.combine [
       fenix.latest.rustc

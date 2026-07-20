@@ -1,4 +1,4 @@
-pub mod node_identity;
+pub mod node_public_key;
 pub mod announcement;
 pub mod record;
 pub mod publisher;

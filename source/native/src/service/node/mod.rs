@@ -5,10 +5,10 @@ use {
             config::shared::StrSocketAddr,
             stored::{
                 self,
-                node_identity::{
+                node_public_key::{
                     self,
-                    NodeIdentity,
-                    NodeIdentityMethods,
+                    NodePublicKey,
+                    NodePublicKeyMethods,
                     NodeSecretMethods,
                 },
                 shared::SerialAddr,
@@ -67,7 +67,7 @@ use {
         Serialize,
     },
     sha2::Digest,
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::interface::public_key::PublicKey,
     std::{
         collections::{
             HashMap,
@@ -230,7 +230,7 @@ fn connect_send_req_resp<
 
 pub fn default_bootstrap() -> Vec<wire::node::latest::NodeInfo> {
     return vec![wire::node::latest::NodeInfo {
-        ident: NodeIdentity::from_str("n_yryyyyyyybxx3rnepqdwa6s45z8qkc6x5xrceruxgy3q6rhm9rxzrrw1rwmbr").unwrap(),
+        ident: NodePublicKey::from_str("n_yryyyyyyybxx3rnepqdwa6s45z8qkc6x5xrceruxgy3q6rhm9rxzrrw1rwmbr").unwrap(),
         address: SerialAddr(SocketAddr::from_str("[2600:1900:4040:485::]:48390").unwrap()),
     }];
 }
@@ -329,11 +329,11 @@ mod dist_tests {
     }
 }
 
-fn node_ident_coord(x: &NodeIdentity) -> DhtCoord {
+fn node_ident_coord(x: &NodePublicKey) -> DhtCoord {
     return DhtCoord(<sha2::Sha256 as Digest>::digest(x.to_bytes()));
 }
 
-fn ident_coord(x: &Identity) -> DhtCoord {
+fn ident_coord(x: &spaghettinuum::interface::id::Id) -> DhtCoord {
     return DhtCoord(<sha2::Sha256 as Digest>::digest(x.to_bytes()));
 }
 
@@ -351,35 +351,35 @@ struct ValueState {
 
 struct NextPingTimeout {
     end: Instant,
-    key: (node_identity::NodeIdentity, usize),
+    key: (node_public_key::NodePublicKey, usize),
 }
 
 struct NextChallengeTimeout {
     end: Instant,
-    key: (node_identity::NodeIdentity, usize),
+    key: (node_public_key::NodePublicKey, usize),
 }
 
 struct Buckets {
     buckets: [Vec<wire::node::latest::NodeState>; BUCKET_COUNT],
-    addrs: HashMap<SocketAddr, NodeIdentity>,
+    addrs: HashMap<SocketAddr, NodePublicKey>,
 }
 
 struct NodeInner {
     connected: watch::Receiver<bool>,
     log: Log,
-    own_ident: node_identity::NodeIdentity,
+    own_ident: node_public_key::NodePublicKey,
     own_coord: DhtCoord,
-    own_secret: node_identity::NodeSecret,
+    own_secret: node_public_key::NodeSecret,
     buckets: Mutex<Buckets>,
-    store: Mutex<HashMap<Identity, ValueState>>,
+    store: Mutex<HashMap<spaghettinuum::interface::id::Id, ValueState>>,
     dirty: AtomicBool,
     listener: TcpListener,
     next_req_id: AtomicUsize,
     find_timeouts: UnboundedSender<NextFindTimeout>,
     find_states: Mutex<HashMap<FindGoal, FindState>>,
-    ping_states: Mutex<HashMap<node_identity::NodeIdentity, PingState>>,
+    ping_states: Mutex<HashMap<node_public_key::NodePublicKey, PingState>>,
     challenge_timeouts: UnboundedSender<NextChallengeTimeout>,
-    challenge_states: Mutex<HashMap<node_identity::NodeIdentity, ChallengeState>>,
+    challenge_states: Mutex<HashMap<node_public_key::NodePublicKey, ChallengeState>>,
 }
 
 #[derive(Clone)]
@@ -411,7 +411,7 @@ struct FindState {
     updated: Instant,
     nearest: Vec<NearestNodeEntry>,
     outstanding: Vec<OutstandingNodeEntry>,
-    seen: HashSet<node_identity::NodeIdentity>,
+    seen: HashSet<node_public_key::NodePublicKey>,
     // For storing value, or retrieving value. Only used for identity searches (None
     // otherwise).
     value: Option<stored::announcement::Announcement>,
@@ -496,7 +496,7 @@ impl Node {
                         Some(row) => return Ok((row.get_identity(), row)) as
                             Result<_, good_ormning::runtime::GoodError>,
                         None => {
-                            let (own_ident, own_secret) = node_identity::NodeIdentity::new();
+                            let (own_ident, own_secret) = node_public_key::NodePublicKey::new();
                             good_ormning::sqlite::good_query!(
                                 db,
                                 "node",
@@ -582,11 +582,11 @@ impl Node {
         let dir = Node(Arc::new(NodeInner {
             log: log.clone(),
             connected: connected_read,
-            own_ident: node_identity::NodeIdentity::V1(match own_ident {
-                node_identity::NodeIdentity::V1(i) => i,
+            own_ident: node_public_key::NodePublicKey::V1(match own_ident {
+                node_public_key::NodePublicKey::V1(i) => i,
             }),
-            own_secret: node_identity::NodeSecret::V1(match own_secret {
-                node_identity::NodeSecret::V1(s) => s,
+            own_secret: node_public_key::NodeSecret::V1(match own_secret {
+                node_public_key::NodeSecret::V1(s) => s,
             }),
             own_coord: own_coord,
             buckets: Mutex::new(initial_buckets),
@@ -674,7 +674,7 @@ impl Node {
             tokio::time::sleep_until(deadline.into()).await;
             let state = {
                 let mut borrowed_states = dir.0.find_states.lock().unwrap();
-                let mut state_entry = match borrowed_states.entry(e.key.0) {
+                let mut state_entry = match borrowed_states.entry(e.key.0.clone()) {
                     Entry::Occupied(s) => s,
                     Entry::Vacant(_) => return,
                 };
@@ -896,15 +896,15 @@ impl Node {
         };
     }
 
-    /// Identity of node
-    pub fn node_identity(&self) -> node_identity::NodeIdentity {
+    /// PublicKey of node
+    pub fn node_public_key(&self) -> node_public_key::NodePublicKey {
         return self.0.own_ident.clone();
     }
 
     /// Look up a value in the network
-    pub async fn get(&self, key: Identity) -> Option<stored::announcement::Announcement> {
+    pub async fn get(&self, key: spaghettinuum::interface::id::Id) -> Option<stored::announcement::Announcement> {
         let (f, c) = ManualFuture::new();
-        self.start_find(FindGoal::Identity(key), Some(c)).await;
+        self.start_find(FindGoal::Id(key.clone()), Some(c)).await;
         return f.await.value;
     }
 
@@ -913,11 +913,11 @@ impl Node {
     /// `IdentitySecret`
     pub async fn put(
         &self,
-        key: Identity,
+        key: spaghettinuum::interface::id::Id,
         value: stored::announcement::Announcement,
     ) -> Option<stored::announcement::Announcement> {
         let (f, c) = ManualFuture::new();
-        self.start_find(FindGoal::Identity(key), Some(c)).await;
+        self.start_find(FindGoal::Id(key.clone()), Some(c)).await;
         let res = f.await;
         shed!{
             'skip_store _;
@@ -960,7 +960,7 @@ impl Node {
         return res.value;
     }
 
-    fn set_node_unresponsive(&self, key: node_identity::NodeIdentity, bucket_i: usize, unresponsive: bool) {
+    fn set_node_unresponsive(&self, key: node_public_key::NodePublicKey, bucket_i: usize, unresponsive: bool) {
         let mut buckets = self.0.buckets.lock().unwrap();
         let bucket = &mut buckets.buckets[bucket_i];
         for n in bucket {
@@ -972,7 +972,7 @@ impl Node {
         self.0.dirty.store(true, Ordering::Relaxed);
     }
 
-    async fn start_challenge(&self, id: node_identity::NodeIdentity, addr: SocketAddr) {
+    async fn start_challenge(&self, id: node_public_key::NodePublicKey, addr: SocketAddr) {
         // store state by key, with futures
         let timeout = Instant::now() + req_timeout();
         let (challenge, req_id) = {
@@ -999,7 +999,7 @@ impl Node {
         connect_send_req_resp(&self.0.log, addr, wire::node::latest::Challenge(challenge), cap_fn!((resp)(dir) {
             // Lookup request state
             let mut borrowed_states = dir.0.challenge_states.lock().unwrap();
-            let state_entry = match borrowed_states.entry(resp.sender.clone()) {
+            let state_entry = match borrowed_states.entry(resp.public_key.clone()) {
                 Entry::Occupied(s) => s,
                 Entry::Vacant(_) => {
                     // Happens normally if outgoing replaced for a better peer and then the request is
@@ -1010,11 +1010,11 @@ impl Node {
             let state = state_entry.get();
 
             // Confirm sender is legit routable, add to own routing table
-            if resp.sender.verify(&state.challenge, &resp.signature).is_err() {
+            if resp.public_key.verify(&state.challenge, &resp.signature).is_err() {
                 return Err(loga::err("Bad sender signature"));
             }
             let state = state_entry.remove();
-            dir.add_good_node(resp.sender.clone(), Some(state.node));
+            dir.add_good_node(resp.public_key.clone(), Some(state.node));
             return Ok(());
         }));
         dir.0.challenge_timeouts.unbounded_send(NextChallengeTimeout {
@@ -1024,9 +1024,9 @@ impl Node {
     }
 
     async fn start_find(&self, goal: FindGoal, fut: Option<ManualFutureCompleter<FindResult>>) {
-        let goal_coord = match goal {
-            FindGoal::Coord(c) => c,
-            FindGoal::Identity(i) => ident_coord(&i),
+        let goal_coord = match &goal {
+            FindGoal::Coord(c) => *c,
+            FindGoal::Id(i) => ident_coord(i),
         };
 
         // store state by key, with futures
@@ -1034,7 +1034,7 @@ impl Node {
         let mut defer = vec![];
         let req_id = {
             let mut borrowed_states = self.0.find_states.lock().unwrap();
-            let state = match borrowed_states.entry(goal) {
+            let state = match borrowed_states.entry(goal.clone()) {
                 Entry::Occupied(mut e) => {
                     if let Some(f) = fut {
                         e.get_mut().futures.push(f);
@@ -1043,7 +1043,7 @@ impl Node {
                 },
                 Entry::Vacant(e) => e.insert(FindState {
                     req_id: self.0.next_req_id.fetch_add(1, Ordering::Relaxed),
-                    goal: goal,
+                    goal: goal.clone(),
                     updated: updated.clone(),
                     nearest: vec![NearestNodeEntry {
                         dist: dist(&goal_coord, &self.0.own_coord).1,
@@ -1053,7 +1053,7 @@ impl Node {
                     seen: HashSet::new(),
                     value: match &goal {
                         FindGoal::Coord(_) => None,
-                        FindGoal::Identity(i) => match self
+                        FindGoal::Id(i) => match self
                             .0
                             .store
                             .lock()
@@ -1115,7 +1115,7 @@ impl Node {
         for d in defer {
             connect_send_req_resp(&self.0.log, d.addr, wire::node::latest::FindRequest {
                 challenge: d.challenge,
-                goal: goal,
+                goal: goal.clone(),
                 sender: self.0.own_ident.clone(),
             }, {
                 let dir = self;
@@ -1174,7 +1174,7 @@ impl Node {
                     },
                 };
                 let state = state_entry.get_mut();
-                goal = state.goal;
+                goal = state.goal.clone();
                 let mut outstanding_entry: Option<OutstandingNodeEntry> = None;
                 state.outstanding.retain(|e| {
                     if e.node.ident == resp.sender {
@@ -1248,7 +1248,7 @@ impl Node {
                 // seen + that don't already have outgoing requests...
                 let goal_coord = match &goal {
                     FindGoal::Coord(c) => *c,
-                    FindGoal::Identity(i) => ident_coord(i),
+                    FindGoal::Id(i) => ident_coord(i),
                 };
                 for n in content.nodes {
                     if !state.seen.insert(n.ident.clone()) {
@@ -1309,12 +1309,16 @@ impl Node {
                 }
 
                 // Process received value
-                if let (Some(value), FindGoal::Identity(goal_identity)) = (content.value, goal) {
+                if let (Some(value), FindGoal::Id(goal_identity)) = (content.value, goal.clone()) {
                     shed!{
                         let found_published;
                         match &value {
                             stored::announcement::Announcement::V1(found) => {
-                                let Ok(content) = found.verify(&goal_identity) else {
+                                if found.public_key.id() != goal_identity {
+                                    log.log(loga::DEBUG, "Got value whose public key doesn't match goal id");
+                                    break;
+                                }
+                                let Ok(content) = found.verify() else {
                                     log.log(loga::DEBUG, "Got value with bad signature");
                                     break;
                                 };
@@ -1399,7 +1403,7 @@ impl Node {
             for d in defer_next_req {
                 connect_send_req_resp(&log, d.addr, wire::node::latest::FindRequest {
                     challenge: d.challenge,
-                    goal: goal,
+                    goal: goal.clone(),
                     sender: dir.0.own_ident.clone(),
                 }, {
                     let dir = dir.clone();
@@ -1505,26 +1509,26 @@ impl Node {
         match m {
             wire::node::Protocol::V1(v1) => match v1 {
                 wire::node::latest::Message::Find(m) => {
+                    let goal_coord = match &m.goal {
+                        FindGoal::Coord(c) => *c,
+                        FindGoal::Id(i) => ident_coord(i),
+                    };
+                    let value = match &m.goal {
+                        FindGoal::Id(ident) => self.0.store.lock().unwrap().get(ident).map(|v| v.value.clone()),
+                        _ => None,
+                    };
                     let body = wire::node::latest::FindResponseContent {
                         challenge: m.challenge,
                         goal: m.goal,
-                        nodes: self.get_closest_peers(match m.goal {
-                            FindGoal::Coord(c) => c,
-                            FindGoal::Identity(i) => ident_coord(&i),
-                        }, NEIGHBORHOOD),
-                        value: shed!{
-                            let FindGoal::Identity(ident) = m.goal else {
-                                break None;
-                            };
-                            break self.0.store.lock().unwrap().get(&ident).map(|v| v.value.clone());
-                        },
+                        nodes: self.get_closest_peers(goal_coord, NEIGHBORHOOD),
+                        value: value,
                     };
                     send_message(conn, bincode::serialize(&wire::node::latest::FindResponse {
                         sender: self.0.own_ident.clone(),
                         content: <wire
                         ::node
                         ::latest
-                        ::BincodeSignature<wire::node::latest::FindResponseContent, NodeIdentity>>::sign(
+                        ::BincodeSignature<wire::node::latest::FindResponseContent, NodePublicKey>>::sign(
                             &self.0.own_secret,
                             body,
                         ),
@@ -1538,7 +1542,10 @@ impl Node {
                     let new_announced;
                     match &m.value {
                         stored::announcement::Announcement::V1(value) => {
-                            let Ok(new_content) = value.verify(&m.key) else {
+                            if value.public_key.id() != m.key {
+                                return Err(log.err("Store request key doesn't match announcement public key id"));
+                            }
+                            let Ok(new_content) = value.verify() else {
                                 return Err(log.err("Store request failed signature validation"));
                             };
                             new_announced = new_content.announced;
@@ -1584,7 +1591,7 @@ impl Node {
                 },
                 wire::node::latest::Message::Challenge(challenge) => {
                     send_message(conn, bincode::serialize(&wire::node::latest::ChallengeResponse {
-                        sender: self.0.own_ident.clone(),
+                        public_key: self.0.own_ident.clone(),
                         signature: self.0.own_secret.sign(&challenge.0),
                     }).unwrap()).await.log(&self.0.log, loga::DEBUG, "Error replying to challenge");
                 },
@@ -1594,7 +1601,7 @@ impl Node {
     }
 
     /// Add a node, or check if adding a node would be new (returns whether id is new)
-    fn add_good_node(&self, id: node_identity::NodeIdentity, node: Option<wire::node::latest::NodeInfo>) -> bool {
+    fn add_good_node(&self, id: node_public_key::NodePublicKey, node: Option<wire::node::latest::NodeInfo>) -> bool {
         let log = self.0.log.fork(ea!(activity = "add_good_node", node = id.dbg_str()));
         let log = &log;
         if id == self.0.own_ident {
@@ -1610,7 +1617,7 @@ impl Node {
             buckets: &mut Buckets,
             own_coord: &DhtCoord,
             addr: SocketAddr,
-            new_ident: NodeIdentity,
+            new_ident: NodePublicKey,
         ) {
             if let Some(old) = buckets.addrs.get(&addr) {
                 let (bucket_i, _) = dist(&node_ident_coord(old), own_coord);

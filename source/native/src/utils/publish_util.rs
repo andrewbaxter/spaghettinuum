@@ -43,7 +43,7 @@ use {
         ea,
     },
     spaghettinuum::{
-        interface::identity::Identity,
+        interface::public_key::PublicKey,
         jsonsig::JsonSignature,
     },
     std::{
@@ -63,7 +63,7 @@ use {
 pub fn generate_publish_announce(
     signer: &Arc<Mutex<dyn IdentitySigner>>,
     publishers_info: Vec<InfoResponse>,
-) -> Result<(Identity, stored::announcement::Announcement), String> {
+) -> Result<(PublicKey, stored::announcement::Announcement), String> {
     let announce_message = bincode::serialize(&stored::announcement::latest::AnnouncementContent {
         publishers: publishers_info.into_iter().map(|info| AnnouncementPublisher {
             addr: SerialAddr(info.advertise_addr),
@@ -73,11 +73,19 @@ pub fn generate_publish_announce(
     }).unwrap();
     let (identity, request_message_sig) =
         signer.lock().unwrap().sign(&announce_message).map_err(|e| e.to_string())?;
-    return Ok((identity, stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
-        message: announce_message,
-        signature: request_message_sig,
-        _p: Default::default(),
-    })));
+    return Ok(
+        (
+            identity,
+            stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
+                public_key: identity,
+                signed: stored::announcement::latest::BincodeSignature {
+                    message: announce_message,
+                    signature: request_message_sig,
+                    _p: Default::default(),
+                },
+            }),
+        ),
+    );
 }
 
 pub async fn announce(

@@ -12,7 +12,7 @@ use {
         Serialize,
     },
     spaghettinuum::{
-        interface::identity::Identity,
+        interface::public_key::PublicKey,
         jsonsig::JsonSignature,
     },
     std::{
@@ -24,15 +24,15 @@ use {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AnnounceRequest {
-    pub identity: Identity,
+    pub identity: PublicKey,
     pub announcement: stored::announcement::Announcement,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct DeleteAnnouncementRequest {
-    pub identity: Identity,
-    pub challenge: JsonSignature<(), Identity>,
+    pub identity: PublicKey,
+    pub challenge: JsonSignature<(), PublicKey>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -60,6 +60,6 @@ pub struct PublishRequestContent {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct PublishRequest {
-    pub identity: Identity,
-    pub content: JsonSignature<PublishRequestContent, Identity>,
+    pub identity: PublicKey,
+    pub content: JsonSignature<PublishRequestContent, PublicKey>,
 }

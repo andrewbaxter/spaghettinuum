@@ -34,7 +34,7 @@ pub enum Command {
     Http(crate::spaghlib::cli_http::Args),
     Ssh(crate::spaghlib::cli_ssh::Args),
     /// Commands for managing identities
-    Identity(crate::spaghlib::cli_identity::Args),
+    PublicKey(crate::spaghlib::cli_identity::Args),
     /// Commands for publishing data
     Publish(crate::spaghlib::cli_publish::Args),
     /// Commands for node administration
@@ -99,7 +99,7 @@ async fn main() {
             Command::Publish(args) => {
                 spaghlib::cli_publish::run(log, args).await?;
             },
-            Command::Identity(args) => {
+            Command::PublicKey(args) => {
                 spaghlib::cli_identity::run(log, args).await?;
             },
             Command::Admin(args) => {

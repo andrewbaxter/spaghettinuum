@@ -75,7 +75,7 @@ use {
         PrivatePkcs8KeyDer,
     },
     serde::Deserialize,
-    spaghettinuum::interface::identity::Identity,
+    spaghettinuum::interface::public_key::PublicKey,
     std::{
         collections::HashMap,
         net::SocketAddr,
@@ -320,7 +320,7 @@ impl Publisher {
                         };
                         for (identity, local_announcement) in announce_pairs {
                             log.log_with(loga::DEBUG, "Sending announcement", ea!(identity = identity));
-                            let remote_announcement = node.put(identity.clone(), local_announcement.clone()).await;
+                            let remote_announcement = node.put(identity.id(), local_announcement.clone()).await;
 
                             // Check to see if discovered a newer remote announcement - some other publisher
                             // node has surplanted this one (and delete our own announcement).
@@ -427,10 +427,10 @@ impl Publisher {
 
     pub async fn announce(
         &self,
-        identity: &Identity,
+        identity: &PublicKey,
         announcement: stored::announcement::Announcement,
     ) -> Result<(), loga::Error> {
-        let remote_announcement = self.node.put(identity.clone(), announcement.clone()).await;
+        let remote_announcement = self.node.put(identity.id(), announcement.clone()).await;
         match remote_announcement {
             Some(remote_announcement) => {
                 let new_published = match &announcement {
@@ -475,7 +475,7 @@ impl Publisher {
         return Ok(())
     }
 
-    pub async fn clear_identity(&self, identity: &Identity) -> Result<(), loga::Error> {
+    pub async fn clear_identity(&self, identity: &PublicKey) -> Result<(), loga::Error> {
         self.db_pool.tx({
             let db_identity = DbIdentity(identity.clone());
             move |conn| {
@@ -508,8 +508,8 @@ impl Publisher {
 
     pub async fn list_announcements(
         &self,
-        after: Option<&Identity>,
-    ) -> Result<Vec<(Identity, Announcement)>, loga::Error> {
+        after: Option<&PublicKey>,
+    ) -> Result<Vec<(PublicKey, Announcement)>, loga::Error> {
         let after = after.cloned();
         return Ok(match after {
             None => {
@@ -562,7 +562,7 @@ impl Publisher {
 
     pub async fn modify_values(
         &self,
-        identity: &Identity,
+        identity: &PublicKey,
         args: publish_util::PublishArgs,
     ) -> Result<(), loga::Error> {
         self.db_pool.tx({
@@ -641,7 +641,7 @@ impl Publisher {
 
     pub async fn get_values(
         &self,
-        identity: &Identity,
+        identity: &PublicKey,
         keys: Vec<RecordKey>,
     ) -> Result<HashMap<RecordKey, wire::resolve::latest::ResolveValue>, loga::Error> {
         let db_identity = DbIdentity(identity.clone());
@@ -702,7 +702,7 @@ impl Publisher {
 
     pub async fn list_value_keys(
         &self,
-        identity: &Identity,
+        identity: &PublicKey,
         after: Option<String>,
     ) -> Result<Vec<String>, loga::Error> {
         let db_identity = DbIdentity(identity.clone());
@@ -769,7 +769,7 @@ impl crate::publishing::Publisher for Publisher {
 
 #[async_trait]
 pub trait PublisherAuthorizer: Sync + Send {
-    async fn is_identity_allowed(&self, identity: &Identity) -> Result<bool, loga::Error>;
+    async fn is_identity_allowed(&self, identity: &PublicKey) -> Result<bool, loga::Error>;
 }
 
 pub const API_ROUTE_PUBLISH: &str = "publish";
@@ -811,7 +811,10 @@ pub async fn build_api_endpoints_with_authorizer(
                         };
                     match &req.announcement {
                         Announcement::V1(a) => {
-                            let Ok(_) = a.verify(&req.identity) else {
+                            if a.public_key != req.identity {
+                                return Ok(response_400("Announcement public key doesn't match request identity"));
+                            }
+                            let Ok(_) = a.verify() else {
                                 return Ok(response_400("Couldn't verify payload"));
                             };
                         },
@@ -951,7 +954,7 @@ pub async fn build_api_publish_external_endpoints(
     }
 
     impl State {
-        async fn allow_identity(&self, identity: &Identity, group: String) -> Result<(), loga::Error> {
+        async fn allow_identity(&self, identity: &PublicKey, group: String) -> Result<(), loga::Error> {
             let db_identity = DbIdentity(identity.clone());
             self.db_pool.get().await?.interact(move |conn| {
                 let mut db = admin_db::DbPublisherAdmin(conn);
@@ -977,7 +980,7 @@ pub async fn build_api_publish_external_endpoints(
             return Ok(());
         }
 
-        async fn disallow_identity(&self, identity: &Identity) -> Result<(), loga::Error> {
+        async fn disallow_identity(&self, identity: &PublicKey) -> Result<(), loga::Error> {
             let db_identity = DbIdentity(identity.clone());
             self.db_pool.get().await?.interact(move |conn| {
                 let mut db = admin_db::DbPublisherAdmin(conn);
@@ -998,7 +1001,7 @@ pub async fn build_api_publish_external_endpoints(
 
         async fn list_allowed_identities(
             &self,
-            after: Option<&Identity>,
+            after: Option<&PublicKey>,
         ) -> Result<Vec<AdminIdentity>, loga::Error> {
             let after = after.cloned();
             return Ok(match after {
@@ -1059,7 +1062,7 @@ pub async fn build_api_publish_external_endpoints(
 
     #[async_trait]
     impl PublisherAuthorizer for State {
-        async fn is_identity_allowed(&self, identity: &Identity) -> Result<bool, loga::Error> {
+        async fn is_identity_allowed(&self, identity: &PublicKey) -> Result<bool, loga::Error> {
             let db_identity = DbIdentity(identity.clone());
             return Ok(self.db_pool.get().await?.interact(move |conn| {
                 let mut db = admin_db::DbPublisherAdmin(conn);
@@ -1117,7 +1120,7 @@ pub async fn build_api_publish_external_endpoints(
                                 };
                                 let after = match &query.after {
                                     Some(i) => {
-                                        Some(Identity::from_str(i).map_err(loga::err).err_external()?)
+                                        Some(PublicKey::from_str(i).map_err(loga::err).err_external()?)
                                     },
                                     None => None,
                                 };
@@ -1131,7 +1134,7 @@ pub async fn build_api_publish_external_endpoints(
                                 let Some(identity) = r.subpath.strip_prefix("/") else {
                                     return Ok(response_400("Missing identity in path"));
                                 };
-                                let identity = Identity::from_str(&identity).map_err(loga::err).err_external()?;
+                                let identity = PublicKey::from_str(&identity).map_err(loga::err).err_external()?;
                                 let body =
                                     serde_json::from_slice::<AdminAllowIdentityBody>(
                                         &r.body.collect().await.err_external()?.to_bytes(),
@@ -1148,7 +1151,7 @@ pub async fn build_api_publish_external_endpoints(
                                 let Some(identity) = r.subpath.strip_prefix("/") else {
                                     return Ok(response_400("Missing identity in path"));
                                 };
-                                let identity = Identity::from_str(&identity).map_err(loga::err).err_external()?;
+                                let identity = PublicKey::from_str(&identity).map_err(loga::err).err_external()?;
                                 state.disallow_identity(&identity).await.err_internal()?;
                                 state.publisher.clear_identity(&identity).await.err_internal()?;
                                 return Ok(response_200());
@@ -1185,7 +1188,7 @@ pub async fn build_api_publish_external_endpoints(
                         let Some(identity) = r.subpath.strip_prefix("/") else {
                             return Ok(response_400("Missing identity in path"));
                         };
-                        let identity = Identity::from_str(&identity).map_err(loga::err)?;
+                        let identity = PublicKey::from_str(&identity).map_err(loga::err)?;
 
                         #[derive(Debug, Deserialize)]
                         struct Params {
@@ -1240,7 +1243,7 @@ pub async fn build_api_publish_external_endpoints(
                         };
                         let after = match query.after {
                             Some(i) => {
-                                Some(Identity::from_str(&i).map_err(loga::err)?)
+                                Some(PublicKey::from_str(&i).map_err(loga::err)?)
                             },
                             None => None,
                         };
