@@ -62,9 +62,6 @@ use {
             stored::{
                 node_identity::{
                     NodeIdentity,
-                    self,
-                },
-                node_public_key::{
                     NodePublicKey,
                     NodePublicKeyMethods,
                     NodeSecretMethods,
@@ -312,10 +309,12 @@ pub struct HealthDetail {
     pub unresponsive_neighbors: usize,
 }
 
-fn ident_coord(x: &spaghettinuum::interface::id::Identity) -> DhtCoord {
+fn ident_coord(x: &spaghettinuum::interface::identity::Identity) -> DhtCoord {
     match x {
-        spaghettinuum::interface::id::Identity::V1(spaghettinuum::interface::id::v1::Identity::Sha256(bytes)) => {
-            return DhtCoord(GenericArray::clone_from_slice(bytes));
+        spaghettinuum::interface::identity::Identity::V1(
+            spaghettinuum::interface::identity::v1::Identity::Sha256(bytes),
+        ) => {
+            return DhtCoord((*bytes).into());
         },
     }
 }
@@ -410,7 +409,7 @@ impl Node {
                             self.0.dirty.store(true, Ordering::Relaxed);
                         }
                         log.log(loga::DEBUG, "Updated existing node");
-                        store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident.clone());
+                        store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident);
                     }
                     break 'logic false;
                 }
@@ -428,7 +427,7 @@ impl Node {
                     });
                     self.0.dirty.store(true, Ordering::Relaxed);
                     log.log(loga::DEBUG, "Added node to empty slot");
-                    store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident.clone());
+                    store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident);
                 }
                 break true;
             }
@@ -444,7 +443,7 @@ impl Node {
                     });
                     self.0.dirty.store(true, Ordering::Relaxed);
                     log.log(loga::DEBUG, "Replaced dead node");
-                    store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident.clone());
+                    store_addr(log, buckets, &self.0.own_coord, node.address.0, node.ident);
                 }
                 break 'logic true;
             }
@@ -482,9 +481,12 @@ impl Node {
     }
 
     /// Look up a value in the network
-    pub async fn get(&self, key: spaghettinuum::interface::id::Identity) -> Option<stored::announcement::Announcement> {
+    pub async fn get(
+        &self,
+        key: spaghettinuum::interface::identity::Identity,
+    ) -> Option<stored::announcement::Announcement> {
         let (f, c) = ManualFuture::new();
-        self.start_find(FindGoal::Identity(key.clone()), Some(c)).await;
+        self.start_find(FindGoal::Identity(key), Some(c)).await;
         return f.await.value;
     }
 
@@ -556,28 +558,22 @@ impl Node {
         match m {
             wire::node::Protocol::V1(v1) => match v1 {
                 wire::node::latest::Message::Find(m) => {
-                    let goal_coord = match &m.goal {
-                        FindGoal::Coord(c) => *c,
-                        FindGoal::Identity(i) => ident_coord(i),
-                    };
-                    let value = match &m.goal {
-                        FindGoal::Identity(ident) => self
-                            .0
-                            .store
-                            .lock()
-                            .unwrap()
-                            .get(ident)
-                            .map(|v| v.value.clone()),
-                        _ => None,
-                    };
                     let body = wire::node::latest::FindResponseContent {
                         challenge: m.challenge,
                         goal: m.goal,
-                        nodes: self.get_closest_peers(goal_coord, NEIGHBORHOOD),
-                        value: value,
+                        nodes: self.get_closest_peers(match &m.goal {
+                            FindGoal::Coord(c) => *c,
+                            FindGoal::Identity(i) => ident_coord(i),
+                        }, NEIGHBORHOOD),
+                        value: shed!{
+                            let FindGoal::Identity(ident) = &m.goal else {
+                                break None;
+                            };
+                            break self.0.store.lock().unwrap().get(ident).map(|v| v.value.clone());
+                        },
                     };
                     send_message(conn, bincode::serialize(&wire::node::latest::FindResponse {
-                        sender: self.0.own_pubkey.clone(),
+                        sender: self.0.own_secret.public_key(),
                         content: <wire
                         ::node
                         ::latest
@@ -586,7 +582,7 @@ impl Node {
                             body,
                         ),
                     }).unwrap()).await.log(&self.0.log, loga::DEBUG, "Error replying to find");
-                    if self.add_good_node(m.sender.clone(), None) {
+                    if self.add_good_node(m.sender, None) {
                         self.start_challenge(m.sender, peer).await;
                     }
                 },
@@ -595,7 +591,7 @@ impl Node {
                     let new_announced;
                     match &m.value {
                         stored::announcement::Announcement::V1(value) => {
-                            if value.root_public_key.identity() != m.key {
+                            if value.public_key_root.identity() != m.key {
                                 return Err(log.err("Store request key doesn't match announcement public key id"));
                             }
                             let Ok(new_content) = value.verify() else {
@@ -644,7 +640,7 @@ impl Node {
                 },
                 wire::node::latest::Message::Challenge(challenge) => {
                     send_message(conn, bincode::serialize(&wire::node::latest::ChallengeResponse {
-                        public_key: self.0.own_pubkey.clone(),
+                        public_key: self.0.own_secret.public_key(),
                         signature: self.0.own_secret.sign(&challenge.0),
                     }).unwrap()).await.log(&self.0.log, loga::DEBUG, "Error replying to challenge");
                 },
@@ -676,7 +672,7 @@ impl Node {
             let state = {
                 // Lookup request state, discard if unsolicited (or obsolete) find response
                 let mut borrowed_states = dir.0.find_states.lock().unwrap();
-                let mut state_entry = match borrowed_states.entry(content.goal.clone()) {
+                let mut state_entry = match borrowed_states.entry(content.goal) {
                     Entry::Occupied(s) => s,
                     Entry::Vacant(_) => {
                         log.log(loga::DEBUG, "No request state matching response target");
@@ -684,10 +680,10 @@ impl Node {
                     },
                 };
                 let state = state_entry.get_mut();
-                goal = state.goal.clone();
+                goal = state.goal;
                 let mut outstanding_entry: Option<OutstandingNodeEntry> = None;
                 state.outstanding.retain(|e| {
-                    if e.node.ident == resp.sender.id() {
+                    if e.node.ident == resp.sender.identity() {
                         if constant_time_eq(&content.challenge, &e.challenge) {
                             outstanding_entry = Some(e.clone());
                             return false;
@@ -716,7 +712,7 @@ impl Node {
 
                 // Confirm sender is legit routable, possibly add to own routing table
                 let (_, sender_dist) = dist(&node_ident_coord(&outstanding_entry.node.ident), &dir.0.own_coord);
-                if dir.add_good_node(outstanding_entry.node.ident.clone(), Some(outstanding_entry.node.clone())) {
+                if dir.add_good_node(outstanding_entry.node.ident, Some(outstanding_entry.node.clone())) {
                     if !dir
                         .get_closest_peers(dir.0.own_coord, NEIGHBORHOOD)
                         .iter()
@@ -724,7 +720,7 @@ impl Node {
                         // Incidental work; added sender as a close peer, and sender is the closest peer
                         // so need to replicate all state to it (i.e. it is one of N closest nodes to all
                         // data on this node)
-                        transfer_stored_addr = Some(outstanding_entry.node.address.0.clone());
+                        transfer_stored_addr = Some(outstanding_entry.node.address.0);
                     }
                 }
 
@@ -761,7 +757,7 @@ impl Node {
                     FindGoal::Identity(i) => ident_coord(i),
                 };
                 for n in content.nodes {
-                    if !state.seen.insert(n.ident.clone()) {
+                    if !state.seen.insert(n.ident) {
                         // Already considered/requested this node previously - this overlaps info in
                         // nearest/outstanding partially, but if we reject a response (ex: bad signature)
                         // it will never go into the nearest/outstanding collections so we could request
@@ -814,17 +810,17 @@ impl Node {
                     state.outstanding.sort_by_key(|e| e.dist);
                     defer_next_req.push(Defer {
                         challenge: challenge,
-                        addr: n.address.0.clone(),
+                        addr: n.address.0,
                     });
                 }
 
                 // Process received value
-                if let (Some(value), FindGoal::Identity(goal_identity)) = (content.value, goal.clone()) {
+                if let (Some(value), FindGoal::Identity(goal_identity)) = (content.value, goal) {
                     shed!{
                         let found_published;
                         match &value {
                             stored::announcement::Announcement::V1(found) => {
-                                if found.root_public_key.identity() != goal_identity {
+                                if found.public_key_root.identity() != goal_identity {
                                     log.log(loga::DEBUG, "Got value whose public key doesn't match goal id");
                                     break;
                                 }
@@ -875,7 +871,7 @@ impl Node {
                     state.updated = Instant::now();
                     match dir.0.find_timeouts.unbounded_send(NextFindTimeout {
                         updated: state.updated,
-                        key: (state.goal.clone(), state.req_id),
+                        key: (state.goal, state.req_id),
                     }) {
                         Ok(_) => { },
                         Err(e) => {
@@ -898,7 +894,7 @@ impl Node {
                 let mut store = HashMap::new();
                 {
                     let lock = dir.0.store.lock().unwrap();
-                    store.extend(lock.iter().map(|(k, v)| (k.clone(), v.value.clone())));
+                    store.extend(lock.iter().map(|(k, v)| (*k, v.value.clone())));
                 }
                 for (k, v) in store.into_iter() {
                     connect_send_req(&log, addr, wire::node::latest::StoreRequest {
@@ -913,8 +909,8 @@ impl Node {
             for d in defer_next_req {
                 connect_send_req_resp(&log, d.addr, wire::node::latest::FindRequest {
                     challenge: d.challenge,
-                    goal: goal.clone(),
-                    sender: dir.0.own_ident.clone(),
+                    goal: goal,
+                    sender: dir.0.own_ident,
                 }, {
                     let dir = dir.clone();
                     move |resp| {
@@ -990,10 +986,10 @@ impl Node {
                         &mut db
                     )?;
                     match secret_row {
-                        Some(row) => return Ok((row.get_identity(), row)) as
+                        Some(row) => return Ok((row.public_key(), row)) as
                             Result<_, good_ormning::runtime::GoodError>,
                         None => {
-                            let (own_pubkey, own_secret) = node_public_key::NodePublicKey::new();
+                            let (own_pubkey, own_secret) = node_identity::NodePublicKey::new();
                             good_ormning::sqlite::good_query!(
                                 db,
                                 "node",
@@ -1020,7 +1016,7 @@ impl Node {
                 .await
                 .stack_context(log, "Error interacting with database")?
                 .stack_context(log, "Error retrieving secret")?;
-        let own_ident = own_pubkey.id();
+        let own_ident = own_pubkey.identity();
         log.log_with(loga::INFO, "Starting", ea!(own_node_ident = own_ident));
         let own_coord = node_ident_coord(&own_ident);
         {
@@ -1058,7 +1054,7 @@ impl Node {
                         continue;
                     },
                     Entry::Vacant(v) => {
-                        v.insert(state.node.ident.clone());
+                        v.insert(state.node.ident);
                     },
                 }
                 log.log_with(
@@ -1081,9 +1077,8 @@ impl Node {
             log: log.clone(),
             connected: connected_read,
             own_ident: own_ident,
-            own_pubkey: own_pubkey,
-            own_secret: node_public_key::NodeSecret::V1(match own_secret {
-                node_public_key::NodeSecret::V1(s) => s,
+            own_secret: node_identity::NodeSecret::V1(match own_secret {
+                node_identity::NodeSecret::V1(s) => s,
             }),
             own_coord: own_coord,
             buckets: Mutex::new(initial_buckets),
@@ -1101,7 +1096,7 @@ impl Node {
             if b.ident == dir.0.own_ident {
                 continue;
             }
-            dir.add_good_node(b.ident.clone(), Some(b.clone()));
+            dir.add_good_node(b.ident, Some(b.clone()));
         }
 
         // Periodically save
@@ -1171,7 +1166,7 @@ impl Node {
             tokio::time::sleep_until(deadline.into()).await;
             let state = {
                 let mut borrowed_states = dir.0.find_states.lock().unwrap();
-                let mut state_entry = match borrowed_states.entry(e.key.0.clone()) {
+                let mut state_entry = match borrowed_states.entry(e.key.0) {
                     Entry::Occupied(s) => s,
                     Entry::Vacant(_) => return,
                 };
@@ -1188,7 +1183,7 @@ impl Node {
                 state_entry.remove()
             };
             for o in &state.outstanding {
-                dir.set_node_unresponsive(o.node.ident.clone(), o.bucket_i, true);
+                dir.set_node_unresponsive(o.node.ident, o.bucket_i, true);
             }
             dir.complete_state(state).await;
         }));
@@ -1217,12 +1212,12 @@ impl Node {
                         for leading_zeros in 0 .. BUCKET_COUNT {
                             let (id, addr) =
                                 if let Some(node) = dir.0.buckets.lock().unwrap().buckets[leading_zeros].get(i) {
-                                    (node.node.ident.clone(), node.node.address.clone())
+                                    (node.node.ident, node.node.address.clone())
                                 } else {
                                     continue;
                                 };
                             let req_id = dir.0.next_req_id.fetch_add(1, Ordering::Relaxed);
-                            match dir.0.ping_states.lock().unwrap().entry(id.clone()) {
+                            match dir.0.ping_states.lock().unwrap().entry(id) {
                                 Entry::Occupied(_) => continue,
                                 Entry::Vacant(e) => e.insert(PingState {
                                     req_id: req_id,
@@ -1234,7 +1229,7 @@ impl Node {
                                 key: (id, req_id),
                             }).ignore();
                             connect_send_req_resp(&log, addr.0, wire::node::latest::PingRequest, cap_fn!((k)(dir) {
-                                let state = match dir.0.ping_states.lock().unwrap().entry(k.clone()) {
+                                let state = match dir.0.ping_states.lock().unwrap().entry(k) {
                                     Entry::Occupied(s) => s.remove(),
                                     Entry::Vacant(_) => return Ok(()),
                                 };
@@ -1271,7 +1266,7 @@ impl Node {
             tokio::time::sleep_until(e.end.into()).await;
             let state = {
                 let mut borrowed_states = dir.0.ping_states.lock().unwrap();
-                let mut state_entry = match borrowed_states.entry(e.key.0.clone()) {
+                let mut state_entry = match borrowed_states.entry(e.key.0) {
                     Entry::Occupied(s) => s,
                     Entry::Vacant(_) => return,
                 };
@@ -1289,7 +1284,7 @@ impl Node {
         tm.stream("Node - challenge timeouts", challenge_timeout_recv, cap_fn!((e)(dir) {
             tokio::time::sleep_until(e.end.into()).await;
             let mut borrowed_states = dir.0.challenge_states.lock().unwrap();
-            let mut state_entry = match borrowed_states.entry(e.key.0.clone()) {
+            let mut state_entry = match borrowed_states.entry(e.key.0) {
                 Entry::Occupied(s) => s,
                 Entry::Vacant(_) => return,
             };
@@ -1368,12 +1363,12 @@ impl Node {
         return Ok(dir);
     }
 
-    pub fn node_id(&self) -> NodeIdentity {
-        return self.0.own_ident.clone();
+    pub fn node_identity(&self) -> NodeIdentity {
+        return self.0.own_ident;
     }
 
-    pub fn node_public_key(&self) -> node_public_key::NodePublicKey {
-        return self.0.own_pubkey.clone();
+    pub fn node_public_key(&self) -> node_identity::NodePublicKey {
+        return self.0.own_secret.public_key();
     }
 
     /// Store a value in the network. `value` message must be `ValueBody::to_bytes()`
@@ -1381,11 +1376,11 @@ impl Node {
     /// `IdentitySecret`
     pub async fn put(
         &self,
-        key: spaghettinuum::interface::id::Identity,
+        key: spaghettinuum::interface::identity::Identity,
         value: stored::announcement::Announcement,
     ) -> Option<stored::announcement::Announcement> {
         let (f, c) = ManualFuture::new();
-        self.start_find(FindGoal::Identity(key.clone()), Some(c)).await;
+        self.start_find(FindGoal::Identity(key), Some(c)).await;
         let res = f.await;
         shed!{
             'skip_store _;
@@ -1411,14 +1406,14 @@ impl Node {
                             .0
                             .log
                             .log_with(loga::DEBUG, "Own store request, storing locally", ea!(value = key.dbg_str()));
-                        self.0.store.lock().unwrap().insert(key.clone(), ValueState {
+                        self.0.store.lock().unwrap().insert(key, ValueState {
                             value: value.clone(),
                             received: Instant::now(),
                         });
                     },
                     NearestNodeEntryNode::Node(node) => {
                         connect_send_req(&self.0.log, node.address.0, wire::node::latest::StoreRequest {
-                            key: key.clone(),
+                            key: key,
                             value: value.clone(),
                         }).await;
                     },
@@ -1445,7 +1440,7 @@ impl Node {
         let timeout = Instant::now() + req_timeout();
         let (challenge, req_id) = {
             let mut borrowed_states = self.0.challenge_states.lock().unwrap();
-            let (challenge, state) = match borrowed_states.entry(id.clone()) {
+            let (challenge, state) = match borrowed_states.entry(id) {
                 Entry::Occupied(_) => {
                     return;
                 },
@@ -1455,8 +1450,8 @@ impl Node {
                         challenge: challenge,
                         req_id: self.0.next_req_id.fetch_add(1, Ordering::Relaxed),
                         node: wire::node::latest::NodeInfo {
-                            ident: id.clone(),
-                            address: SerialAddr(addr.clone()),
+                            ident: id,
+                            address: SerialAddr(addr),
                         },
                     }))
                 },
@@ -1465,11 +1460,11 @@ impl Node {
         };
         let dir = self;
         connect_send_req_resp(&self.0.log, addr, wire::node::latest::Challenge(challenge), cap_fn!((resp)(dir) {
-            let resp_id = resp.public_key.id();
+            let resp_id = resp.public_key.identity();
 
             // Lookup request state
             let mut borrowed_states = dir.0.challenge_states.lock().unwrap();
-            let state_entry = match borrowed_states.entry(resp_id.clone()) {
+            let state_entry = match borrowed_states.entry(resp_id) {
                 Entry::Occupied(s) => s,
                 Entry::Vacant(_) => {
                     // Happens normally if outgoing replaced for a better peer and then the request is
@@ -1504,7 +1499,7 @@ impl Node {
         let mut defer = vec![];
         let req_id = {
             let mut borrowed_states = self.0.find_states.lock().unwrap();
-            let state = match borrowed_states.entry(goal.clone()) {
+            let state = match borrowed_states.entry(goal) {
                 Entry::Occupied(mut e) => {
                     if let Some(f) = fut {
                         e.get_mut().futures.push(f);
@@ -1513,8 +1508,8 @@ impl Node {
                 },
                 Entry::Vacant(e) => e.insert(FindState {
                     req_id: self.0.next_req_id.fetch_add(1, Ordering::Relaxed),
-                    goal: goal.clone(),
-                    updated: updated.clone(),
+                    goal: goal,
+                    updated: updated,
                     nearest: vec![NearestNodeEntry {
                         dist: dist(&goal_coord, &self.0.own_coord).1,
                         node: NearestNodeEntryNode::Self_,
@@ -1577,7 +1572,7 @@ impl Node {
 
                 defer.push(Defer {
                     challenge: challenge,
-                    addr: p.address.0.clone(),
+                    addr: p.address.0,
                 });
             }
             state.req_id
@@ -1585,8 +1580,8 @@ impl Node {
         for d in defer {
             connect_send_req_resp(&self.0.log, d.addr, wire::node::latest::FindRequest {
                 challenge: d.challenge,
-                goal: goal.clone(),
-                sender: self.0.own_ident.clone(),
+                goal: goal,
+                sender: self.0.own_ident,
             }, {
                 let dir = self;
                 cap_fn!((resp)(dir) {
@@ -1617,7 +1612,7 @@ impl Node {
 fn node_ident_coord(x: &NodeIdentity) -> DhtCoord {
     match x {
         NodeIdentity::V1(node_identity::v1::NodeIdentity::Sha256(bytes)) => {
-            return DhtCoord(GenericArray::clone_from_slice(bytes));
+            return DhtCoord((*bytes).into());
         },
     }
 }
@@ -1635,10 +1630,9 @@ struct NodeInner {
     next_req_id: AtomicUsize,
     own_coord: DhtCoord,
     own_ident: NodeIdentity,
-    own_pubkey: node_public_key::NodePublicKey,
-    own_secret: node_public_key::NodeSecret,
+    own_secret: node_identity::NodeSecret,
     ping_states: Mutex<HashMap<NodeIdentity, PingState>>,
-    store: Mutex<HashMap<spaghettinuum::interface::id::Identity, ValueState>>,
+    store: Mutex<HashMap<spaghettinuum::interface::identity::Identity, ValueState>>,
 }
 
 #[derive(Clone, Debug)]

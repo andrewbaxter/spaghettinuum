@@ -9,7 +9,7 @@ use {
         de::DeserializeOwned,
     },
     spaghettinuum::interface::{
-        public_key::IdentityPublicKey,
+        identity::IdentityPublicKey,
         signature_chain::{
             ChainLink,
             verify_chain,
@@ -22,14 +22,14 @@ use {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Announcement {
     #[serde(default)]
-    pub chain: Vec<ChainLink>,
-    pub root_public_key: IdentityPublicKey,
+    pub public_key_chain: Vec<ChainLink>,
+    pub public_key_root: IdentityPublicKey,
     pub signed: BincodeSignature<AnnouncementContent, IdentityPublicKey>,
 }
 
 impl Announcement {
-    pub fn identity(&self) -> spaghettinuum::interface::id::Identity {
-        return self.root_public_key.identity();
+    pub fn identity(&self) -> spaghettinuum::interface::identity::Identity {
+        return self.public_key_root.identity();
     }
 
     pub fn parse_unwrap(&self) -> AnnouncementContent {
@@ -38,7 +38,7 @@ impl Announcement {
 
     pub fn verify(&self) -> Result<AnnouncementContent, ()> {
         let content = bincode::deserialize::<AnnouncementContent>(&self.signed.message).map_err(|_| ())?;
-        let leaf = verify_chain(&self.root_public_key, &self.chain, content.announced.0)?;
+        let leaf = verify_chain(&self.public_key_root, &self.public_key_chain, content.announced.0)?;
         leaf.verify(&self.signed.message, &self.signed.signature).map_err(|_| ())?;
         return Ok(content);
     }

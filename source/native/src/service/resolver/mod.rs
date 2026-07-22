@@ -61,7 +61,7 @@ use {
         thread_rng,
     },
     rustls::ClientConfig,
-    spaghettinuum::interface::id::Identity,
+    spaghettinuum::interface::identity::Identity,
     std::{
         collections::HashMap,
         net::SocketAddr,
@@ -151,7 +151,7 @@ impl Resolver {
             'missing _;
             let mut kvs = HashMap::new();
             for k in &request_keys {
-                if let Some(found) = self.0.cache.get(&(ident.clone(), k.clone())) {
+                if let Some(found) = self.0.cache.get(&(*ident, k.clone())) {
                     let (expiry, v) = found;
                     if expiry < now {
                         break 'missing;
@@ -190,7 +190,7 @@ impl Resolver {
         };
 
         // Not in cache, find publisher via nodes
-        let resp = match self.0.node.get(ident.clone()).await {
+        let resp = match self.0.node.get(*ident).await {
             Some(v) => v,
             None => {
                 self
@@ -268,7 +268,7 @@ impl Resolver {
                         &url,
                         &HashMap::new(),
                         &wire::resolve::ResolveRequest::V1(wire::resolve::v1::ResolveRequest {
-                            ident: ident.clone(),
+                            ident: *ident,
                             keys: request_keys.clone(),
                         }),
                     )
@@ -298,16 +298,16 @@ impl Resolver {
         spawn({
             let resp_kvs = values.clone();
             let cache = self.0.cache.clone();
-            let identity = ident.clone();
+            let identity = *ident;
             let log = self.0.log.clone();
-            let ident = ident.clone();
+            let ident = *ident;
             async move {
                 let log = &log;
                 for (k, v) in resp_kvs {
                     log.log_with(loga::DEBUG, "Cache store", ea!(ident = ident, key = k.dbg_str()));
                     cache
                         .insert(
-                            (identity.clone(), k.to_owned()),
+                            (identity, k.to_owned()),
                             (v.expires.into(), v.data.as_ref().map(|v| serde_json::to_string(v).unwrap())),
                         )
                         .await;
@@ -381,10 +381,7 @@ impl Resolver {
                         .await?? {
                         edge = Some(row.rowid);
                         cache
-                            .insert(
-                                (row.identity.0.clone(), split_record_key(&row.key)),
-                                (row.expires.into(), row.value),
-                            )
+                            .insert((row.identity.0, split_record_key(&row.key)), (row.expires.into(), row.value))
                             .await;
                     }
                 }
@@ -427,7 +424,7 @@ impl Resolver {
                                 &mut db
                             )?;
                             for (k, v) in cache.iter() {
-                                let db_identity = DbIdentity(k.0.clone());
+                                let db_identity = DbIdentity(k.0);
                                 let key = join_record_key(&k.1);
                                 let expires: crate::utils::time_util::UtcSecs = v.0.into();
                                 good_ormning::sqlite::good_query!(

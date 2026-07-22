@@ -1,5 +1,5 @@
 use {
-    crate::interface::public_key::IdentityPublicKey,
+    crate::interface::identity::IdentityPublicKey,
     schemars::JsonSchema,
     serde::{
         Deserialize,

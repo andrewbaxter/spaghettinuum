@@ -2,8 +2,10 @@ use {
     core::fmt::Debug,
     crate::interface::stored::{
         announcement::Announcement,
-        node_identity::NodeIdentity,
-        node_public_key::NodePublicKey,
+        node_identity::{
+            NodeIdentity,
+            NodePublicKey,
+        },
         shared::SerialAddr,
     },
     generic_array::GenericArray,
@@ -13,7 +15,7 @@ use {
         Serializer,
         de::DeserializeOwned,
     },
-    spaghettinuum::interface::id::Identity,
+    spaghettinuum::interface::identity::Identity,
     std::marker::PhantomData,
 };
 
@@ -100,7 +102,7 @@ impl<'a> Deserialize<'a> for DhtCoord {
 }
 
 // Find
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum FindGoal {
     Coord(DhtCoord),

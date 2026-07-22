@@ -19,7 +19,7 @@ use {
         },
         types::Curve,
     },
-    spaghettinuum::interface::public_key::{
+    spaghettinuum::interface::identity::{
         IdentityPublicKey,
         self,
     },
@@ -60,8 +60,8 @@ pub fn pgp_eddsa_to_identity(curve: &Curve, q: &MPI) -> Option<IdentityPublicKey
         sequoia_openpgp::types::Curve::Ed25519 => {
             Some(
                 IdentityPublicKey::V1(
-                    public_key::v1::IdentityPublicKey::Ed25519(
-                        public_key::v1::Ed25519PublicKey(
+                    identity::v1::IdentityPublicKey::Ed25519(
+                        identity::v1::Ed25519PublicKey(
                             ed25519_dalek::VerifyingKey::from_bytes(
                                 q.decode_point(&Curve::Ed25519).unwrap().0.try_into().unwrap(),
                             ).unwrap(),

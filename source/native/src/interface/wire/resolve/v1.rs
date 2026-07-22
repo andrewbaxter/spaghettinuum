@@ -8,7 +8,7 @@ use {
         Deserialize,
         Serialize,
     },
-    spaghettinuum::interface::id::Identity,
+    spaghettinuum::interface::identity::Identity,
     std::collections::HashMap,
 };
 

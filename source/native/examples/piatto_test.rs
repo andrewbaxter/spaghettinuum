@@ -87,7 +87,7 @@ async fn main() {
                     &path,
                 ).await?;
             nodes.push(node.clone());
-            prev_node = Some((SerialAddr(addr), node.node_id()));
+            prev_node = Some((SerialAddr(addr), node.node_identity()));
         }
         select!{
             _ = tm.until_terminate() => {
@@ -99,8 +99,8 @@ async fn main() {
         let ident_secret = new_local_identity_secret();
         let root_public_key = ident_secret.public_key().unwrap();
         let (public_key_chain, leaf) = match ident_secret {
-            spaghettinuum::interface::public_key::IdentitySecret::V1(s) => (s.public_key_chain, match s.secret {
-                spaghettinuum::interface::public_key::v1::Secret::Local(k) => k,
+            spaghettinuum::interface::identity::IdentitySecret::V1(s) => (s.public_key_chain, match s.secret {
+                spaghettinuum::interface::identity::v1::Secret::Local(k) => k,
                 _ => unreachable!(),
             }),
         };
@@ -110,7 +110,7 @@ async fn main() {
             <stored
             ::announcement
             ::latest
-            ::BincodeSignature<AnnouncementContent, spaghettinuum::interface::public_key::IdentityPublicKey>>::sign(
+            ::BincodeSignature<AnnouncementContent, spaghettinuum::interface::identity::IdentityPublicKey>>::sign(
                 &mut signer,
                 AnnouncementContent {
                     publishers: vec![AnnouncementPublisher {
@@ -121,8 +121,8 @@ async fn main() {
                 },
             ).unwrap();
         let announcement = stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
-            root_public_key: root_public_key,
-            chain: chain,
+            public_key_root: root_public_key,
+            public_key_chain: chain,
             signed: message_signed,
         });
         select!{

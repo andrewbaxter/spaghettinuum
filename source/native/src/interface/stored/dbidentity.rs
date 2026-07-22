@@ -1,6 +1,6 @@
 use {
     good_ormning::runtime::sqlite::GoodOrmningCustomString,
-    spaghettinuum::interface::id::Identity,
+    spaghettinuum::interface::identity::Identity,
     std::str::FromStr,
 };
 

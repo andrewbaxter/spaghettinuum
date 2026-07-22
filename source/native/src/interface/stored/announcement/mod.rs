@@ -15,6 +15,14 @@ pub enum Announcement {
     V1(v1::Announcement),
 }
 
+impl Announcement {
+    pub fn identity(&self) -> spaghettinuum::interface::identity::Identity {
+        match self {
+            Announcement::V1(a) => a.identity(),
+        }
+    }
+}
+
 impl GoodOrmningCustomString<Announcement> for Announcement {
     fn from_sql(value: String) -> Result<Announcement, String> {
         return serde_json::from_str(&value).map_err(|e| e.to_string());

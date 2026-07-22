@@ -13,8 +13,7 @@ use {
     },
     spaghettinuum::{
         interface::{
-            id::Identity,
-            public_key::IdentityPublicKey,
+            identity::IdentityPublicKey,
             signature_chain::ChainLink,
         },
         jsonsig::JsonSignature,
@@ -29,17 +28,15 @@ use {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AnnounceRequest {
     pub announcement: stored::announcement::Announcement,
-    pub identity: Identity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct DeleteAnnouncementRequest {
-    #[serde(default)]
-    pub chain: Vec<ChainLink>,
     pub challenge: JsonSignature<(), IdentityPublicKey>,
-    pub identity: Identity,
-    pub root_public_key: IdentityPublicKey,
+    #[serde(default)]
+    pub public_key_chain: Vec<ChainLink>,
+    pub public_key_root: IdentityPublicKey,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,11 +49,10 @@ pub struct InfoResponse {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct PublishRequest {
-    #[serde(default)]
-    pub chain: Vec<ChainLink>,
     pub content: JsonSignature<PublishRequestContent, IdentityPublicKey>,
-    pub identity: Identity,
-    pub root_public_key: IdentityPublicKey,
+    #[serde(default)]
+    pub public_key_chain: Vec<ChainLink>,
+    pub public_key_root: IdentityPublicKey,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]

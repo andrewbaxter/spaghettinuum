@@ -352,7 +352,7 @@ pub async fn resolve(
                         superif!({
                             match choose_root {
                                 RecordRoot::S(choose_root) => {
-                                    root = choose_root.clone();
+                                    root = choose_root;
                                     continue 'delegated;
                                 },
                                 RecordRoot::Dns(dns_root) => {

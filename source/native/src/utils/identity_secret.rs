@@ -18,7 +18,7 @@ mod card {
             types::HashAlgorithm,
         },
         spaghettinuum::interface::{
-            public_key::{
+            identity::{
                 IdentityPublicKey,
                 IdentityPublicKeyChain,
                 hash_for_ed25519,
@@ -67,7 +67,7 @@ mod card {
             }
         }
 
-        fn root_public_key(&mut self) -> Result<IdentityPublicKey, loga::Error> {
+        fn public_key_root(&mut self) -> Result<IdentityPublicKey, loga::Error> {
             match &self.public_key_chain {
                 Some(c) => return Ok(c.root),
                 None => return self.read_root_from_card(),
@@ -110,7 +110,7 @@ use {
     },
     rand::rngs::OsRng,
     spaghettinuum::interface::{
-        public_key::{
+        identity::{
             IdentityPublicKey,
             IdentityPublicKeyChain,
             IdentitySecret,
@@ -135,7 +135,7 @@ use {
 
 pub trait IdentitySigner: Send {
     fn chain(&mut self) -> Result<Vec<ChainLink>, loga::Error>;
-    fn root_public_key(&mut self) -> Result<IdentityPublicKey, loga::Error>;
+    fn public_key_root(&mut self) -> Result<IdentityPublicKey, loga::Error>;
     fn sign(&mut self, data: &[u8]) -> Result<(IdentityPublicKey, Vec<ChainLink>, Vec<u8>), loga::Error>;
 }
 
@@ -203,7 +203,7 @@ impl LocalIdentitySigner {
         match &self.public_key_chain {
             Some(c) => return (c.root, c.chain.clone()),
             None => return (
-                IdentityPublicKey::V1(public_key::v1::IdentityPublicKey::Ed25519(self.secret.public_key())),
+                IdentityPublicKey::V1(identity::v1::IdentityPublicKey::Ed25519(self.secret.public_key())),
                 vec![],
             ),
         }
@@ -215,7 +215,7 @@ impl IdentitySigner for LocalIdentitySigner {
         return Ok(self.root_and_chain().1);
     }
 
-    fn root_public_key(&mut self) -> Result<IdentityPublicKey, loga::Error> {
+    fn public_key_root(&mut self) -> Result<IdentityPublicKey, loga::Error> {
         return Ok(self.root_and_chain().0);
     }
 
@@ -241,7 +241,7 @@ pub fn new_card_identity_secret(pcsc_id: String) -> Result<IdentitySecret, loga:
             .into();
     let mut transaction = card.transaction().context("Failed to start card transaction")?;
     let root = card_to_ident(&mut transaction)?.context("Card doesn't have an Ed25519 signing key")?;
-    return Ok(IdentitySecret::V1(public_key::v1::IdentitySecret {
+    return Ok(IdentitySecret::V1(identity::v1::IdentitySecret {
         public_key_chain: Some(IdentityPublicKeyChain {
             root: root,
             chain: vec![],
@@ -252,9 +252,9 @@ pub fn new_card_identity_secret(pcsc_id: String) -> Result<IdentitySecret, loga:
 
 pub fn new_local_identity_secret() -> IdentitySecret {
     let keypair = ed25519_dalek::SigningKey::generate(&mut OsRng {});
-    return IdentitySecret::V1(public_key::v1::IdentitySecret {
+    return IdentitySecret::V1(identity::v1::IdentitySecret {
         public_key_chain: None,
-        secret: Secret::Local(public_key::v1::Ed25519LocalSecret(keypair)),
+        secret: Secret::Local(identity::v1::Ed25519LocalSecret(keypair)),
     });
 }
 
@@ -262,16 +262,16 @@ pub fn new_subkey(parent: &mut dyn IdentitySigner, expires: Option<u64>) -> Resu
     let keypair = ed25519_dalek::SigningKey::generate(&mut OsRng {});
     let new_pub =
         IdentityPublicKey::V1(
-            public_key::v1::IdentityPublicKey::Ed25519(public_key::v1::Ed25519PublicKey(keypair.verifying_key())),
+            identity::v1::IdentityPublicKey::Ed25519(identity::v1::Ed25519PublicKey(keypair.verifying_key())),
         );
-    let new_secret = public_key::v1::Ed25519LocalSecret(keypair);
+    let new_secret = identity::v1::Ed25519LocalSecret(keypair);
     let content = ChainLink::serialize_content(new_pub, expires);
     let (root, mut chain, signature) = parent.sign(&content)?;
     chain.push(ChainLink {
         content: content,
         signature: signature,
     });
-    return Ok(IdentitySecret::V1(public_key::v1::IdentitySecret {
+    return Ok(IdentitySecret::V1(identity::v1::IdentitySecret {
         public_key_chain: Some(IdentityPublicKeyChain {
             root: root,
             chain: chain,

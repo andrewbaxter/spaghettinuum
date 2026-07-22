@@ -28,7 +28,7 @@ use {
     },
     signature::SignerMut,
     spaghettinuum::interface::{
-        public_key::IdentityPublicKey,
+        identity::Identity,
         signature_chain::verify_chain_now,
     },
     std::{
@@ -342,13 +342,14 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
             let Ok(ext) = stored::cert::X509ExtSpagh::from_bytes(&ext.extn_value.as_bytes()) else {
                 break;
             };
-            let (chain, signature) = match ext {
+            let (root, chain, signature) = match ext {
                 stored::cert::X509ExtSpagh::V1(ext) => {
-                    (ext.chain, ext.signature)
+                    (ext.root, ext.chain, ext.signature)
                 },
             };
 
-            // Get id
+            // Get identity fingerprint from SAN and confirm it matches the extension's root
+            // public key
             let rustls::pki_types::ServerName::DnsName(server_name) = server_name else {
                 break;
             };
@@ -358,19 +359,22 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
             if suffix != DNS_SUFFIX {
                 break;
             }
-            let raw_id_id;
+            let raw_id;
             match prefix.rsplit_once('.') {
                 Some((_, r)) => {
-                    raw_id_id = r;
+                    raw_id = r;
                 },
                 None => {
-                    raw_id_id = prefix;
+                    raw_id = prefix;
                 },
             }
-            let Ok(id) = IdentityPublicKey::from_str(raw_id_id) else {
+            let Ok(san_identity) = Identity::from_str(raw_id) else {
                 break;
             };
-            let Ok(leaf) = verify_chain_now(&id, &chain) else {
+            if root.identity() != san_identity {
+                break;
+            }
+            let Ok(leaf) = verify_chain_now(&root, &chain) else {
                 break;
             };
             if leaf.verify(&cert.tbs_certificate.subject_public_key_info.to_der().unwrap(), &signature).is_ok() {

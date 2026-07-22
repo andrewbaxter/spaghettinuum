@@ -75,7 +75,7 @@ use {
     },
     serde::Deserialize,
     spaghettinuum::interface::{
-        id::Identity,
+        identity::Identity,
         signature_chain::verify_chain_now,
     },
     std::{
@@ -143,24 +143,22 @@ pub async fn build_api_endpoints_with_authorizer(
                                 return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
                             },
                         };
-                    match &req.announcement {
+                    let identity = match &req.announcement {
                         Announcement::V1(a) => {
-                            if a.root_public_key.identity() != req.identity {
-                                return Ok(response_400("Announcement public key doesn't match request identity"));
-                            }
                             let Ok(_) = a.verify() else {
                                 return Ok(response_400("Couldn't verify payload"));
                             };
+                            a.public_key_root.identity()
                         },
                     };
 
                     // Auth
-                    if !state.authorizer.is_identity_allowed(&req.identity).await? {
+                    if !state.authorizer.is_identity_allowed(&identity).await? {
                         return Ok(response_401());
                     }
 
                     // Publish it
-                    state.publisher.announce(&req.identity, req.announcement).await?;
+                    state.publisher.announce(&identity, req.announcement).await?;
                     return Ok(response_200());
                 }.await {
                     Ok(r) => {
@@ -189,23 +187,21 @@ pub async fn build_api_endpoints_with_authorizer(
                                 return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
                             },
                         };
-                    if req.root_public_key.identity() != req.identity {
-                        return Ok(response_400("Request public key doesn't match request identity"));
-                    }
-                    let Ok(leaf) = verify_chain_now(&req.root_public_key, &req.chain) else {
+                    let Ok(leaf) = verify_chain_now(&req.public_key_root, &req.public_key_chain) else {
                         return Ok(response_400("Couldn't verify chain"));
                     };
                     let Ok(_) = req.challenge.verify(&leaf) else {
                         return Ok(response_400("Couldn't verify payload"));
                     };
+                    let identity = req.public_key_root.identity();
 
                     // Auth
-                    if !state.authorizer.is_identity_allowed(&req.identity).await? {
+                    if !state.authorizer.is_identity_allowed(&identity).await? {
                         return Ok(response_401());
                     }
 
                     // Respond
-                    state.publisher.clear_identity(&req.identity).await?;
+                    state.publisher.clear_identity(&identity).await?;
                     return Ok(response_200());
                 }.await {
                     Ok(r) => {
@@ -234,23 +230,21 @@ pub async fn build_api_endpoints_with_authorizer(
                                 return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
                             },
                         };
-                    if req.root_public_key.identity() != req.identity {
-                        return Ok(response_400("Request public key doesn't match request identity"));
-                    }
-                    let Ok(leaf) = verify_chain_now(&req.root_public_key, &req.chain) else {
+                    let Ok(leaf) = verify_chain_now(&req.public_key_root, &req.public_key_chain) else {
                         return Ok(response_400("Couldn't verify chain"));
                     };
                     let Ok(body) = req.content.verify(&leaf) else {
                         return Ok(response_400("Couldn't verify payload"));
                     };
+                    let identity = req.public_key_root.identity();
 
                     // Auth
-                    if !state.authorizer.is_identity_allowed(&req.identity).await? {
+                    if !state.authorizer.is_identity_allowed(&identity).await? {
                         return Ok(response_401());
                     }
 
                     // Publish it
-                    state.publisher.modify_values(&req.identity, publish_util::PublishArgs {
+                    state.publisher.modify_values(&identity, publish_util::PublishArgs {
                         missing_ttl: body.missing_ttl,
                         clear_all: body.clear_all,
                         clear: body.clear,
@@ -301,7 +295,7 @@ pub async fn build_api_publish_external_endpoints(
 
     impl State {
         async fn allow_identity(&self, identity: &Identity, group: String) -> Result<(), loga::Error> {
-            let db_identity = DbIdentity(identity.clone());
+            let db_identity = DbIdentity(*identity);
             self.db_pool.get().await?.interact(move |conn| {
                 let mut db = admin_db::DbPublisherAdmin(conn);
                 good_ormning::sqlite::good_query!(
@@ -327,7 +321,7 @@ pub async fn build_api_publish_external_endpoints(
         }
 
         async fn disallow_identity(&self, identity: &Identity) -> Result<(), loga::Error> {
-            let db_identity = DbIdentity(identity.clone());
+            let db_identity = DbIdentity(*identity);
             self.db_pool.get().await?.interact(move |conn| {
                 let mut db = admin_db::DbPublisherAdmin(conn);
                 good_ormning::sqlite::good_query!(
@@ -409,7 +403,7 @@ pub async fn build_api_publish_external_endpoints(
     #[async_trait]
     impl PublisherAuthorizer for State {
         async fn is_identity_allowed(&self, identity: &Identity) -> Result<bool, loga::Error> {
-            let db_identity = DbIdentity(identity.clone());
+            let db_identity = DbIdentity(*identity);
             return Ok(self.db_pool.get().await?.interact(move |conn| {
                 let mut db = admin_db::DbPublisherAdmin(conn);
                 return Ok(good_ormning::sqlite::good_query_opt!(
@@ -435,12 +429,12 @@ pub async fn build_api_publish_external_endpoints(
         publisher: publisher.clone(),
     });
     let mut routes = build_api_endpoints_with_authorizer(log, publisher, state.clone()).await?;
-    let admin_token = admin_token.clone();
+    let admin_token = *admin_token;
     routes.insert("/admin", {
         let mut routes = htserve::handler::PathRouter::default();
         routes.insert("/allowed_identities", {
             let state = state.clone();
-            let admin_token = admin_token.clone();
+            let admin_token = admin_token;
             Box::new(
                 htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
                     match async {
@@ -523,7 +517,7 @@ pub async fn build_api_publish_external_endpoints(
         }).unwrap();
         routes.insert("/keys", {
             let state = state.clone();
-            let admin_token = admin_token.clone();
+            let admin_token = admin_token;
             Box::new(
                 htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
                     match async {
@@ -567,7 +561,7 @@ pub async fn build_api_publish_external_endpoints(
         }).unwrap();
         routes.insert("/announcements", {
             let state = state.clone();
-            let admin_token = admin_token.clone();
+            let admin_token = admin_token;
             Box::new(
                 htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
                     match async {
@@ -639,7 +633,7 @@ impl Publisher {
         identity: &Identity,
         announcement: stored::announcement::Announcement,
     ) -> Result<(), loga::Error> {
-        let remote_announcement = self.node.put(identity.clone(), announcement.clone()).await;
+        let remote_announcement = self.node.put(*identity, announcement.clone()).await;
         match remote_announcement {
             Some(remote_announcement) => {
                 let new_published = match &announcement {
@@ -657,7 +651,7 @@ impl Publisher {
             None => (),
         }
         self.db_pool.tx({
-            let db_identity = DbIdentity(identity.clone());
+            let db_identity = DbIdentity(*identity);
             let announcement = announcement.clone();
             move |conn| {
                 let mut db = db::DbPublisher(conn);
@@ -686,7 +680,7 @@ impl Publisher {
 
     pub async fn clear_identity(&self, identity: &Identity) -> Result<(), loga::Error> {
         self.db_pool.tx({
-            let db_identity = DbIdentity(identity.clone());
+            let db_identity = DbIdentity(*identity);
             move |conn| {
                 let mut db = db::DbPublisher(conn);
                 good_ormning::sqlite::good_query!(
@@ -720,7 +714,7 @@ impl Publisher {
         identity: &Identity,
         keys: Vec<RecordKey>,
     ) -> Result<HashMap<RecordKey, wire::resolve::latest::ResolveValue>, loga::Error> {
-        let db_identity = DbIdentity(identity.clone());
+        let db_identity = DbIdentity(*identity);
         return Ok(self.db_pool.tx(move |conn| {
             let mut db = db::DbPublisher(conn);
             let mut out = HashMap::new();
@@ -835,7 +829,7 @@ impl Publisher {
         identity: &Identity,
         after: Option<String>,
     ) -> Result<Vec<String>, loga::Error> {
-        let db_identity = DbIdentity(identity.clone());
+        let db_identity = DbIdentity(*identity);
         return Ok(self.db_pool.tx(move |conn| {
             let mut db = db::DbPublisher(conn);
             Ok(match after {
@@ -888,7 +882,7 @@ impl Publisher {
         args: publish_util::PublishArgs,
     ) -> Result<(), loga::Error> {
         self.db_pool.tx({
-            let db_identity = DbIdentity(identity.clone());
+            let db_identity = DbIdentity(*identity);
             move |conn| {
                 let mut db = db::DbPublisher(conn);
                 if let Some(missing_ttl) = args.missing_ttl {
@@ -1150,14 +1144,14 @@ impl Publisher {
                     loop {
                         let announce_pairs = publisher.list_announcements(after.as_ref()).await?;
                         after = match announce_pairs.last() {
-                            Some(p) => Some(p.0.clone()),
+                            Some(p) => Some(p.0),
                             None => {
                                 break;
                             },
                         };
                         for (identity, local_announcement) in announce_pairs {
                             log.log_with(loga::DEBUG, "Sending announcement", ea!(identity = identity));
-                            let remote_announcement = node.put(identity.clone(), local_announcement.clone()).await;
+                            let remote_announcement = node.put(identity, local_announcement.clone()).await;
 
                             // Check to see if discovered a newer remote announcement - some other publisher
                             // node has surplanted this one (and delete our own announcement).
@@ -1180,7 +1174,7 @@ impl Publisher {
                                 // Newer announcement elsewhere, delete this announcement to save some network
                                 // effort
                                 publisher.db_pool.tx({
-                                    let db_identity = DbIdentity(identity.clone());
+                                    let db_identity = DbIdentity(identity);
                                     let log = log.clone();
                                     move |conn| {
                                         let mut db = db::DbPublisher(conn);
@@ -1271,7 +1265,7 @@ impl crate::publishing::Publisher for Publisher {
         identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
         content: publish_util::PublishArgs,
     ) -> Result<(), loga::Error> {
-        let identity = identity_signer.lock().unwrap().root_public_key()?.identity();
+        let identity = identity_signer.lock().unwrap().public_key_root()?.identity();
         self.modify_values(&identity, content).await?;
         return Ok(());
     }

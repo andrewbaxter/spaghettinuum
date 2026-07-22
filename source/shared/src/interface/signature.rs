@@ -1,7 +1,7 @@
 use {
-    crate::interface::{
-        id::Identity,
-        public_key::IdentityPublicKey,
+    crate::interface::identity::{
+        Identity,
+        IdentityPublicKey,
     },
     schemars::JsonSchema,
     serde::{

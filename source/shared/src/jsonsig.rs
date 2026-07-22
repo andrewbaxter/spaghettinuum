@@ -1,7 +1,7 @@
 use {
     crate::{
         byteszb32::BytesZb32,
-        interface::public_key::IdentityPublicKey,
+        interface::identity::IdentityPublicKey,
     },
     schemars::JsonSchema,
     serde::{

@@ -732,7 +732,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             ta_return!((), loga::Error);
             let (advertise_addr, publisher) = setup_state.setup_publisher().await?;
             let identity_signer = setup_state.setup_identity().await?;
-            let (identity, announcement) =
+            let announcement =
                 generate_publish_announce(
                     &identity_signer,
                     vec![InfoResponse {
@@ -742,6 +742,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                 ).map_err(
                     |e| loga::err_with("Failed to generate announcement for self publication", ea!(err = e)),
                 )?;
+            let identity = announcement.identity();
             publisher.modify_values(&identity, PublishArgs {
                 clear_all: true,
                 set: setup_state.self_publish.clone(),

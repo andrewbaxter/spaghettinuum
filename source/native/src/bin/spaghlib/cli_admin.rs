@@ -17,7 +17,7 @@ use {
         ea,
     },
     serde::de::DeserializeOwned,
-    spaghettinuum::interface::id::Identity,
+    spaghettinuum::interface::identity::Identity,
     spaghettinuum_native::{
         interface::{
             config::ENV_API_ADMIN_TOKEN,

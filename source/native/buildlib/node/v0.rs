@@ -13,7 +13,7 @@ pub fn build() -> Version {
     let node_secret_type =
         v
             .custom_type("node_secret")
-            .rust_type("crate::interface::stored::node_public_key::NodeSecret")
+            .rust_type("crate::interface::stored::node_identity::NodeSecret")
             .base_type(type_str().build())
             .field_type();
     secret.field("secret", node_secret_type);

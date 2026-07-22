@@ -1,7 +1,7 @@
 use {
     crate::interface::{
         stored::{
-            node_public_key::{
+            node_identity::{
                 NodePublicKey,
                 NodePublicKeyMethods,
                 NodeSecret,
@@ -18,7 +18,7 @@ use {
     spaghettinuum::{
         byteszb32::BytesZb32,
         interface::{
-            public_key::IdentityPublicKey,
+            identity::IdentityPublicKey,
             signature_chain::ChainLink,
         },
         jsonsig::JsonSignature,

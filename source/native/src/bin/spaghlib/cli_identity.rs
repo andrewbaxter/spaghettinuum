@@ -8,7 +8,7 @@ use {
         ResultContext,
     },
     serde_json::json,
-    spaghettinuum::interface::public_key::IdentitySecret,
+    spaghettinuum::interface::identity::IdentitySecret,
     spaghettinuum_native::{
         interface::config::shared::IdentitySecretArg,
         utils::identity_secret::{
@@ -86,7 +86,7 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                         .await
                         .stack_context(&log, "Error creating local identity")?;
                     println!("{}", serde_json::to_string_pretty(&json!({
-                        "id": secret.public_key().unwrap().to_string()
+                        "id": secret.identity().unwrap().to_string()
                     })).unwrap());
                 },
                 #[cfg(feature = "card")]
@@ -99,14 +99,15 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                         .await
                         .stack_context(&log, "Error writing identity secret")?;
                     println!("{}", serde_json::to_string_pretty(&json!({
-                        "id": secret.public_key().unwrap().to_string()
+                        "id": secret.identity().unwrap().to_string()
                     })).unwrap());
                 },
             }
         },
         Args::Show(p) => {
             println!("{}", serde_json::to_string_pretty(&json!({
-                "id": p.value.public_key().map(|k| k.to_string())
+                "id": p.value.identity().map(|i| i.to_string()),
+                "public_key": p.value.public_key().map(|k| k.to_string()),
             })).unwrap());
         },
         Args::NewSubkey(args) => {
@@ -118,7 +119,7 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                 ).stack_context(&log, "Error signing new subkey chain link")?;
             write_identity_secret(&args.out, &child).await.stack_context(&log, "Error writing subkey secret")?;
             println!("{}", serde_json::to_string_pretty(&json!({
-                "id": child.public_key().unwrap().to_string()
+                "id": child.identity().unwrap().to_string()
             })).unwrap());
         },
         #[cfg(feature = "card")]

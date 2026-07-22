@@ -78,7 +78,7 @@ use {
         seq::SliceRandom,
         thread_rng,
     },
-    spaghettinuum::interface::id::Identity,
+    spaghettinuum::interface::identity::Identity,
     std::{
         collections::HashMap,
         net::{

@@ -17,7 +17,7 @@ mod tests {
                 prelude::Key4,
             },
         },
-        spaghettinuum::interface::public_key,
+        spaghettinuum::interface::identity,
         std::panic,
     };
 
@@ -27,7 +27,7 @@ mod tests {
             Key4::generate_ecc(true, sequoia_openpgp::types::Curve::Ed25519).unwrap().into();
         let mut gpg_k = gpg_k.into_keypair().unwrap();
         let message = "hello";
-        let hash = public_key::hash_for_ed25519(message.as_bytes());
+        let hash = identity::hash_for_ed25519(message.as_bytes());
         let gpg_sig = gpg_k.sign(sequoia_openpgp::types::HashAlgorithm::SHA512, &hash).unwrap();
         match gpg_k.public().verify(&gpg_sig, sequoia_openpgp::types::HashAlgorithm::SHA512, &hash) {
             Ok(_) => { },
@@ -39,8 +39,8 @@ mod tests {
         let ident = pgp_pubkey_to_ident(gpg_k.public()).unwrap();
         eprintln!("gpg pub {:?}", gpg_k.public());
         match &ident {
-            public_key::IdentityPublicKey::V1(v1) => match v1 {
-                public_key::v1::IdentityPublicKey::Ed25519(i) => eprintln!(
+            identity::IdentityPublicKey::V1(v1) => match v1 {
+                identity::v1::IdentityPublicKey::Ed25519(i) => eprintln!(
                     "dalek pub {:02x}",
                     i.0.as_bytes().iter().format(" ")
                 ),

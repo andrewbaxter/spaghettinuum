@@ -3,7 +3,7 @@ use {
         Deserialize,
         Serialize,
     },
-    spaghettinuum::interface::id::Identity,
+    spaghettinuum::interface::identity::Identity,
 };
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]

@@ -176,15 +176,16 @@ pub async fn request_cert(
 ) -> Result<CertPair, loga::Error> {
     let priv_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
     let requester_spki_der =
-        SubjectPublicKeyInfoOwned::from_key(priv_key.verifying_key().clone()).unwrap().to_der().unwrap();
+        SubjectPublicKeyInfoOwned::from_key(*priv_key.verifying_key()).unwrap().to_der().unwrap();
     let sig_ext = if options.signature {
-        let (_ident, chain, signature) =
+        let (root, chain, signature) =
             message_signer
                 .lock()
                 .unwrap()
                 .sign(&requester_spki_der)
                 .context("Error signing SPKI der for spaghettinuum extension")?;
         Some(X509ExtSpagh {
+            root: root,
             chain: chain,
             signature: signature,
         })
@@ -200,12 +201,11 @@ pub async fn request_cert(
             spki_der: BytesZb32(requester_spki_der),
         }).unwrap();
         log.log_with(loga::DEBUG, "Unsigned cert request params", ea!(params = message));
-        let (root_public_key, chain, signature) =
+        let (public_key_root, chain, signature) =
             message_signer.lock().unwrap().sign(message.as_bytes()).context("Error signing cert request params")?;
         let body = serde_json::to_vec(&wire::certify::CertRequest::V1(wire::certify::latest::CertRequest {
-            identity: root_public_key.identity(),
-            root_public_key: root_public_key,
-            chain: chain,
+            public_key_root: public_key_root,
+            public_key_chain: chain,
             params: JsonSignature {
                 signature: BytesZb32(signature),
                 message: message,
@@ -238,9 +238,9 @@ pub async fn request_cert(
         pub_pem = resp.pub_pem;
         log.log_with(loga::DEBUG, "Received cert", ea!(pub_pem = pub_pem));
     } else {
-        let root_public_key = message_signer.lock().unwrap().root_public_key()?;
+        let identity = message_signer.lock().unwrap().public_key_root()?.identity();
         let now = SystemTime::now();
-        let fqdn = format!("{}{}", root_public_key, DNS_DOT_SUFFIX);
+        let fqdn = format!("{}{}", identity, DNS_DOT_SUFFIX);
         let pub_der =
             create_leaf_cert_der_local(
                 priv_key,

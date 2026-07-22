@@ -36,10 +36,7 @@ use {
         ResultContext,
         ea,
     },
-    spaghettinuum::{
-        interface::id::Identity,
-        jsonsig::JsonSignature,
-    },
+    spaghettinuum::jsonsig::JsonSignature,
     std::{
         collections::{
             HashMap,
@@ -179,15 +176,12 @@ pub async fn announce(
         );
         publishers_info.push(info);
     }
-    let (identity, announcement) =
+    let announcement =
         generate_publish_announce(
             identity_signer,
             publishers_info,
         ).map_err(|e| log.err_with("Error generating publisher announcement", ea!(err = e)))?;
-    let request = wire::api::publish::v1::AnnounceRequest {
-        identity: identity,
-        announcement: announcement,
-    };
+    let request = wire::api::publish::v1::AnnounceRequest { announcement: announcement };
     for s in publishers {
         let url = s.join("publish/v1/announce");
         htreq::post(
@@ -209,7 +203,7 @@ pub async fn announce(
 pub fn generate_publish_announce(
     signer: &Arc<Mutex<dyn IdentitySigner>>,
     publishers_info: Vec<InfoResponse>,
-) -> Result<(Identity, stored::announcement::Announcement), String> {
+) -> Result<stored::announcement::Announcement, String> {
     let announce_message = bincode::serialize(&stored::announcement::latest::AnnouncementContent {
         publishers: publishers_info.into_iter().map(|info| AnnouncementPublisher {
             addr: SerialAddr(info.advertise_addr),
@@ -219,20 +213,15 @@ pub fn generate_publish_announce(
     }).unwrap();
     let (root_public_key, chain, request_message_sig) =
         signer.lock().unwrap().sign(&announce_message).map_err(|e| e.to_string())?;
-    return Ok(
-        (
-            root_public_key.identity(),
-            stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
-                root_public_key: root_public_key,
-                chain: chain,
-                signed: stored::announcement::latest::BincodeSignature {
-                    message: announce_message,
-                    signature: request_message_sig,
-                    _p: Default::default(),
-                },
-            }),
-        ),
-    );
+    return Ok(stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
+        public_key_root: root_public_key,
+        public_key_chain: chain,
+        signed: stored::announcement::latest::BincodeSignature {
+            message: announce_message,
+            signature: request_message_sig,
+            _p: Default::default(),
+        },
+    }));
 }
 
 #[derive(Default, Clone)]
@@ -263,9 +252,8 @@ pub async fn remote_publish(
             set: args.set.into_iter().collect(),
         }).stack_context(&log, "Failed to sign publish request content")?;
     let request = wire::api::publish::latest::PublishRequest {
-        identity: root_public_key.identity(),
-        root_public_key: root_public_key,
-        chain: chain,
+        public_key_root: root_public_key,
+        public_key_chain: chain,
         content: signed_request_content,
     };
     let limits = Limits {
