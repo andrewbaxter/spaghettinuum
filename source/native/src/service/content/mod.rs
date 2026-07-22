@@ -1,4 +1,5 @@
 use {
+    async_trait::async_trait,
     crate::{
         cap_block,
         cap_fn,
@@ -9,7 +10,6 @@ use {
         ta_res,
         utils::fs_util::maybe_read,
     },
-    async_trait::async_trait,
     flowcontrol::shed,
     http::{
         Method,
@@ -24,12 +24,12 @@ use {
     },
     htwrap::{
         htreq::{
-            self,
             Limits,
+            self,
         },
         htserve::{
-            self,
             handler::Handler,
+            self,
         },
     },
     hyper::body::Bytes,
@@ -59,63 +59,14 @@ use {
     tokio_stream::wrappers::TcpListenerStream,
 };
 
-struct StaticFilesHandler {
-    log: Log,
-    content_dir: PathBuf,
-}
+#[derive(Debug)]
+struct RespErr(String);
 
-#[async_trait]
-impl htserve::handler::Handler<BoxBody<Bytes, RespErr>> for StaticFilesHandler {
-    async fn handle(&self, args: htserve::handler::HandlerArgs<'_>) -> Response<BoxBody<Bytes, RespErr>> {
-        match async {
-            ta_res!(Response < BoxBody < Bytes, RespErr >>);
-            shed!{
-                if args.head.method != Method::GET {
-                    break;
-                }
-                let mut path = self.content_dir.join(args.subpath).absolutize()?.to_path_buf();
-                if !path.starts_with(&self.content_dir) {
-                    break;
-                }
-                if path.is_dir() {
-                    path = path.join("index.html").to_path_buf();
-                }
-                let body = match maybe_read(&path).await? {
-                    Some(b) => b,
-                    None => break,
-                };
-                return Ok(
-                    Response::builder()
-                        .status(200)
-                        .header("Content-type", mime_guess::from_path(&path).first_or_text_plain().to_string())
-                        .body(
-                            BoxBody::new(
-                                http_body_util::Full::new(Bytes::from(body)).map_err(|e| RespErr(e.to_string())),
-                            ),
-                        )
-                        .unwrap(),
-                );
-            };
-            return Ok(
-                Response::builder()
-                    .status(404)
-                    .body(
-                        BoxBody::new(http_body_util::Full::new(Bytes::new()).map_err(|e| RespErr(e.to_string()))),
-                    )
-                    .unwrap(),
-            );
-        }.await {
-            Ok(r) => r,
-            Err(e) => {
-                self.log.log_err(loga::WARN, e.context_with("Error serving response", ea!(url = args.head.uri)));
-                return Response::builder()
-                    .status(503)
-                    .body(
-                        BoxBody::new(http_body_util::Full::new(Bytes::new()).map_err(|e| RespErr(e.to_string()))),
-                    )
-                    .unwrap();
-            },
-        }
+impl std::error::Error for RespErr { }
+
+impl std::fmt::Display for RespErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return self.0.fmt(f);
     }
 }
 
@@ -211,17 +162,6 @@ impl htserve::handler::Handler<BoxBody<Bytes, RespErr>> for ReverseProxyHandler 
     }
 }
 
-#[derive(Debug)]
-struct RespErr(String);
-
-impl std::fmt::Display for RespErr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return self.0.fmt(f);
-    }
-}
-
-impl std::error::Error for RespErr { }
-
 pub async fn start_serving_content(
     log: &Log,
     tm: &TaskManager,
@@ -290,4 +230,64 @@ pub async fn start_serving_content(
         );
     }
     return Ok(());
+}
+
+struct StaticFilesHandler {
+    content_dir: PathBuf,
+    log: Log,
+}
+
+#[async_trait]
+impl htserve::handler::Handler<BoxBody<Bytes, RespErr>> for StaticFilesHandler {
+    async fn handle(&self, args: htserve::handler::HandlerArgs<'_>) -> Response<BoxBody<Bytes, RespErr>> {
+        match async {
+            ta_res!(Response < BoxBody < Bytes, RespErr >>);
+            shed!{
+                if args.head.method != Method::GET {
+                    break;
+                }
+                let mut path = self.content_dir.join(args.subpath).absolutize()?.to_path_buf();
+                if !path.starts_with(&self.content_dir) {
+                    break;
+                }
+                if path.is_dir() {
+                    path = path.join("index.html").to_path_buf();
+                }
+                let body = match maybe_read(&path).await? {
+                    Some(b) => b,
+                    None => break,
+                };
+                return Ok(
+                    Response::builder()
+                        .status(200)
+                        .header("Content-type", mime_guess::from_path(&path).first_or_text_plain().to_string())
+                        .body(
+                            BoxBody::new(
+                                http_body_util::Full::new(Bytes::from(body)).map_err(|e| RespErr(e.to_string())),
+                            ),
+                        )
+                        .unwrap(),
+                );
+            };
+            return Ok(
+                Response::builder()
+                    .status(404)
+                    .body(
+                        BoxBody::new(http_body_util::Full::new(Bytes::new()).map_err(|e| RespErr(e.to_string()))),
+                    )
+                    .unwrap(),
+            );
+        }.await {
+            Ok(r) => r,
+            Err(e) => {
+                self.log.log_err(loga::WARN, e.context_with("Error serving response", ea!(url = args.head.uri)));
+                return Response::builder()
+                    .status(503)
+                    .body(
+                        BoxBody::new(http_body_util::Full::new(Bytes::new()).map_err(|e| RespErr(e.to_string()))),
+                    )
+                    .unwrap();
+            },
+        }
+    }
 }

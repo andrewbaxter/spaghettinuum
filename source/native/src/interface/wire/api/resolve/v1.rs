@@ -6,5 +6,5 @@ use {
     std::collections::HashMap,
 };
 
-pub type ResolveResp = Vec<(RecordKey, wire::resolve::v1::ResolveValue)>;
 pub type ResolveKeyValues = HashMap<RecordKey, wire::resolve::v1::ResolveValue>;
+pub type ResolveResp = Vec<(RecordKey, wire::resolve::v1::ResolveValue)>;

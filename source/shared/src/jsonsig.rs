@@ -1,7 +1,7 @@
 use {
     crate::{
         byteszb32::BytesZb32,
-        interface::public_key::PublicKey,
+        interface::public_key::IdentityPublicKey,
     },
     schemars::JsonSchema,
     serde::{
@@ -15,10 +15,21 @@ use {
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct JsonSignature<T: Serialize + DeserializeOwned, I> {
-    pub message: String,
-    pub signature: BytesZb32,
     #[serde(skip)]
     pub _p: PhantomData<(T, I)>,
+    pub message: String,
+    pub signature: BytesZb32,
+}
+
+impl<T: Serialize + DeserializeOwned> JsonSignature<T, IdentityPublicKey> {
+    pub fn verify(&self, public_key: &IdentityPublicKey) -> Result<T, String> {
+        public_key.verify(&self.message.as_bytes(), &self.signature.0).map_err(|e| e.to_string())?;
+        return Ok(
+            serde_json::from_str(
+                &self.message,
+            ).map_err(|e| format!("Invalid signed json or json doesn't match version request spec: {}", e))?,
+        );
+    }
 }
 
 impl<T: Serialize + DeserializeOwned, I> std::fmt::Debug for JsonSignature<T, I> {
@@ -28,16 +39,5 @@ impl<T: Serialize + DeserializeOwned, I> std::fmt::Debug for JsonSignature<T, I>
             .field("message", &self.message)
             .field("signature", &self.signature)
             .finish()
-    }
-}
-
-impl<T: Serialize + DeserializeOwned> JsonSignature<T, PublicKey> {
-    pub fn verify(&self, public_key: &PublicKey) -> Result<T, String> {
-        public_key.verify(&self.message.as_bytes(), &self.signature.0).map_err(|e| e.to_string())?;
-        return Ok(
-            serde_json::from_str(
-                &self.message,
-            ).map_err(|e| format!("Invalid signed json or json doesn't match version request spec: {}", e))?,
-        );
     }
 }

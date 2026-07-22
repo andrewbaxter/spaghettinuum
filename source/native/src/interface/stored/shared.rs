@@ -12,35 +12,8 @@ use {
     },
 };
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum SerialAddrInner {
-    V4(SerialIpv4),
-    V6(SerialIpv6),
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-struct SerialIpv4 {
-    addr: [u8; 4],
-    port: u16,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-struct SerialIpv6 {
-    addr: [u16; 8],
-    port: u16,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SerialAddr(pub SocketAddr);
-
-impl std::fmt::Display for SerialAddr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <dyn std::fmt::Display>::fmt(&self.0, f)
-    }
-}
 
 impl Serialize for SerialAddr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -56,6 +29,12 @@ impl Serialize for SerialAddr {
                 port: self.0.port(),
             }),
         }, serializer)
+    }
+}
+
+impl std::fmt::Display for SerialAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <dyn std::fmt::Display>::fmt(&self.0, f)
     }
 }
 
@@ -89,4 +68,25 @@ impl<'a> Deserialize<'a> for SerialAddr {
             ),
         })
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum SerialAddrInner {
+    V4(SerialIpv4),
+    V6(SerialIpv6),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+struct SerialIpv4 {
+    addr: [u8; 4],
+    port: u16,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+struct SerialIpv6 {
+    addr: [u16; 8],
+    port: u16,
 }

@@ -1,8 +1,4 @@
 use {
-    super::unstable_ip::{
-        UnstableIpv4,
-        UnstableIpv6,
-    },
     crate::interface::config::shared::{
         GlobalAddrConfig,
         IpVer,
@@ -32,6 +28,10 @@ use {
         net::IpAddr,
         str::FromStr,
         time::Duration,
+    },
+    super::unstable_ip::{
+        UnstableIpv4,
+        UnstableIpv6,
     },
     tokio::time::sleep,
 };

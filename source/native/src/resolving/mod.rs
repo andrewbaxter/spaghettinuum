@@ -6,7 +6,6 @@ use {
                 spagh::DEFAULT_API_PORT,
             },
             stored::record::{
-                self,
                 delegate_record::{
                     Delegate,
                     build_delegate_key,
@@ -18,10 +17,11 @@ use {
                     join_query_record_keys,
                     split_dns_name,
                 },
+                self,
             },
             wire::{
-                self,
                 api::resolve::v1::ResolveKeyValues,
+                self,
             },
         },
         service::resolver::API_ROUTE_RESOLVE,
@@ -38,11 +38,11 @@ use {
     http::Uri,
     htwrap::{
         htreq::{
-            self,
             Conn,
             Ips,
             Limits,
             connect_ips,
+            self,
             uri_parts,
         },
         url::{
@@ -74,44 +74,107 @@ use {
     },
 };
 
-/// For TLS (cert-based identity verification) a connection may need to be made to
-/// a domain name whose address can't be resolved, and must instead be provided
-/// over a separate channel (ex: DoT via manual configuration or RA/DHCP ADN).
-///
-/// This is kind of a super-URL that may carry with it associated address
-/// information to be used instead of looking up the address.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct UrlPair {
-    pub address: Option<IpAddr>,
-    pub url: Uri,
-}
-
-impl UrlPair {
-    pub fn join(&self, other: impl AsRef<str>) -> Self {
-        return Self {
-            address: self.address,
-            url: self.url.join(other),
-        };
+/// Connect to some http server that publishes its ip and tls certs over
+/// spaghettinuum. This is the ideal way to connect to such sites, it uses
+/// distributed certificate verification.
+pub async fn connect_content(
+    limits: Limits,
+    log: &Log,
+    resolvers: &[UrlPair],
+    url: &Uri,
+) -> Result<Conn, loga::Error> {
+    let (scheme, host, port) = uri_parts(&url)?;
+    let ResolveTlsRes { ips, certs } = resolve_for_tls(log, resolvers, &host).await?;
+    let mut cert_hashes = HashSet::new();
+    for cert in certs {
+        cert_hashes.insert(cert_pem_hash(&cert).stack_context(&log, "Invalid cert for host")?);
     }
+    return Ok(
+        htreq::connect_ips(
+            limits,
+            ips,
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(SpaghTlsClientVerifier {
+                    hashes: cert_hashes,
+                    inner: None,
+                }))
+                .with_no_client_auth(),
+            scheme,
+            host,
+            port,
+        ).await?,
+    );
 }
 
-impl From<Uri> for UrlPair {
-    fn from(value: Uri) -> Self {
-        return Self {
-            address: None,
-            url: value,
-        };
-    }
-}
-
-impl std::fmt::Display for UrlPair {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(addr) = &self.address {
-            return format_args!("{}={}", addr, self.url).fmt(f);
-        } else {
-            return self.url.fmt(f);
+/// Connect to a publisher node which either might be colocated with the resolver
+/// (full url pair) or standalone, resolved via a separate resolver (just a url).
+pub async fn connect_publisher_node(
+    limits: Limits,
+    log: &Log,
+    resolvers: &[UrlPair],
+    pair: &UrlPair,
+) -> Result<Conn, loga::Error> {
+    let log = log.fork(ea!(url = pair));
+    let (scheme, host, port) = htreq::uri_parts(&pair.url).stack_context(&log, "Invalid url")?;
+    if pair.address.is_some() {
+        return Ok(connect_resolver_node(limits, pair).await?);
+    } else {
+        let ResolveTlsRes { ips, certs } =
+            resolve_for_tls(&log, resolvers, &host).await.stack_context(&log, "Error resolving host")?;
+        let mut cert_hashes = HashSet::new();
+        for cert in certs {
+            cert_hashes.insert(cert_pem_hash(&cert).stack_context(&log, "Invalid cert for host")?);
         }
+        return Ok(
+            connect_ips(
+                limits,
+                ips,
+                rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(SpaghTlsClientVerifier {
+                        hashes: cert_hashes,
+                        inner: None,
+                    }))
+                    .with_no_client_auth(),
+                scheme,
+                host,
+                port,
+            )
+                .await
+                .stack_context(&log, "Failed to establish connection")?,
+        );
     }
+}
+
+/// Connect to a resolver node. A full UrlPair (with both ip address and domain
+/// name) is expected, since this doesn't do name resolution and the name should be
+/// provided via other channels.
+///
+/// As a fallback, skip verification on non-named hosts (similar to DoT fallbacks).
+pub async fn connect_resolver_node(limits: Limits, pair: &UrlPair) -> Result<Conn, loga::Error> {
+    let (scheme, host, port) = uri_parts(&pair.url).context("API URL incomplete")?;
+    let verifier = if matches!(host, htreq::Host::Name(_)) {
+        Arc::new(SpaghTlsClientVerifier {
+            hashes: Default::default(),
+            inner: None,
+        }) as Arc<dyn ServerCertVerifier>
+    } else {
+        Arc::new(UnverifyingVerifier)
+    };
+    return Ok(
+        connect_ips(
+            limits,
+            Ips::from(pair.address.unwrap()),
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(verifier)
+                .with_no_client_auth(),
+            scheme,
+            host,
+            port,
+        ).await?,
+    );
 }
 
 /// This returns a list of ip address/url pairs of resolvers on the system.
@@ -179,109 +242,6 @@ pub fn default_resolver_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
         return Err(loga::err("Couldn't identify any default resolvers by scanning the system"));
     }
     return Ok(out.into_iter().collect());
-}
-
-/// Connect to a publisher node which either might be colocated with the resolver
-/// (full url pair) or standalone, resolved via a separate resolver (just a url).
-pub async fn connect_publisher_node(
-    limits: Limits,
-    log: &Log,
-    resolvers: &[UrlPair],
-    pair: &UrlPair,
-) -> Result<Conn, loga::Error> {
-    let log = log.fork(ea!(url = pair));
-    let (scheme, host, port) = htreq::uri_parts(&pair.url).stack_context(&log, "Invalid url")?;
-    if pair.address.is_some() {
-        return Ok(connect_resolver_node(limits, pair).await?);
-    } else {
-        let ResolveTlsRes { ips, certs } =
-            resolve_for_tls(&log, resolvers, &host).await.stack_context(&log, "Error resolving host")?;
-        let mut cert_hashes = HashSet::new();
-        for cert in certs {
-            cert_hashes.insert(cert_pem_hash(&cert).stack_context(&log, "Invalid cert for host")?);
-        }
-        return Ok(
-            connect_ips(
-                limits,
-                ips,
-                rustls::ClientConfig::builder()
-                    .dangerous()
-                    .with_custom_certificate_verifier(Arc::new(SpaghTlsClientVerifier {
-                        hashes: cert_hashes,
-                        inner: None,
-                    }))
-                    .with_no_client_auth(),
-                scheme,
-                host,
-                port,
-            )
-                .await
-                .stack_context(&log, "Failed to establish connection")?,
-        );
-    }
-}
-
-/// Connect to some http server that publishes its ip and tls certs over
-/// spaghettinuum. This is the ideal way to connect to such sites, it uses
-/// distributed certificate verification.
-pub async fn connect_content(
-    limits: Limits,
-    log: &Log,
-    resolvers: &[UrlPair],
-    url: &Uri,
-) -> Result<Conn, loga::Error> {
-    let (scheme, host, port) = uri_parts(&url)?;
-    let ResolveTlsRes { ips, certs } = resolve_for_tls(log, resolvers, &host).await?;
-    let mut cert_hashes = HashSet::new();
-    for cert in certs {
-        cert_hashes.insert(cert_pem_hash(&cert).stack_context(&log, "Invalid cert for host")?);
-    }
-    return Ok(
-        htreq::connect_ips(
-            limits,
-            ips,
-            rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(SpaghTlsClientVerifier {
-                    hashes: cert_hashes,
-                    inner: None,
-                }))
-                .with_no_client_auth(),
-            scheme,
-            host,
-            port,
-        ).await?,
-    );
-}
-
-/// Connect to a resolver node. A full UrlPair (with both ip address and domain
-/// name) is expected, since this doesn't do name resolution and the name should be
-/// provided via other channels.
-///
-/// As a fallback, skip verification on non-named hosts (similar to DoT fallbacks).
-pub async fn connect_resolver_node(limits: Limits, pair: &UrlPair) -> Result<Conn, loga::Error> {
-    let (scheme, host, port) = uri_parts(&pair.url).context("API URL incomplete")?;
-    let verifier = if matches!(host, htreq::Host::Name(_)) {
-        Arc::new(SpaghTlsClientVerifier {
-            hashes: Default::default(),
-            inner: None,
-        }) as Arc<dyn ServerCertVerifier>
-    } else {
-        Arc::new(UnverifyingVerifier)
-    };
-    return Ok(
-        connect_ips(
-            limits,
-            Ips::from(pair.address.unwrap()),
-            rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(verifier)
-                .with_no_client_auth(),
-            scheme,
-            host,
-            port,
-        ).await?,
-    );
 }
 
 /// Resolve ip addresses for a host plus any additional keys. Delegation records
@@ -494,13 +454,6 @@ pub async fn resolve(
     }
 }
 
-pub struct ResolveTlsRes {
-    /// IP addresses of host (from A and AAAA records)
-    pub ips: htreq::Ips,
-    /// TLS public keys (PEM) for the host
-    pub certs: Vec<String>,
-}
-
 /// Like `resolve` but also requests TLS certs for the host. This should be
 /// sufficient for making http requests.
 pub async fn resolve_for_tls(
@@ -541,4 +494,51 @@ pub async fn resolve_for_tls(
         ips: ips,
         certs: certs,
     });
+}
+
+pub struct ResolveTlsRes {
+    /// TLS public keys (PEM) for the host
+    pub certs: Vec<String>,
+    /// IP addresses of host (from A and AAAA records)
+    pub ips: htreq::Ips,
+}
+
+/// For TLS (cert-based identity verification) a connection may need to be made to
+/// a domain name whose address can't be resolved, and must instead be provided
+/// over a separate channel (ex: DoT via manual configuration or RA/DHCP ADN).
+///
+/// This is kind of a super-URL that may carry with it associated address
+/// information to be used instead of looking up the address.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct UrlPair {
+    pub address: Option<IpAddr>,
+    pub url: Uri,
+}
+
+impl UrlPair {
+    pub fn join(&self, other: impl AsRef<str>) -> Self {
+        return Self {
+            address: self.address,
+            url: self.url.join(other),
+        };
+    }
+}
+
+impl From<Uri> for UrlPair {
+    fn from(value: Uri) -> Self {
+        return Self {
+            address: None,
+            url: value,
+        };
+    }
+}
+
+impl std::fmt::Display for UrlPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(addr) = &self.address {
+            return format_args!("{}={}", addr, self.url).fmt(f);
+        } else {
+            return self.url.fmt(f);
+        }
+    }
 }

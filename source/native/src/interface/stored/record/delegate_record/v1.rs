@@ -1,9 +1,7 @@
 use {
-    crate::interface::stored::{
-        record::record_utils::{
-            RecordKey,
-            RecordRoot,
-        },
+    crate::interface::stored::record::record_utils::{
+        RecordKey,
+        RecordRoot,
     },
     schemars::JsonSchema,
     serde::{

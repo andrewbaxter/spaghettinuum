@@ -1,8 +1,9 @@
+pub mod dns;
+
 use {
     crate::{
         interface::{
             stored::{
-                self,
                 dbidentity::DbIdentity,
                 record::record_utils::{
                     RecordKey,
@@ -10,6 +11,7 @@ use {
                     split_query_record_keys,
                     split_record_key,
                 },
+                self,
             },
             wire::{
                 self,
@@ -25,24 +27,23 @@ use {
             ResultVisErr,
             VisErr,
             db_util::setup_db,
-            signed::IdentSignatureMethods,
             tls_util::cert_der_hash,
         },
     },
     flowcontrol::shed,
     htwrap::{
         htreq::{
-            self,
             Conn,
             Limits,
+            self,
         },
         htserve::{
-            self,
             responses::{
                 response_200_json,
                 response_400,
                 response_503,
             },
+            self,
         },
     },
     hyper::Uri,
@@ -60,7 +61,7 @@ use {
         thread_rng,
     },
     rustls::ClientConfig,
-    spaghettinuum::interface::public_key::PublicKey,
+    spaghettinuum::interface::id::Identity,
     std::{
         collections::HashMap,
         net::SocketAddr,
@@ -82,80 +83,53 @@ use {
 };
 
 good_ormning::good_module!(pub db, "resolver");
-pub mod dns;
 
-#[derive(Debug)]
-pub struct SingleKeyVerifier {
-    hash: Vec<u8>,
-}
+pub const API_ROUTE_RESOLVE: &str = "resolve";
 
-impl SingleKeyVerifier {
-    pub fn new(hash: Vec<u8>) -> Arc<dyn rustls::client::danger::ServerCertVerifier> {
-        return Arc::new(SingleKeyVerifier { hash });
+/// Launch a publisher into the task manager and return the API endpoints for
+/// attaching to the user-facing HTTP servers.
+pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::handler::PathRouter<htserve::responses::Body> {
+    struct Inner {
+        log: Log,
+        resolver: Resolver,
     }
-}
 
-impl rustls::client::danger::ServerCertVerifier for SingleKeyVerifier {
-    fn verify_server_cert(
-        &self,
-        end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        let got_hash =
-            cert_der_hash(
-                end_entity.as_ref(),
-            ).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
-        if got_hash != self.hash {
-            return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName));
+    let state = Arc::new(Inner {
+        resolver: resolver.clone(),
+        log: log,
+    });
+    let mut r = htserve::handler::PathRouter::default();
+    r.insert("/v1", Box::new(htwrap::handler!((state: Arc < Inner >)(args -> htserve:: responses:: Body) {
+        match async {
+            ta_vis_res!(wire::api::resolve::v1::ResolveResp);
+            let ident_src =
+                args.subpath.strip_prefix("/").context("Missing identity final path element").err_external()?;
+            let keys = split_query_record_keys(&args.query);
+            let kvs =
+                state
+                    .resolver
+                    .get(
+                        &Identity::from_str(&ident_src)
+                            .map_err(loga::err)
+                            .context_with("Failed to parse identity", ea!(identity = ident_src))
+                            .err_external()?,
+                        keys,
+                    )
+                    .await
+                    .err_internal()?;
+            return Ok(kvs.into_iter().collect::<Vec<_>>());
+        }.await {
+            Ok(r) => response_200_json(r),
+            Err(VisErr::External(e)) => {
+                return response_400(e);
+            },
+            Err(VisErr::Internal(e)) => {
+                state.log.log_err(loga::WARN, e.context("Error responding to query"));
+                return response_503();
+            },
         }
-        return Ok(rustls::client::danger::ServerCertVerified::assertion());
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        return vec![
-            rustls::SignatureScheme::RSA_PKCS1_SHA1,
-            rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::RSA_PKCS1_SHA384,
-            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            rustls::SignatureScheme::RSA_PKCS1_SHA512,
-            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-            rustls::SignatureScheme::RSA_PSS_SHA384,
-            rustls::SignatureScheme::RSA_PSS_SHA512,
-            rustls::SignatureScheme::ED25519,
-            rustls::SignatureScheme::ED448
-        ];
-    }
-}
-
-struct Resolver_ {
-    node: Node,
-    log: Log,
-    cache: Cache<(PublicKey, RecordKey), (SystemTime, Option<String>)>,
-    publisher: Option<(SocketAddr, Arc<Publisher>)>,
+    }))).unwrap();
+    return r;
 }
 
 /// This is the core of the resolver; it does lookups using a local node. If you
@@ -165,154 +139,9 @@ struct Resolver_ {
 pub struct Resolver(Arc<Resolver_>);
 
 impl Resolver {
-    /// Start a new resolver core in the task manager.
-    ///
-    /// * `max_cache`: The maximum data to store in the cache (bytes, roughly). Defaults to
-    ///   about 64MiB.
-    ///
-    /// * `cache_path`: If a cache path is provided the cache will be persisted there when
-    ///   shutting down, and initialized from that data when starting up.
-    pub async fn new(
-        log: &Log,
-        tm: &TaskManager,
-        node: Node,
-        max_cache: Option<u64>,
-        cache_dir: &Path,
-        publisher: Option<(SocketAddr, Arc<Publisher>)>,
-    ) -> Result<Resolver, loga::Error> {
-        let db_pool =
-            setup_db(&cache_dir.join("resolver.sqlite3"), |conn| db::migrate(conn, None).map(|_| ()))
-                .await
-                .stack_context(log, "Error initializing database")?;
-        let cache = Cache::builder().weigher(|_key, pair: &(SystemTime, Option<String>)| -> u32 {
-            match &pair.1 {
-                Some(v) => v.len().try_into().unwrap_or(u32::MAX),
-                None => 1,
-            }
-        }).max_capacity(max_cache.unwrap_or(64 * 1024 * 1024)).build();
-
-        // Seed with stored cache data
-        {
-            let log = &log.fork(ea!(subsys = "restore_cache"));
-            let db_pool = db_pool.clone();
-            match async {
-                let mut edge = Some(i64::MAX);
-                while let Some(e) = edge.take() {
-                    for row in db_pool
-                        .get()
-                        .await
-                        .stack_context(log, "Error gettting db connection")?
-                        .interact(move |conn| {
-                            let mut db = db::DbResolver(conn);
-                            good_ormning::sqlite::good_query_many!(
-                                db,
-                                "resolver",
-                                //# genemichaels-external: sql-formatter-sqlite
-                                r#"SELECT
-                                     rowid,
-                                     identity,
-                                     key,
-                                     expires,
-                                     value
-                                   FROM
-                                     cache_persist
-                                   WHERE
-                                     rowid < ${i64 = e}
-                                   ORDER BY
-                                     rowid DESC
-                                   LIMIT
-                                     50
-                                   "#;
-                                &mut db
-                            )
-                        })
-                        .await?? {
-                        edge = Some(row.rowid);
-                        cache
-                            .insert(
-                                (row.identity.0.clone(), split_record_key(&row.key)),
-                                (row.expires.into(), row.value),
-                            )
-                            .await;
-                    }
-                }
-                return Ok(()) as Result<(), loga::Error>;
-            }.await {
-                Err(e) => {
-                    log.log_err(loga::WARN, e.context("Error seeding cache with persisted data"));
-                },
-                _ => { },
-            }
-        }
-        let core = Resolver(Arc::new(Resolver_ {
-            node: node,
-            log: log.clone(),
-            cache: cache.clone(),
-            publisher: publisher,
-        }));
-
-        // Bg core cleanup
-        tm.task("Resolver - cache persister", {
-            let tm1 = tm.clone();
-            let db_pool = db_pool.clone();
-            let log = log.fork(ea!(subsys = "persist_cache"));
-            let cache = cache.clone();
-            async move {
-                let log = &log;
-                match async {
-                    ta_res!(());
-                    tm1.until_terminate().await;
-                    db_pool.get().await.stack_context(log, "Error gettting db connection")?.interact({
-                        let cache = cache.clone();
-                        move |conn| {
-                            let mut db = db::DbResolver(conn);
-                            good_ormning::sqlite::good_query!(
-                                db,
-                                "resolver",
-                                //# genemichaels-external: sql-formatter-sqlite
-                                r#"DELETE FROM cache_persist
-                                   "#;
-                                &mut db
-                            )?;
-                            for (k, v) in cache.iter() {
-                                let db_identity = DbIdentity(k.0.clone());
-                                let key = join_record_key(&k.1);
-                                let expires: crate::utils::time_util::UtcSecs = v.0.into();
-                                good_ormning::sqlite::good_query!(
-                                    db,
-                                    "resolver",
-                                    //# genemichaels-external: sql-formatter-sqlite
-                                    r#"INSERT INTO
-                                         cache_persist (identity, key, expires, value)
-                                       VALUES
-                                         (
-                                           ${ident = &db_identity},
-                                           ${string = key.as_str()},
-                                           ${utc_secs =&expires},
-                                           ${opt string = v.1.as_ref().map(|v| v.as_str())}
-                                         )
-                                       "#;
-                                    &mut db
-                                )?;
-                            }
-                            return Ok(()) as Result<_, loga::Error>;
-                        }
-                    }).await??;
-                    return Ok(());
-                }.await {
-                    Ok(_) => { },
-                    Err(e) => {
-                        log.log_err(loga::WARN, e.context("Failed to persist cache at shutdown"));
-                    },
-                }
-            }
-        });
-        Ok(core)
-    }
-
     pub async fn get(
         &self,
-        ident: &PublicKey,
+        ident: &Identity,
         request_keys: Vec<RecordKey>,
     ) -> Result<wire::resolve::v1::ResolveKeyValues, loga::Error> {
         // First check cache. Only respond with cache answers if all keys are in cache
@@ -361,7 +190,7 @@ impl Resolver {
         };
 
         // Not in cache, find publisher via nodes
-        let resp = match self.0.node.get(ident.id()).await {
+        let resp = match self.0.node.get(ident.clone()).await {
             Some(v) => v,
             None => {
                 self
@@ -487,52 +316,223 @@ impl Resolver {
         });
         return Ok(values);
     }
+
+    /// Start a new resolver core in the task manager.
+    ///
+    /// * `max_cache`: The maximum data to store in the cache (bytes, roughly). Defaults to
+    ///   about 64MiB.
+    ///
+    /// * `cache_path`: If a cache path is provided the cache will be persisted there when
+    ///   shutting down, and initialized from that data when starting up.
+    pub async fn new(
+        log: &Log,
+        tm: &TaskManager,
+        node: Node,
+        max_cache: Option<u64>,
+        cache_dir: &Path,
+        publisher: Option<(SocketAddr, Arc<Publisher>)>,
+    ) -> Result<Resolver, loga::Error> {
+        let db_pool =
+            setup_db(&cache_dir.join("resolver.sqlite3"), |conn| db::migrate(conn, None).map(|_| ()))
+                .await
+                .stack_context(log, "Error initializing database")?;
+        let cache = Cache::builder().weigher(|_key, pair: &(SystemTime, Option<String>)| -> u32 {
+            match &pair.1 {
+                Some(v) => v.len().try_into().unwrap_or(u32::MAX),
+                None => 1,
+            }
+        }).max_capacity(max_cache.unwrap_or(64 * 1024 * 1024)).build();
+
+        // Seed with stored cache data
+        {
+            let log = &log.fork(ea!(subsys = "restore_cache"));
+            let db_pool = db_pool.clone();
+            match async {
+                let mut edge = Some(i64::MAX);
+                while let Some(e) = edge.take() {
+                    for row in db_pool
+                        .get()
+                        .await
+                        .stack_context(log, "Error gettting db connection")?
+                        .interact(move |conn| {
+                            let mut db = db::DbResolver(conn);
+                            good_ormning::sqlite::good_query_many!(
+                                db,
+                                "resolver",
+                                //# genemichaels-external: sql-formatter-sqlite
+                                r#"SELECT
+                                     rowid,
+                                     identity,
+                                     key,
+                                     expires,
+                                     value
+                                   FROM
+                                     cache_persist
+                                   WHERE
+                                     rowid < ${i64 = e}
+                                   ORDER BY
+                                     rowid DESC
+                                   LIMIT
+                                     50
+                                   "#;
+                                &mut db
+                            )
+                        })
+                        .await?? {
+                        edge = Some(row.rowid);
+                        cache
+                            .insert(
+                                (row.identity.0.clone(), split_record_key(&row.key)),
+                                (row.expires.into(), row.value),
+                            )
+                            .await;
+                    }
+                }
+                return Ok(()) as Result<(), loga::Error>;
+            }.await {
+                Err(e) => {
+                    log.log_err(loga::WARN, e.context("Error seeding cache with persisted data"));
+                },
+                _ => { },
+            }
+        }
+        let core = Resolver(Arc::new(Resolver_ {
+            node: node,
+            log: log.clone(),
+            cache: cache.clone(),
+            publisher: publisher,
+        }));
+
+        // Bg core cleanup
+        tm.task("Resolver - cache persister", {
+            let tm1 = tm.clone();
+            let db_pool = db_pool.clone();
+            let log = log.fork(ea!(subsys = "persist_cache"));
+            let cache = cache.clone();
+            async move {
+                let log = &log;
+                match async {
+                    ta_res!(());
+                    tm1.until_terminate().await;
+                    db_pool.get().await.stack_context(log, "Error gettting db connection")?.interact({
+                        let cache = cache.clone();
+                        move |conn| {
+                            let mut db = db::DbResolver(conn);
+                            good_ormning::sqlite::good_query!(
+                                db,
+                                "resolver",
+                                //# genemichaels-external: sql-formatter-sqlite
+                                r#"DELETE FROM cache_persist
+                                   "#;
+                                &mut db
+                            )?;
+                            for (k, v) in cache.iter() {
+                                let db_identity = DbIdentity(k.0.clone());
+                                let key = join_record_key(&k.1);
+                                let expires: crate::utils::time_util::UtcSecs = v.0.into();
+                                good_ormning::sqlite::good_query!(
+                                    db,
+                                    "resolver",
+                                    //# genemichaels-external: sql-formatter-sqlite
+                                    r#"INSERT INTO
+                                         cache_persist (identity, key, expires, value)
+                                       VALUES
+                                         (
+                                           ${ident = &db_identity},
+                                           ${string = key.as_str()},
+                                           ${utc_secs = &expires},
+                                           ${opt string = v.1.as_ref().map(|v| v.as_str())}
+                                         )
+                                       "#;
+                                    &mut db
+                                )?;
+                            }
+                            return Ok(()) as Result<_, loga::Error>;
+                        }
+                    }).await??;
+                    return Ok(());
+                }.await {
+                    Ok(_) => { },
+                    Err(e) => {
+                        log.log_err(loga::WARN, e.context("Failed to persist cache at shutdown"));
+                    },
+                }
+            }
+        });
+        Ok(core)
+    }
 }
 
-pub const API_ROUTE_RESOLVE: &str = "resolve";
+struct Resolver_ {
+    cache: Cache<(Identity, RecordKey), (SystemTime, Option<String>)>,
+    log: Log,
+    node: Node,
+    publisher: Option<(SocketAddr, Arc<Publisher>)>,
+}
 
-/// Launch a publisher into the task manager and return the API endpoints for
-/// attaching to the user-facing HTTP servers.
-pub fn build_api_endpoints(log: Log, resolver: &Resolver) -> htserve::handler::PathRouter<htserve::responses::Body> {
-    struct Inner {
-        resolver: Resolver,
-        log: Log,
+#[derive(Debug)]
+pub struct SingleKeyVerifier {
+    hash: Vec<u8>,
+}
+
+impl SingleKeyVerifier {
+    pub fn new(hash: Vec<u8>) -> Arc<dyn rustls::client::danger::ServerCertVerifier> {
+        return Arc::new(SingleKeyVerifier { hash });
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for SingleKeyVerifier {
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        return vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA1,
+            rustls::SignatureScheme::ECDSA_SHA1_Legacy,
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+            rustls::SignatureScheme::ED25519,
+            rustls::SignatureScheme::ED448,
+        ];
     }
 
-    let state = Arc::new(Inner {
-        resolver: resolver.clone(),
-        log: log,
-    });
-    let mut r = htserve::handler::PathRouter::default();
-    r.insert("/v1", Box::new(htwrap::handler!((state: Arc < Inner >)(args -> htserve:: responses:: Body) {
-        match async {
-            ta_vis_res!(wire::api::resolve::v1::ResolveResp);
-            let ident_src =
-                args.subpath.strip_prefix("/").context("Missing identity final path element").err_external()?;
-            let keys = split_query_record_keys(&args.query);
-            let kvs =
-                state
-                    .resolver
-                    .get(
-                        &PublicKey::from_str(&ident_src)
-                            .map_err(loga::err)
-                            .context_with("Failed to parse identity", ea!(identity = ident_src))
-                            .err_external()?,
-                        keys,
-                    )
-                    .await
-                    .err_internal()?;
-            return Ok(kvs.into_iter().collect::<Vec<_>>());
-        }.await {
-            Ok(r) => response_200_json(r),
-            Err(VisErr::External(e)) => {
-                return response_400(e);
-            },
-            Err(VisErr::Internal(e)) => {
-                state.log.log_err(loga::WARN, e.context("Error responding to query"));
-                return response_503();
-            },
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let got_hash =
+            cert_der_hash(
+                end_entity.as_ref(),
+            ).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+        if got_hash != self.hash {
+            return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName));
         }
-    }))).unwrap();
-    return r;
+        return Ok(rustls::client::danger::ServerCertVerified::assertion());
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        return Ok(rustls::client::danger::HandshakeSignatureValid::assertion());
+    }
 }

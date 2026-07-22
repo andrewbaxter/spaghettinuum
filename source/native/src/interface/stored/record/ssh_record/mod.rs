@@ -1,3 +1,6 @@
+pub mod v1;
+
+pub use v1 as latest;
 use {
     schemars::JsonSchema,
     serde::{
@@ -5,10 +8,6 @@ use {
         Serialize,
     },
 };
-
-pub mod v1;
-
-pub use v1 as latest;
 
 pub const KEY_SUFFIX_SSH_HOSTKEYS: &'static str = "ssh_hostkeys";
 

@@ -1,8 +1,8 @@
 use {
     aargvark::Aargvark,
     htwrap::htreq::{
-        self,
         Limits,
+        self,
     },
     itertools::Itertools,
     loga::{
@@ -23,7 +23,7 @@ use {
 
 #[derive(Aargvark)]
 pub struct Args {
-    /// PublicKey to query
+    /// Identity to query
     pub identity: String,
     /// Keys published by the identity, to query
     pub keys: Vec<String>,

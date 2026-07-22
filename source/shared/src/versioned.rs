@@ -1,5 +1,3 @@
-pub type VerInt = u16;
-
 #[macro_export]
 macro_rules! ver_int_len{
     () => {
@@ -103,3 +101,5 @@ macro_rules! versioned{
         }
     };
 }
+
+pub type VerInt = u16;

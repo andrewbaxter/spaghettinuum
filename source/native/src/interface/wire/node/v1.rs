@@ -1,31 +1,39 @@
 use {
+    core::fmt::Debug,
     crate::interface::stored::{
         announcement::Announcement,
+        node_identity::NodeIdentity,
         node_public_key::NodePublicKey,
         shared::SerialAddr,
     },
-    core::fmt::Debug,
     generic_array::GenericArray,
     serde::{
-        de::DeserializeOwned,
         Deserialize,
         Serialize,
         Serializer,
+        de::DeserializeOwned,
     },
-    spaghettinuum::interface::{
-        id::Id,
-        public_key::PublicKey,
-    },
+    spaghettinuum::interface::id::Identity,
     std::marker::PhantomData,
 };
+
+pub trait Req {
+    fn into_req(self) -> Message;
+}
+
+pub trait ReqResp {
+    type Resp: DeserializeOwned;
+
+    fn into_req(self) -> Message;
+}
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct BincodeSignature<T: Serialize + DeserializeOwned, I> {
-    pub message: Vec<u8>,
-    pub signature: Vec<u8>,
     #[serde(skip)]
     pub _p: PhantomData<(T, I)>,
+    pub message: Vec<u8>,
+    pub signature: Vec<u8>,
 }
 
 impl<T: Serialize + DeserializeOwned, I> BincodeSignature<T, I> {
@@ -44,6 +52,25 @@ impl<T: Serialize + DeserializeOwned + Debug, I> std::fmt::Debug for BincodeSign
         }
         return Ok(());
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct Challenge(pub Vec<u8>);
+
+impl ReqResp for Challenge {
+    type Resp = ChallengeResponse;
+
+    fn into_req(self) -> Message {
+        return Message::Challenge(self);
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ChallengeResponse {
+    pub public_key: NodePublicKey,
+    pub signature: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
@@ -72,53 +99,20 @@ impl<'a> Deserialize<'a> for DhtCoord {
     }
 }
 
-pub trait Req {
-    fn into_req(self) -> Message;
-}
-
-pub trait ReqResp {
-    type Resp: DeserializeOwned;
-
-    fn into_req(self) -> Message;
-}
-
 // Find
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum FindGoal {
     Coord(DhtCoord),
-    Id(Id),
+    Identity(Identity),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct FindRequest {
-    pub sender: NodePublicKey,
     pub challenge: Vec<u8>,
     pub goal: FindGoal,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct NodeInfo {
-    pub ident: NodePublicKey,
-    pub address: SerialAddr,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct FindResponseContent {
-    pub goal: FindGoal,
-    pub challenge: Vec<u8>,
-    pub nodes: Vec<NodeInfo>,
-    pub value: Option<Announcement>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct FindResponse {
-    pub sender: NodePublicKey,
-    pub content: BincodeSignature<FindResponseContent, NodePublicKey>,
+    pub sender: NodeIdentity,
 }
 
 impl ReqResp for FindRequest {
@@ -129,68 +123,29 @@ impl ReqResp for FindRequest {
     }
 }
 
-// # Store
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct StoreRequest {
-    pub key: Id,
-    pub value: Announcement,
+pub struct FindResponse {
+    pub content: BincodeSignature<FindResponseContent, NodePublicKey>,
+    pub sender: NodePublicKey,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct StoreResponse {
-    pub key: Id,
-    pub value: Announcement,
+pub struct FindResponseContent {
+    pub challenge: Vec<u8>,
+    pub goal: FindGoal,
+    pub nodes: Vec<NodeInfo>,
+    pub value: Option<Announcement>,
 }
 
-impl Req for StoreRequest {
-    fn into_req(self) -> Message {
-        return Message::Store(self);
-    }
-}
-
-// # Ping
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct PingRequest;
-
-impl ReqResp for PingRequest {
-    type Resp = NodePublicKey;
-
-    fn into_req(self) -> Message {
-        return Message::Ping(self);
-    }
-}
-
-// # Challenge
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct Challenge(pub Vec<u8>);
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct ChallengeResponse {
-    pub public_key: NodePublicKey,
-    pub signature: Vec<u8>,
-}
-
-impl ReqResp for Challenge {
-    type Resp = ChallengeResponse;
-
-    fn into_req(self) -> Message {
-        return Message::Challenge(self);
-    }
-}
-
-// # Assembly
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Message {
-    Find(FindRequest),
-    Store(StoreRequest),
-    Ping(PingRequest),
     Challenge(Challenge),
+    Find(FindRequest),
+    Ping(PingRequest),
+    Store(StoreRequest),
 }
 
 impl Message {
@@ -203,9 +158,47 @@ impl Message {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct NodeInfo {
+    pub address: SerialAddr,
+    pub ident: NodeIdentity,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct NodeState {
     pub node: NodeInfo,
     pub unresponsive: bool,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct PingRequest;
+
+impl ReqResp for PingRequest {
+    type Resp = NodeIdentity;
+
+    fn into_req(self) -> Message {
+        return Message::Ping(self);
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct StoreRequest {
+    pub key: Identity,
+    pub value: Announcement,
+}
+
+impl Req for StoreRequest {
+    fn into_req(self) -> Message {
+        return Message::Store(self);
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct StoreResponse {
+    pub key: Identity,
+    pub value: Announcement,
 }

@@ -7,31 +7,15 @@ use {
     },
     good_ormning::runtime::GoodError,
     loga::{
-        ea,
         ErrContext,
         Log,
         ResultContext,
+        ea,
     },
     rusqlite::Transaction,
     std::path::Path,
     tokio::fs::create_dir_all,
 };
-
-pub async fn setup_db<
-    F: Send + 'static + FnOnce(&mut rusqlite::Connection) -> Result<(), GoodError>,
->(p: &Path, migrate: F) -> Result<Pool, loga::Error> {
-    let log = &Log::new().fork(ea!(path = p.to_string_lossy()));
-    if let Some(parent) = p.parent() {
-        create_dir_all(parent).await.stack_context(log, "Error creating parent directories for database")?;
-    }
-    let pool = Config::new(p).create_pool(Runtime::Tokio1).stack_context(log, "Error constructing db pool")?;
-    let conn = pool.get().await.stack_context(log, "Error getting db connection from pool")?;
-    conn.interact(move |conn| {
-        migrate(conn)?;
-        return Ok(()) as Result<(), loga::Error>;
-    }).await.stack_context(log, "Error performing db interaction")?.stack_context(log, "Error migrating database")?;
-    return Ok(pool);
-}
 
 #[async_trait]
 pub trait DbTx {
@@ -66,4 +50,20 @@ impl DbTx for Pool {
             }
         }).await??);
     }
+}
+
+pub async fn setup_db<
+    F: Send + 'static + FnOnce(&mut rusqlite::Connection) -> Result<(), GoodError>,
+>(p: &Path, migrate: F) -> Result<Pool, loga::Error> {
+    let log = &Log::new().fork(ea!(path = p.to_string_lossy()));
+    if let Some(parent) = p.parent() {
+        create_dir_all(parent).await.stack_context(log, "Error creating parent directories for database")?;
+    }
+    let pool = Config::new(p).create_pool(Runtime::Tokio1).stack_context(log, "Error constructing db pool")?;
+    let conn = pool.get().await.stack_context(log, "Error getting db connection from pool")?;
+    conn.interact(move |conn| {
+        migrate(conn)?;
+        return Ok(()) as Result<(), loga::Error>;
+    }).await.stack_context(log, "Error performing db interaction")?.stack_context(log, "Error migrating database")?;
+    return Ok(pool);
 }

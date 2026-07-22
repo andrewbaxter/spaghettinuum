@@ -1,20 +1,14 @@
 use {
-    std::time::Duration,
     schemars::JsonSchema,
     serde::{
         Deserialize,
         Serialize,
     },
+    std::time::Duration,
 };
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug, JsonSchema)]
 pub struct Minutes(pub u64);
-
-impl From<Duration> for Minutes {
-    fn from(value: Duration) -> Self {
-        return Self(value.as_secs() / 60);
-    }
-}
 
 impl Minutes {
     pub fn as_duration(self) -> Duration {
@@ -22,12 +16,18 @@ impl Minutes {
     }
 }
 
+impl From<Duration> for Minutes {
+    fn from(value: Duration) -> Self {
+        return Self(value.as_secs() / 60);
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RecordValue {
-    /// Time record can be cached (in minutes)
-    pub ttl: Minutes,
     /// Data, or nothing for explicitly removed data (to override previously published
     /// data).
     pub data: Option<serde_json::Value>,
+    /// Time record can be cached (in minutes)
+    pub ttl: Minutes,
 }

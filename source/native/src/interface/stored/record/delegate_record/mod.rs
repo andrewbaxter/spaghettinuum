@@ -1,15 +1,14 @@
+pub mod v1;
+
+pub use v1 as latest;
 use {
-    super::record_utils::RecordKey,
     schemars::JsonSchema,
     serde::{
         Deserialize,
         Serialize,
     },
+    super::record_utils::RecordKey,
 };
-
-pub mod v1;
-
-pub use v1 as latest;
 
 pub const KEY_SUFFIX_DELEGATE: &'static str = "delegate";
 

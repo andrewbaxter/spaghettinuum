@@ -1,34 +1,33 @@
 use {
-    super::Resolver,
+    async_trait::async_trait,
     crate::{
         interface::{
             config::spagh::FunctionResolverDns,
             stored::{
-                self,
                 record::{
                     delegate_record::build_delegate_key,
                     dns_record::{
-                        build_dns_key,
                         RecordType,
+                        build_dns_key,
                     },
                     record_utils::{
+                        RecordKey,
                         join_dns_name,
                         split_dns_name,
-                        RecordKey,
                     },
                 },
+                self,
             },
         },
         ta_res,
         ta_vis_res,
         utils::{
-            dns_util::UpstreamDns,
-            time_util::UtcSecs,
             ResultVisErr,
             VisErr,
+            dns_util::UpstreamDns,
+            time_util::UtcSecs,
         },
     },
-    async_trait::async_trait,
     flowcontrol::shed,
     futures::StreamExt,
     hickory_proto::{
@@ -40,6 +39,9 @@ use {
             ResponseCode,
         },
         rr::{
+            LowerName,
+            RData,
+            Record,
             rdata::{
                 A,
                 AAAA,
@@ -47,9 +49,6 @@ use {
                 MX,
                 TXT,
             },
-            LowerName,
-            RData,
-            Record,
         },
         xfer::{
             DnsHandle,
@@ -58,28 +57,28 @@ use {
         },
     },
     hickory_resolver::{
+        Name,
         name_server::{
             NameServerPool,
             TokioConnectionProvider,
         },
-        Name,
     },
     hickory_server::{
         authority::MessageResponseBuilder,
         server::ResponseInfo,
     },
     loga::{
-        ea,
         DebugDisplay,
         ErrContext,
         Log,
         ResultContext,
+        ea,
     },
     rand::{
         seq::SliceRandom,
         thread_rng,
     },
-    spaghettinuum::interface::public_key::PublicKey,
+    spaghettinuum::interface::id::Identity,
     std::{
         collections::HashMap,
         net::{
@@ -95,6 +94,7 @@ use {
             SystemTime,
         },
     },
+    super::Resolver,
     taskmanager::TaskManager,
     tokio::{
         net::{
@@ -115,12 +115,12 @@ pub async fn start_dns_bridge(
     dns_config: FunctionResolverDns,
 ) -> Result<(), loga::Error> {
     struct HandlerInner {
-        log: Log,
-        resolver: Resolver,
-        upstream: NameServerPool<TokioConnectionProvider>,
-        synthetic_self_record: Option<LowerName>,
         global_ipv4: Vec<Ipv4Addr>,
         global_ipv6: Vec<Ipv6Addr>,
+        log: Log,
+        resolver: Resolver,
+        synthetic_self_record: Option<LowerName>,
+        upstream: NameServerPool<TokioConnectionProvider>,
     }
 
     struct Handler(Arc<HandlerInner>);
@@ -196,7 +196,7 @@ pub async fn start_dns_bridge(
                         async fn do_resolve(
                             self1: &Arc<HandlerInner>,
                             original_name: &LowerName,
-                            ident: &PublicKey,
+                            ident: &Identity,
                             path: RecordKey,
                             explicit_request_keys: Vec<RecordKey>,
                         ) -> Result<DoResolveRes, VisErr> {
@@ -628,7 +628,7 @@ pub async fn start_dns_bridge(
     } else {
         vec![
             SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 53),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53)
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53),
         ]
     };
     let tcp_bind_addrs = if let Some(bind_addrs) = dns_config.tcp_bind_addrs {
@@ -640,7 +640,7 @@ pub async fn start_dns_bridge(
     } else {
         vec![
             SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 53),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53)
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53),
         ]
     };
     let dot_bind_addrs = if let Some(bind_addrs) = dns_config.dot_bind_addrs {
@@ -652,7 +652,7 @@ pub async fn start_dns_bridge(
     } else {
         vec![
             SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 853),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 853)
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 853),
         ]
     };
     let mut registered = false;

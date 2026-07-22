@@ -18,16 +18,6 @@ use {
     },
 };
 
-fn validate(schema: &jsonschema::JSONSchema, path: &Path) {
-    if let Err(e) = schema.validate(&serde_json::from_slice(&read(path).unwrap()).unwrap()) {
-        for e in e {
-            println!("Validation error: {}", e);
-            println!("Instance path: {}", e.instance_path);
-        }
-        exit(1);
-    }
-}
-
 pub fn main() {
     let readme_root = PathBuf::from(&env::var("CARGO_MANIFEST_DIR").unwrap()).parent().unwrap().join("readme");
     let out = readme_root.join("schemas");
@@ -79,4 +69,14 @@ pub fn main() {
         out.join("resolve.schema.json"),
         &serde_json::to_string_pretty(&schema_for!(wire::api::resolve::latest::ResolveKeyValues)).unwrap(),
     ).unwrap();
+}
+
+fn validate(schema: &jsonschema::JSONSchema, path: &Path) {
+    if let Err(e) = schema.validate(&serde_json::from_slice(&read(path).unwrap()).unwrap()) {
+        for e in e {
+            println!("Validation error: {}", e);
+            println!("Instance path: {}", e.instance_path);
+        }
+        exit(1);
+    }
 }

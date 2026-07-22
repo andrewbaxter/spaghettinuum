@@ -1,22 +1,22 @@
 use {
+    async_trait::async_trait,
     crate::{
         interface::config::ENV_PUBLISHER_URLS,
         resolving::{
-            default_resolver_url_pairs,
             UrlPair,
+            default_resolver_url_pairs,
         },
         utils::{
             identity_secret::IdentitySigner,
             publish_util,
         },
     },
-    async_trait::async_trait,
     flowcontrol::shed,
     http::Uri,
     loga::{
-        ea,
         Log,
         ResultContext,
+        ea,
     },
     std::{
         collections::HashSet,
@@ -29,6 +29,40 @@ use {
         },
     },
 };
+
+#[async_trait]
+pub trait Publisher: Send + Sync {
+    async fn publish(
+        &self,
+        log: &Log,
+        identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
+        content: publish_util::PublishArgs,
+    ) -> Result<(), loga::Error>;
+}
+
+pub struct RemotePublisher {
+    pub publisher_urls: Vec<UrlPair>,
+    pub resolver_urls: Vec<UrlPair>,
+}
+
+#[async_trait]
+impl Publisher for RemotePublisher {
+    async fn publish(
+        &self,
+        log: &Log,
+        identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
+        content: publish_util::PublishArgs,
+    ) -> Result<(), loga::Error> {
+        publish_util::remote_publish(
+            log,
+            &self.resolver_urls,
+            &self.publisher_urls,
+            identity_signer,
+            content,
+        ).await?;
+        return Ok(());
+    }
+}
 
 pub fn system_publisher_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error> {
     shed!{
@@ -57,38 +91,4 @@ pub fn system_publisher_url_pairs(log: &Log) -> Result<Vec<UrlPair>, loga::Error
         return Ok(publishers.into_iter().collect());
     };
     return Ok(default_resolver_url_pairs(log)?);
-}
-
-#[async_trait]
-pub trait Publisher: Send + Sync {
-    async fn publish(
-        &self,
-        log: &Log,
-        identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-        content: publish_util::PublishArgs,
-    ) -> Result<(), loga::Error>;
-}
-
-pub struct RemotePublisher {
-    pub resolver_urls: Vec<UrlPair>,
-    pub publisher_urls: Vec<UrlPair>,
-}
-
-#[async_trait]
-impl Publisher for RemotePublisher {
-    async fn publish(
-        &self,
-        log: &Log,
-        identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-        content: publish_util::PublishArgs,
-    ) -> Result<(), loga::Error> {
-        publish_util::remote_publish(
-            log,
-            &self.resolver_urls,
-            &self.publisher_urls,
-            identity_signer,
-            content,
-        ).await?;
-        return Ok(());
-    }
 }

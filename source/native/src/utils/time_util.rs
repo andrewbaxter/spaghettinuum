@@ -16,31 +16,6 @@ use {
     },
 };
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, JsonSchema)]
-pub struct UtcSecs(pub u64);
-
-impl From<SystemTime> for UtcSecs {
-    fn from(value: SystemTime) -> Self {
-        return Self(value.duration_since(UNIX_EPOCH).unwrap().as_secs());
-    }
-}
-
-impl Into<SystemTime> for UtcSecs {
-    fn into(self) -> SystemTime {
-        return UNIX_EPOCH + Duration::from_secs(self.0);
-    }
-}
-
-impl GoodOrmningCustomI64<UtcSecs> for UtcSecs {
-    fn to_sql(value: &UtcSecs) -> i64 {
-        return i64::try_from(value.0).unwrap_or(i64::MAX);
-    }
-
-    fn from_sql(value: i64) -> Result<UtcSecs, String> {
-        return Ok(UtcSecs(value as u64));
-    }
-}
-
 pub trait ToInstant {
     fn to_instant(&self) -> Instant;
 }
@@ -59,5 +34,30 @@ impl ToInstant for SystemTime {
                 return now - past.duration();
             },
         }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, JsonSchema)]
+pub struct UtcSecs(pub u64);
+
+impl From<SystemTime> for UtcSecs {
+    fn from(value: SystemTime) -> Self {
+        return Self(value.duration_since(UNIX_EPOCH).unwrap().as_secs());
+    }
+}
+
+impl GoodOrmningCustomI64<UtcSecs> for UtcSecs {
+    fn from_sql(value: i64) -> Result<UtcSecs, String> {
+        return Ok(UtcSecs(value as u64));
+    }
+
+    fn to_sql(value: &UtcSecs) -> i64 {
+        return i64::try_from(value.0).unwrap_or(i64::MAX);
+    }
+}
+
+impl Into<SystemTime> for UtcSecs {
+    fn into(self) -> SystemTime {
+        return UNIX_EPOCH + Duration::from_secs(self.0);
     }
 }

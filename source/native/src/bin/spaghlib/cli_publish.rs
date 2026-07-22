@@ -1,27 +1,26 @@
 use {
     aargvark::{
+        Aargvark,
         traits_impls::{
             AargvarkJson,
             NotFlag,
         },
-        Aargvark,
     },
     loga::{
-        ea,
         Log,
         ResultContext,
+        ea,
     },
     serde::Serialize,
     spaghettinuum_native::{
         interface::{
             config::shared::IdentitySecretArg,
             stored::{
-                self,
                 record::{
                     delegate_record::build_delegate_key,
                     dns_record::{
-                        build_dns_key,
                         RecordType,
+                        build_dns_key,
                     },
                     record_utils::{
                         split_dns_name,
@@ -29,6 +28,7 @@ use {
                     },
                     v1::Minutes,
                 },
+                self,
             },
         },
         publishing::system_publisher_url_pairs,
@@ -36,8 +36,8 @@ use {
         utils::{
             identity_secret::get_identity_signer,
             publish_util::{
-                self,
                 PublishArgs,
+                self,
             },
         },
     },
@@ -56,64 +56,8 @@ use {
 };
 
 #[derive(Aargvark)]
-pub struct NewLocalIdentity {
-    /// Store the new id and secret in a file at this path
-    pub path: PathBuf,
-}
-
-#[derive(Aargvark)]
-pub struct UnsetAll {
-    /// PublicKey whose records to wipe
-    pub identity: IdentitySecretArg,
-}
-
-#[derive(Aargvark)]
-pub struct Set {
-    /// PublicKey to publish as
-    pub identity: IdentitySecretArg,
-    /// Data to publish.  Must be json in the structure
-    /// `{KEY: {"ttl": MINUTES, "value": DATA}, ...}`. `KEY` is a string that's a
-    /// dotted list of key segments, with `/` to escape dots and escape characters.
-    pub data: AargvarkJson<HashMap<String, stored::record::latest::RecordValue>>,
-}
-
-#[derive(Aargvark)]
-pub struct SetCommon {
-    /// PublicKey to publish
-    pub identity: IdentitySecretArg,
-    /// Dotted list of subdomains to publish under in DNS order (ex: 'a.b.c').
-    pub path: Vec<NotFlag>,
-    /// TTL for hits and misses, in minutes
-    pub ttl: u64,
-    /// A list of other DNS names (`.s` spaghettinuum names or non-spaghettinuum names).
-    pub delegate: Option<Vec<NotFlag>>,
-    /// A list of Ipv4 addresses
-    pub dns_a: Option<Vec<NotFlag>>,
-    /// A list of Ipv6 addresses
-    pub dns_aaaa: Option<Vec<NotFlag>>,
-    /// A list of valid TXT record strings
-    pub dns_txt: Option<Vec<NotFlag>>,
-    /// Mail server names. These are automatically prioritized, with the first having
-    /// priority 0, second 1, etc.
-    pub dns_mx: Option<Vec<NotFlag>>,
-}
-
-#[derive(Aargvark)]
-pub struct Unset {
-    /// PublicKey whose keys to stop publishing
-    pub identity: IdentitySecretArg,
-    /// Keys to stop publishing
-    pub keys: HashSet<String>,
-}
-
-#[derive(Aargvark)]
-pub struct ListKeys {
-    pub identity: String,
-}
-
-#[derive(Aargvark)]
 pub struct Announce {
-    /// PublicKey to advertise this publisher for
+    /// Identity to advertise this publisher for
     pub identity: IdentitySecretArg,
 }
 
@@ -133,6 +77,17 @@ pub enum Args {
     Unset(Unset),
     /// Stop publishing all records for an identity
     UnsetAll(UnsetAll),
+}
+
+#[derive(Aargvark)]
+pub struct ListKeys {
+    pub identity: String,
+}
+
+#[derive(Aargvark)]
+pub struct NewLocalIdentity {
+    /// Store the new id and secret in a file at this path
+    pub path: PathBuf,
 }
 
 pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
@@ -279,4 +234,49 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
         },
     }
     return Ok(());
+}
+
+#[derive(Aargvark)]
+pub struct Set {
+    /// Data to publish.  Must be json in the structure
+    /// `{KEY: {"ttl": MINUTES, "value": DATA}, ...}`. `KEY` is a string that's a
+    /// dotted list of key segments, with `/` to escape dots and escape characters.
+    pub data: AargvarkJson<HashMap<String, stored::record::latest::RecordValue>>,
+    /// Identity to publish as
+    pub identity: IdentitySecretArg,
+}
+
+#[derive(Aargvark)]
+pub struct SetCommon {
+    /// A list of other DNS names (`.s` spaghettinuum names or non-spaghettinuum names).
+    pub delegate: Option<Vec<NotFlag>>,
+    /// A list of Ipv4 addresses
+    pub dns_a: Option<Vec<NotFlag>>,
+    /// A list of Ipv6 addresses
+    pub dns_aaaa: Option<Vec<NotFlag>>,
+    /// Mail server names. These are automatically prioritized, with the first having
+    /// priority 0, second 1, etc.
+    pub dns_mx: Option<Vec<NotFlag>>,
+    /// A list of valid TXT record strings
+    pub dns_txt: Option<Vec<NotFlag>>,
+    /// Identity to publish as
+    pub identity: IdentitySecretArg,
+    /// Dotted list of subdomains to publish under in DNS order (ex: 'a.b.c').
+    pub path: Vec<NotFlag>,
+    /// TTL for hits and misses, in minutes
+    pub ttl: u64,
+}
+
+#[derive(Aargvark)]
+pub struct Unset {
+    /// Identity whose keys to stop publishing
+    pub identity: IdentitySecretArg,
+    /// Keys to stop publishing
+    pub keys: HashSet<String>,
+}
+
+#[derive(Aargvark)]
+pub struct UnsetAll {
+    /// Identity whose records to wipe
+    pub identity: IdentitySecretArg,
 }

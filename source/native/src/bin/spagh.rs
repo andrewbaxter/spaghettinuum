@@ -1,8 +1,10 @@
+pub mod spaghlib;
+
 use {
     aargvark::Aargvark,
     htwrap::htreq::{
-        self,
         Limits,
+        self,
     },
     loga::Log,
     spaghettinuum_native::{
@@ -16,38 +18,32 @@ use {
     std::collections::HashMap,
 };
 
-pub mod spaghlib;
-
+/// A small CLI for querying, publishing, and administrating spaghettinuum.
 #[derive(Aargvark)]
-pub struct PingArgs {
-    /// Ping publishers instead of resolver
-    pub publisher: Option<()>,
+pub struct Args {
+    pub command: Command,
+    pub debug: Option<()>,
 }
 
 #[derive(Aargvark)]
 #[vark(break_help)]
 pub enum Command {
-    /// Simple liveness check
-    Ping(PingArgs),
-    /// Request values associated with provided identity and keys from a resolver
-    Get(crate::spaghlib::cli_resolve::Args),
-    Http(crate::spaghlib::cli_http::Args),
-    Ssh(crate::spaghlib::cli_ssh::Args),
-    /// Commands for managing identities
-    PublicKey(crate::spaghlib::cli_identity::Args),
-    /// Commands for publishing data
-    Publish(crate::spaghlib::cli_publish::Args),
     /// Commands for node administration
     Admin(crate::spaghlib::cli_admin::Args),
     /// Run a spaghettinuum instance
     Demon(crate::spaghlib::demon::Args),
-}
-
-/// A small CLI for querying, publishing, and administrating spaghettinuum.
-#[derive(Aargvark)]
-pub struct Args {
-    pub debug: Option<()>,
-    pub command: Command,
+    /// Request values associated with provided identity and keys from a resolver
+    Get(crate::spaghlib::cli_resolve::Args),
+    /// Built in CLI HTTP over spaghettinuum tools
+    Http(crate::spaghlib::cli_http::Args),
+    /// Commands for managing identities
+    Identity(crate::spaghlib::cli_identity::Args),
+    /// Simple server liveness check
+    Ping(PingArgs),
+    /// Commands for publishing data
+    Publish(crate::spaghlib::cli_publish::Args),
+    /// Built in CLI SSH over spaghettinuum tools
+    Ssh(crate::spaghlib::cli_ssh::Args),
 }
 
 #[tokio::main]
@@ -99,7 +95,7 @@ async fn main() {
             Command::Publish(args) => {
                 spaghlib::cli_publish::run(log, args).await?;
             },
-            Command::PublicKey(args) => {
+            Command::Identity(args) => {
                 spaghlib::cli_identity::run(log, args).await?;
             },
             Command::Admin(args) => {
@@ -118,4 +114,10 @@ async fn main() {
             loga::fatal(e);
         },
     }
+}
+
+#[derive(Aargvark)]
+pub struct PingArgs {
+    /// Ping publishers instead of resolver
+    pub publisher: Option<()>,
 }

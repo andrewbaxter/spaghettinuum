@@ -1,9 +1,9 @@
 use {
+    crate::buildlib::db_shared::field_ident,
     good_ormning::sqlite::{
         Version,
         schema::field::field_str,
     },
-    crate::buildlib::db_shared::field_ident,
 };
 
 pub fn build() -> Version {

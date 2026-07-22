@@ -26,29 +26,29 @@ use {
     crate::{
         interface::{
             stored::{
-                self,
                 cert::v1::X509ExtSpagh,
                 record::v1::Minutes,
+                self,
                 self_tls::latest::{
                     CertPair,
                     RefreshTlsState,
                 },
             },
             wire::{
-                self,
                 resolve::DNS_DOT_SUFFIX,
+                self,
             },
         },
         publishing::Publisher,
         ta_res,
         utils::{
             db_util::{
-                self,
                 DbTx,
+                self,
             },
             dns_util::{
-                self,
                 UpstreamDns,
+                self,
             },
             identity_secret::IdentitySigner,
             publish_util,
@@ -67,9 +67,9 @@ use {
     flowcontrol::shed,
     http::Uri,
     htwrap::htreq::{
-        self,
         Limits,
         default_tls,
+        self,
         uri_parts,
     },
     loga::{
@@ -124,21 +124,46 @@ good_ormning::good_module!(pub db, "self_tls");
 
 pub const CERTIFIER_URL: &'static str = "https://certipasta.isandrew.com";
 
-pub fn publish_ssl_ttl() -> Duration {
-    return Duration::from_secs(60 * 60);
-}
-
 #[derive(Clone)]
 pub struct CertifierOptions {
     pub upstream_dns: UpstreamDns,
 }
 
-#[derive(Clone)]
-pub struct RequestCertOptions {
-    /// Get a certificate signed by the `certipasta` CA cert.
-    pub certifier: Option<CertifierOptions>,
-    /// Add the spaghettinuum identity signature extension to the cert.
-    pub signature: bool,
+pub fn publish_ssl_ttl() -> Duration {
+    return Duration::from_secs(60 * 60);
+}
+
+pub async fn publish_tls_certs(
+    log: &Log,
+    publisher: &Arc<dyn Publisher>,
+    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
+    state: &RefreshTlsState,
+) -> Result<(), loga::Error> {
+    publisher.publish(log, identity_signer, publish_util::PublishArgs {
+        set: {
+            let mut m = HashMap::new();
+            let mut certs = vec![state.current.pub_pem.clone()];
+            if let Some(pending) = &state.pending {
+                certs.push(pending.pub_pem.clone());
+            }
+            m.insert(
+                vec![stored::record::tls_record::KEY_SUFFIX_TLS.to_string()],
+                stored::record::RecordValue::V1(stored::record::latest::RecordValue {
+                    ttl: Minutes::from(publish_ssl_ttl()),
+                    data: Some(
+                        serde_json::to_value(
+                            &stored::record::tls_record::TlsCerts::V1(
+                                stored::record::tls_record::latest::TlsCerts(certs),
+                            ),
+                        ).unwrap(),
+                    ),
+                }),
+            );
+            m
+        },
+        ..Default::default()
+    }).await?;
+    return Ok(());
 }
 
 /// Requests a TLS public cert from the certifier for the `.s` domain associated
@@ -153,16 +178,16 @@ pub async fn request_cert(
     let requester_spki_der =
         SubjectPublicKeyInfoOwned::from_key(priv_key.verifying_key().clone()).unwrap().to_der().unwrap();
     let sig_ext = if options.signature {
-        Some(
-            X509ExtSpagh {
-                signature: message_signer
-                    .lock()
-                    .unwrap()
-                    .sign(&requester_spki_der)
-                    .context("Error signing SPKI der for spaghettinuum extension")?
-                    .1,
-            },
-        )
+        let (_ident, chain, signature) =
+            message_signer
+                .lock()
+                .unwrap()
+                .sign(&requester_spki_der)
+                .context("Error signing SPKI der for spaghettinuum extension")?;
+        Some(X509ExtSpagh {
+            chain: chain,
+            signature: signature,
+        })
     } else {
         None
     };
@@ -175,10 +200,12 @@ pub async fn request_cert(
             spki_der: BytesZb32(requester_spki_der),
         }).unwrap();
         log.log_with(loga::DEBUG, "Unsigned cert request params", ea!(params = message));
-        let (ident, signature) =
+        let (root_public_key, chain, signature) =
             message_signer.lock().unwrap().sign(message.as_bytes()).context("Error signing cert request params")?;
         let body = serde_json::to_vec(&wire::certify::CertRequest::V1(wire::certify::latest::CertRequest {
-            identity: ident,
+            identity: root_public_key.identity(),
+            root_public_key: root_public_key,
+            chain: chain,
             params: JsonSignature {
                 signature: BytesZb32(signature),
                 message: message,
@@ -211,9 +238,9 @@ pub async fn request_cert(
         pub_pem = resp.pub_pem;
         log.log_with(loga::DEBUG, "Received cert", ea!(pub_pem = pub_pem));
     } else {
-        let identity = message_signer.lock().unwrap().identity()?;
+        let root_public_key = message_signer.lock().unwrap().root_public_key()?;
         let now = SystemTime::now();
-        let fqdn = format!("{}{}", identity, DNS_DOT_SUFFIX);
+        let fqdn = format!("{}{}", root_public_key, DNS_DOT_SUFFIX);
         let pub_der =
             create_leaf_cert_der_local(
                 priv_key,
@@ -229,6 +256,45 @@ pub async fn request_cert(
         priv_pem: priv_pem,
         pub_pem: pub_pem,
     });
+}
+
+#[derive(Clone)]
+pub struct RequestCertOptions {
+    /// Get a certificate signed by the `certipasta` CA cert.
+    pub certifier: Option<CertifierOptions>,
+    /// Add the spaghettinuum identity signature extension to the cert.
+    pub signature: bool,
+}
+
+pub struct Rustls21SimpleResolvesServerCert(RwLock<Arc<rustls_21::sign::CertifiedKey>>);
+
+impl rustls_21::server::ResolvesServerCert for Rustls21SimpleResolvesServerCert {
+    fn resolve(&self, _client_hello: rustls_21::server::ClientHello) -> Option<Arc<rustls_21::sign::CertifiedKey>> {
+        return Some(self.0.read().unwrap().clone());
+    }
+}
+
+impl std::fmt::Debug for Rustls21SimpleResolvesServerCert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return self.0.read().unwrap().cert.fmt(f);
+    }
+}
+
+pub struct SimpleResolvesServerCert(RwLock<Arc<rustls::sign::CertifiedKey>>);
+
+impl ResolvesServerCert for SimpleResolvesServerCert {
+    fn resolve(
+        &self,
+        _client_hello: rustls::server::ClientHello,
+    ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
+        return Some(self.0.read().unwrap().clone());
+    }
+}
+
+impl std::fmt::Debug for SimpleResolvesServerCert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return self.0.read().unwrap().fmt(f);
+    }
 }
 
 /// Produces a stream of TLS cert pairs, with a new pair some time before the
@@ -321,134 +387,6 @@ pub async fn stream_certs(
     return Ok(certs_stream_rx);
 }
 
-pub async fn stream_persistent_certs(
-    log: &Log,
-    tm: &TaskManager,
-    cache_dir: &Path,
-    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-    options: RequestCertOptions,
-) -> Result<Option<watch::Receiver<RefreshTlsState>>, loga::Error> {
-    create_dir_all(cache_dir)
-        .await
-        .context_with("Error creating htserve cache dir", ea!(path = cache_dir.to_string_lossy()))?;
-    let db_pool =
-        db_util::setup_db(
-            &cache_dir.join("self_tls.sqlite3"),
-            |conn| db::migrate(conn, None).map(|_| ()),
-        ).await?;
-    db_pool.tx(|conn| {
-        let mut db = db::DbSelfTls(conn);
-        good_ormning::sqlite::good_query!(
-            db,
-            "self_tls",
-            //# genemichaels-external: sql-formatter-sqlite
-            r#"INSERT OR IGNORE INTO
-                 singleton_api_certs ("unique", state)
-               VALUES
-                 (0, NULL)
-               "#;
-            &mut db
-        )?;
-        Ok(())
-    }).await?;
-
-    // Prepare initial state, either restoring or getting from scratch
-    let state = match db_pool.tx(|conn| {
-        let mut db = db::DbSelfTls(conn);
-        Ok(good_ormning::sqlite::good_query_one!(
-            db,
-            "self_tls",
-            //# genemichaels-external: sql-formatter-sqlite
-            r#"SELECT
-                 state
-               FROM
-                 singleton_api_certs
-               "#;
-            &mut db
-        )?)
-    }).await? {
-        Some(s) => match s {
-            stored::self_tls::RefreshTlsState::V1(s) => {
-                s
-            },
-        },
-        None => {
-            let pair = loop {
-                match select!{
-                    c = request_cert(&log, identity_signer.clone(), options.clone()) => c,
-                    _ = tm.until_terminate() => {
-                        return Ok(None);
-                    }
-                } {
-                    Ok(p) => break p,
-                    Err(e) => {
-                        log.log_err(
-                            loga::WARN,
-                            e.context_with("Error fetching initial certificates, retrying", ea!(subsys = "self_tls")),
-                        );
-                        sleep(Duration::from_secs(60).into()).await;
-                    },
-                }
-            };
-            let state = RefreshTlsState {
-                pending: None,
-                current: pair,
-            };
-            db_pool.tx({
-                let state = state.clone();
-                move |conn| {
-                    let state_val = stored::self_tls::RefreshTlsState::V1(state);
-                    let mut db = db::DbSelfTls(conn);
-                    good_ormning::sqlite::good_query!(
-                        db,
-                        "self_tls",
-                        //# genemichaels-external: sql-formatter-sqlite
-                        r#"UPDATE singleton_api_certs
-                           SET
-                             state = ${opt refresh_tls_state =Some(&state_val)}
-                           "#;
-                        &mut db
-                    )?;
-                    Ok(())
-                }
-            }).await.context("Error storing fresh initial state")?;
-            state
-        },
-    };
-    return Ok(Some(stream_certs(&log, &tm, identity_signer.clone(), options, state).await?));
-}
-
-pub struct SimpleResolvesServerCert(RwLock<Arc<rustls::sign::CertifiedKey>>);
-
-impl std::fmt::Debug for SimpleResolvesServerCert {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return self.0.read().unwrap().fmt(f);
-    }
-}
-
-impl ResolvesServerCert for SimpleResolvesServerCert {
-    fn resolve(
-        &self,
-        _client_hello: rustls::server::ClientHello,
-    ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
-        return Some(self.0.read().unwrap().clone());
-    }
-}
-
-pub struct Rustls21SimpleResolvesServerCert(RwLock<Arc<rustls_21::sign::CertifiedKey>>);
-
-impl std::fmt::Debug for Rustls21SimpleResolvesServerCert {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return self.0.read().unwrap().cert.fmt(f);
-    }
-}
-
-impl rustls_21::server::ResolvesServerCert for Rustls21SimpleResolvesServerCert {
-    fn resolve(&self, _client_hello: rustls_21::server::ClientHello) -> Option<Arc<rustls_21::sign::CertifiedKey>> {
-        return Some(self.0.read().unwrap().clone());
-    }
-}
-
 /// Produce a rustls-compatible server cert resolver with an automatically updated
 /// cert.  This is a managed task that maintains state using a database at the
 /// provided location.
@@ -533,35 +471,99 @@ pub async fn stream_htserve_certs(
     return Ok(Some((latest_certs, r21_latest_certs as Arc<dyn rustls_21::server::ResolvesServerCert>)));
 }
 
-pub async fn publish_tls_certs(
+pub async fn stream_persistent_certs(
     log: &Log,
-    publisher: &Arc<dyn Publisher>,
+    tm: &TaskManager,
+    cache_dir: &Path,
     identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-    state: &RefreshTlsState,
-) -> Result<(), loga::Error> {
-    publisher.publish(log, identity_signer, publish_util::PublishArgs {
-        set: {
-            let mut m = HashMap::new();
-            let mut certs = vec![state.current.pub_pem.clone()];
-            if let Some(pending) = &state.pending {
-                certs.push(pending.pub_pem.clone());
-            }
-            m.insert(
-                vec![stored::record::tls_record::KEY_SUFFIX_TLS.to_string()],
-                stored::record::RecordValue::V1(stored::record::latest::RecordValue {
-                    ttl: Minutes::from(publish_ssl_ttl()),
-                    data: Some(
-                        serde_json::to_value(
-                            &stored::record::tls_record::TlsCerts::V1(
-                                stored::record::tls_record::latest::TlsCerts(certs),
-                            ),
-                        ).unwrap(),
-                    ),
-                }),
-            );
-            m
-        },
-        ..Default::default()
+    options: RequestCertOptions,
+) -> Result<Option<watch::Receiver<RefreshTlsState>>, loga::Error> {
+    create_dir_all(cache_dir)
+        .await
+        .context_with("Error creating htserve cache dir", ea!(path = cache_dir.to_string_lossy()))?;
+    let db_pool =
+        db_util::setup_db(
+            &cache_dir.join("self_tls.sqlite3"),
+            |conn| db::migrate(conn, None).map(|_| ()),
+        ).await?;
+    db_pool.tx(|conn| {
+        let mut db = db::DbSelfTls(conn);
+        good_ormning::sqlite::good_query!(
+            db,
+            "self_tls",
+            //# genemichaels-external: sql-formatter-sqlite
+            r#"INSERT OR IGNORE INTO
+                 singleton_api_certs ("unique", state)
+               VALUES
+                 (0, NULL)
+               "#;
+            &mut db
+        )?;
+        Ok(())
     }).await?;
-    return Ok(());
+
+    // Prepare initial state, either restoring or getting from scratch
+    let state = match db_pool.tx(|conn| {
+        let mut db = db::DbSelfTls(conn);
+        Ok(good_ormning::sqlite::good_query_one!(
+            db,
+            "self_tls",
+            //# genemichaels-external: sql-formatter-sqlite
+            r#"SELECT
+                 state
+               FROM
+                 singleton_api_certs
+               "#;
+            &mut db
+        )?)
+    }).await? {
+        Some(s) => match s {
+            stored::self_tls::RefreshTlsState::V1(s) => {
+                s
+            },
+        },
+        None => {
+            let pair = loop {
+                match select!{
+                    c = request_cert(&log, identity_signer.clone(), options.clone()) => c,
+                    _ = tm.until_terminate() => {
+                        return Ok(None);
+                    }
+                } {
+                    Ok(p) => break p,
+                    Err(e) => {
+                        log.log_err(
+                            loga::WARN,
+                            e.context_with("Error fetching initial certificates, retrying", ea!(subsys = "self_tls")),
+                        );
+                        sleep(Duration::from_secs(60).into()).await;
+                    },
+                }
+            };
+            let state = RefreshTlsState {
+                pending: None,
+                current: pair,
+            };
+            db_pool.tx({
+                let state = state.clone();
+                move |conn| {
+                    let state_val = stored::self_tls::RefreshTlsState::V1(state);
+                    let mut db = db::DbSelfTls(conn);
+                    good_ormning::sqlite::good_query!(
+                        db,
+                        "self_tls",
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"UPDATE singleton_api_certs
+                           SET
+                             state = ${opt refresh_tls_state = Some(&state_val)}
+                           "#;
+                        &mut db
+                    )?;
+                    Ok(())
+                }
+            }).await.context("Error storing fresh initial state")?;
+            state
+        },
+    };
+    return Ok(Some(stream_certs(&log, &tm, identity_signer.clone(), options, state).await?));
 }

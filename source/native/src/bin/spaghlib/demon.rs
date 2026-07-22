@@ -1,40 +1,42 @@
 use {
     aargvark::{
-        traits_impls::AargvarkJson,
         Aargvark,
+        traits_impls::AargvarkJson,
     },
     flowcontrol::ta_return,
     htwrap::htserve::{
-        self,
         auth::{
+            AuthTokenHash,
             check_auth_token_hash,
             get_auth_token,
             hash_auth_token,
-            AuthTokenHash,
         },
         handler::{
-            tls_acceptor,
             Handler,
+            tls_acceptor,
         },
         responses::{
+            Body,
             response_200,
             response_200_json,
             response_400,
             response_401,
             response_503,
-            Body,
         },
+        self,
     },
     loga::{
-        ea,
         DebugDisplay,
         Log,
         ResultContext,
+        ea,
     },
     rustls::server::ResolvesServerCert,
     spaghettinuum_native::{
         interface::{
             config::{
+                DebugFlag,
+                ENV_CONFIG,
                 self,
                 shared::StrSocketAddr,
                 spagh::{
@@ -43,14 +45,12 @@ use {
                     DEFAULT_NODE_PORT,
                     DEFAULT_PUBLISHER_PORT,
                 },
-                DebugFlag,
-                ENV_CONFIG,
             },
             stored::{
                 record::{
+                    RecordValue,
                     record_utils::RecordKey,
                     v1::Minutes,
-                    RecordValue,
                 },
                 self_tls::latest::RefreshTlsState,
                 shared::SerialAddr,
@@ -62,52 +62,52 @@ use {
         },
         publishing,
         self_tls::{
-            self,
-            publish_tls_certs,
             RequestCertOptions,
+            publish_tls_certs,
+            self,
         },
         service::{
             content::start_serving_content,
             node::{
-                default_bootstrap,
                 Node,
+                default_bootstrap,
             },
             publisher::{
-                self,
-                Publisher,
                 API_ROUTE_PUBLISH,
+                Publisher,
+                self,
             },
             resolver::{
-                self,
-                Resolver,
                 API_ROUTE_RESOLVE,
+                Resolver,
+                self,
             },
         },
         ta_res,
         ta_vis_res,
         utils::{
+            ResultVisErr,
+            VisErr,
             dns_util::{
-                build_upstream_dns,
                 UpstreamDns,
+                build_upstream_dns,
             },
             fs_util::{
-                self,
                 maybe_read_json,
+                self,
                 write,
             },
             identity_secret::{
-                get_identity_signer,
                 IdentitySigner,
+                get_identity_signer,
             },
             publish_util::{
+                PublishArgs,
                 add_ip_record,
                 add_ssh_host_key_records,
                 generate_publish_announce,
-                PublishArgs,
             },
             system_addr::resolve_global_ip,
-            ResultVisErr,
-            VisErr,
         },
     },
     std::{
@@ -137,8 +137,8 @@ use {
         sync::watch,
     },
     tokio_stream::{
-        wrappers::WatchStream,
         StreamExt,
+        wrappers::WatchStream,
     },
 };
 
@@ -285,39 +285,30 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
     }
 
     struct SetupState {
-        // Inputs
-        tm: TaskManager,
+        admin: Option<Result<AuthTokenHash, loga::Error>>,
+        api_routes: HashMap<String, Box<dyn Handler<Body>>>,
         config: Config,
-        node: Node,
-        global_ips: Vec<IpAddr>,
         debug_flags: HashSet<DebugFlag>,
-        // Outputs
-        publisher: Option<Result<(SocketAddr, Arc<Publisher>), loga::Error>>,
-        resolver: Option<Result<Arc<Resolver>, loga::Error>>,
-        tls: Option<Result<Option<watch::Receiver<RefreshTlsState>>, loga::Error>>,
+        global_ips: Vec<IpAddr>,
         htserve_tls: Option<
             Result<
                 Option<(Arc<dyn ResolvesServerCert>, Arc<dyn rustls_21::server::ResolvesServerCert>)>,
                 loga::Error,
             >,
         >,
-        admin: Option<Result<AuthTokenHash, loga::Error>>,
         identity: Option<Result<Arc<Mutex<dyn IdentitySigner>>, loga::Error>>,
-        api_routes: HashMap<String, Box<dyn Handler<Body>>>,
+        node: Node,
+        // Outputs
+        publisher: Option<Result<(SocketAddr, Arc<Publisher>), loga::Error>>,
+        resolver: Option<Result<Arc<Resolver>, loga::Error>>,
         self_publish: HashMap<RecordKey, RecordValue>,
+        tls: Option<Result<Option<watch::Receiver<RefreshTlsState>>, loga::Error>>,
+        // Inputs
+        tm: TaskManager,
         upstream_dns: Option<Result<UpstreamDns, loga::Error>>,
     }
 
     impl SetupState {
-        async fn setup_upstream_dns(&mut self) -> Result<UpstreamDns, loga::Error> {
-            if let Some(x) = self.upstream_dns.as_ref() {
-                return x.clone();
-            };
-            let res = build_upstream_dns(&self.config.upstream_dns);
-            self.upstream_dns = Some(res.clone());
-            return res;
-        }
-
         async fn setup_admin(&mut self) -> Result<AuthTokenHash, loga::Error> {
             if let Some(x) = self.admin.as_ref() {
                 return x.clone();
@@ -370,6 +361,30 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                 return Ok(admin_token);
             }.await.context("Error setting up admin endpoint");
             self.admin = Some(res.clone());
+            return res;
+        }
+
+        async fn setup_htserve_tls(
+            &mut self,
+        ) -> Result<
+            Option<(Arc<dyn ResolvesServerCert>, Arc<dyn rustls_21::server::ResolvesServerCert>)>,
+            loga::Error,
+        > {
+            if let Some(res) = self.htserve_tls.as_ref() {
+                return res.clone();
+            }
+            let res = async {
+                let log =
+                    Log::new_root(
+                        debug_level(&self.debug_flags, DebugFlag::SelfTls),
+                    ).fork(ea!(sys = "htserve_tls_refresh"));
+                let Some(certs) = self.setup_tls().await? else {
+                    return Ok(None);
+                };
+                return Ok(self_tls::stream_htserve_certs(&log, &self.tm, WatchStream::new(certs)).await?) as
+                    Result<_, loga::Error>;
+            }.await.context("Error setting up tls certs for http endpoints");
+            self.htserve_tls = Some(res.clone());
             return res;
         }
 
@@ -498,27 +513,12 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
             return res;
         }
 
-        async fn setup_htserve_tls(
-            &mut self,
-        ) -> Result<
-            Option<(Arc<dyn ResolvesServerCert>, Arc<dyn rustls_21::server::ResolvesServerCert>)>,
-            loga::Error,
-        > {
-            if let Some(res) = self.htserve_tls.as_ref() {
-                return res.clone();
-            }
-            let res = async {
-                let log =
-                    Log::new_root(
-                        debug_level(&self.debug_flags, DebugFlag::SelfTls),
-                    ).fork(ea!(sys = "htserve_tls_refresh"));
-                let Some(certs) = self.setup_tls().await? else {
-                    return Ok(None);
-                };
-                return Ok(self_tls::stream_htserve_certs(&log, &self.tm, WatchStream::new(certs)).await?) as
-                    Result<_, loga::Error>;
-            }.await.context("Error setting up tls certs for http endpoints");
-            self.htserve_tls = Some(res.clone());
+        async fn setup_upstream_dns(&mut self) -> Result<UpstreamDns, loga::Error> {
+            if let Some(x) = self.upstream_dns.as_ref() {
+                return x.clone();
+            };
+            let res = build_upstream_dns(&self.config.upstream_dns);
+            self.upstream_dns = Some(res.clone());
             return res;
         }
     }
@@ -731,11 +731,17 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
         async {
             ta_return!((), loga::Error);
             let (advertise_addr, publisher) = setup_state.setup_publisher().await?;
-            let identity = setup_state.setup_identity().await?;
-            let (identity, announcement) = generate_publish_announce(&identity, vec![InfoResponse {
-                advertise_addr: advertise_addr,
-                cert_pub_hash: publisher.pub_cert_hash(),
-            }]).map_err(|e| loga::err_with("Failed to generate announcement for self publication", ea!(err = e)))?;
+            let identity_signer = setup_state.setup_identity().await?;
+            let (identity, announcement) =
+                generate_publish_announce(
+                    &identity_signer,
+                    vec![InfoResponse {
+                        advertise_addr: advertise_addr,
+                        cert_pub_hash: publisher.pub_cert_hash(),
+                    }],
+                ).map_err(
+                    |e| loga::err_with("Failed to generate announcement for self publication", ea!(err = e)),
+                )?;
             publisher.modify_values(&identity, PublishArgs {
                 clear_all: true,
                 set: setup_state.self_publish.clone(),

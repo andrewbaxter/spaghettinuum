@@ -19,6 +19,7 @@ use {
         },
     },
     hickory_resolver::{
+        Name,
         config::{
             NameServerConfig,
             NameServerConfigGroup,
@@ -30,18 +31,17 @@ use {
             TokioConnectionProvider,
             TokioRuntimeProvider,
         },
-        Name,
     },
     http::Uri,
     htwrap::htreq::Ips,
     loga::{
-        ea,
         ErrContext,
         ResultContext,
+        ea,
     },
     rand::{
-        thread_rng,
         Rng,
+        thread_rng,
     },
     std::{
         collections::HashSet,
@@ -50,8 +50,6 @@ use {
     },
     tokio_stream::StreamExt,
 };
-
-pub type UpstreamDns = NameServerPool<TokioConnectionProvider>;
 
 pub fn build_upstream_dns(config: &Option<Vec<AdnSocketAddr>>) -> Result<UpstreamDns, loga::Error> {
     let mut upstream_servers = NameServerConfigGroup::new();
@@ -202,3 +200,5 @@ pub async fn query(upstream_dns: &UpstreamDns, url: &Uri) -> Result<Ips, loga::E
     }
     return Ok(ips);
 }
+
+pub type UpstreamDns = NameServerPool<TokioConnectionProvider>;

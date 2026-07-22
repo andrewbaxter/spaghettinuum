@@ -5,9 +5,9 @@ use {
     },
     htwrap::{
         htreq::{
-            self,
             Conn,
             Limits,
+            self,
         },
         url::UriJoin,
     },
@@ -17,7 +17,7 @@ use {
         ea,
     },
     serde::de::DeserializeOwned,
-    spaghettinuum::interface::public_key::PublicKey,
+    spaghettinuum::interface::id::Identity,
     spaghettinuum_native::{
         interface::{
             config::ENV_API_ADMIN_TOKEN,
@@ -44,54 +44,6 @@ use {
     },
 };
 
-#[derive(Aargvark)]
-pub struct NewLocalIdentity {
-    /// Store the new id and secret in a file at this path
-    pub path: PathBuf,
-}
-
-#[derive(Aargvark)]
-pub struct AllowIdentity {
-    pub identity_id: String,
-    /// Associate the identity with a tag for easier management
-    pub group: Option<String>,
-}
-
-#[derive(Aargvark)]
-pub struct DisallowIdentity {
-    pub identity_id: String,
-}
-
-#[derive(Aargvark)]
-pub struct ListKeys {
-    pub identity: String,
-}
-
-#[derive(Aargvark)]
-#[vark(break_help)]
-pub enum Args {
-    /// Get detailed node health information
-    HealthDetail,
-    /// List identities allowed to publish
-    ListAllowedIdentities,
-    /// Register an identity with the publisher, allowing it to publish
-    AllowIdentity(AllowIdentity),
-    /// Unregister an identity with the publisher, disallowing it from publishing
-    DisallowIdentity(DisallowIdentity),
-    /// List announced identities
-    ListAnnouncements,
-    /// List keys published here for an identity
-    ListKeys(ListKeys),
-    /// Register and unregister identities.
-    ///
-    /// The JSON is an object with groups as keys, and lists of identity ids as values.
-    ///
-    /// Any groups not in the JSON won't be synced - deleting a group won't remove all
-    /// entries in the group.  In order to clear a group, you must specify an empty
-    /// list for that group in the JSON.
-    SyncAllowedIdentities(AargvarkJson<HashMap<String, HashSet<PublicKey>>>),
-}
-
 fn admin_headers() -> Result<HashMap<String, String>, loga::Error> {
     let mut out = HashMap::new();
     let env_key = ENV_API_ADMIN_TOKEN;
@@ -108,6 +60,13 @@ fn admin_headers() -> Result<HashMap<String, String>, loga::Error> {
         ),
     );
     return Ok(out);
+}
+
+#[derive(Aargvark)]
+pub struct AllowIdentity {
+    /// Associate the identity with a tag for easier management
+    pub group: Option<String>,
+    pub identity_id: String,
 }
 
 async fn api_list<
@@ -144,6 +103,47 @@ async fn api_list<
             ).await?;
     }
     return Ok(out);
+}
+
+#[derive(Aargvark)]
+#[vark(break_help)]
+pub enum Args {
+    /// Register an identity with the publisher, allowing it to publish
+    AllowIdentity(AllowIdentity),
+    /// Unregister an identity with the publisher, disallowing it from publishing
+    DisallowIdentity(DisallowIdentity),
+    /// Get detailed node health information
+    HealthDetail,
+    /// List identities allowed to publish
+    ListAllowedIdentities,
+    /// List announced identities
+    ListAnnouncements,
+    /// List keys published here for an identity
+    ListKeys(ListKeys),
+    /// Register and unregister identities.
+    ///
+    /// The JSON is an object with groups as keys, and lists of identity ids as values.
+    ///
+    /// Any groups not in the JSON won't be synced - deleting a group won't remove all
+    /// entries in the group.  In order to clear a group, you must specify an empty
+    /// list for that group in the JSON.
+    SyncAllowedIdentities(AargvarkJson<HashMap<String, HashSet<Identity>>>),
+}
+
+#[derive(Aargvark)]
+pub struct DisallowIdentity {
+    pub identity_id: String,
+}
+
+#[derive(Aargvark)]
+pub struct ListKeys {
+    pub identity: String,
+}
+
+#[derive(Aargvark)]
+pub struct NewLocalIdentity {
+    /// Store the new id and secret in a file at this path
+    pub path: PathBuf,
 }
 
 pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
@@ -228,7 +228,7 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                 match async {
                     ta_res!(());
                     let out =
-                        api_list::<PublicKey>(
+                        api_list::<Identity>(
                             log,
                             limits,
                             &mut connect_publisher_node(limits, log, &resolvers, &pair)
@@ -298,7 +298,7 @@ pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {
                     )
                         .await
                         .stack_context(log, "Error listing allowed identities")?;
-                let mut have = HashMap::<String, HashSet<PublicKey>>::new();
+                let mut have = HashMap::<String, HashSet<Identity>>::new();
                 for entry in identities {
                     let group = have.entry(entry.group).or_default();
                     group.insert(entry.identity);

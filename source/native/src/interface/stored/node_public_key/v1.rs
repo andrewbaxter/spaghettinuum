@@ -1,24 +1,48 @@
 use {
-    serde::{
-        Serialize,
-        Deserialize,
-    },
     core::fmt::Debug,
-    std::fmt::Display,
     ed25519_dalek,
-    ed25519_dalek::Signature as SSignature,
-    ed25519_dalek::Signer,
-    ed25519_dalek::SigningKey,
-    ed25519_dalek::Verifier,
-    ed25519_dalek::VerifyingKey,
+    ed25519_dalek::{
+        Signature as SSignature,
+        Signer,
+        SigningKey,
+        Verifier,
+        VerifyingKey,
+    },
     loga::ResultContext,
     rand::rngs::OsRng,
-    super::NodePublicKeyMethods,
-    super::NodeSecretMethods,
+    serde::{
+        Deserialize,
+        Serialize,
+    },
+    std::fmt::Display,
+    super::{
+        NodePublicKeyMethods,
+        NodeSecretMethods,
+    },
 };
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub struct Ed25519NodePublicKey(VerifyingKey);
+
+impl Ed25519NodePublicKey {
+    pub fn new() -> (Self, Ed25519NodeSecret) {
+        let keypair = SigningKey::generate(&mut OsRng {});
+        return (Self(keypair.verifying_key()), Ed25519NodeSecret(keypair));
+    }
+}
+
+impl Debug for Ed25519NodePublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Ed25519NodeId").field(&zbase32::encode_full_bytes(&self.0.to_bytes())).finish()
+    }
+}
+
+impl NodePublicKeyMethods for Ed25519NodePublicKey {
+    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), loga::Error> {
+        self.0.verify(message, &SSignature::from_slice(signature)?)?;
+        Ok(())
+    }
+}
 
 impl Serialize for Ed25519NodePublicKey {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -44,32 +68,18 @@ impl<'de> Deserialize<'de> for Ed25519NodePublicKey {
     }
 }
 
-impl Debug for Ed25519NodePublicKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Ed25519NodeId").field(&zbase32::encode_full_bytes(&self.0.to_bytes())).finish()
-    }
-}
-
-impl Ed25519NodePublicKey {
-    pub fn new() -> (Self, Ed25519NodeSecret) {
-        let keypair = SigningKey::generate(&mut OsRng {});
-        return (Self(keypair.verifying_key()), Ed25519NodeSecret(keypair));
-    }
-}
-
-impl NodePublicKeyMethods for Ed25519NodePublicKey {
-    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), loga::Error> {
-        self.0.verify(message, &SSignature::from_slice(signature)?)?;
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Ed25519NodeSecret(SigningKey);
 
 impl Ed25519NodeSecret {
     pub fn get_identity(&self) -> Ed25519NodePublicKey {
         Ed25519NodePublicKey(self.0.verifying_key())
+    }
+}
+
+impl NodeSecretMethods for Ed25519NodeSecret {
+    fn sign(&self, message: &[u8]) -> Vec<u8> {
+        return self.0.sign(message).to_bytes().to_vec();
     }
 }
 
@@ -97,23 +107,11 @@ impl<'de> Deserialize<'de> for Ed25519NodeSecret {
     }
 }
 
-impl NodeSecretMethods for Ed25519NodeSecret {
-    fn sign(&self, message: &[u8]) -> Vec<u8> {
-        return self.0.sign(message).to_bytes().to_vec();
-    }
-}
-
 // Aggregates
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodePublicKey {
     Ed25519(Ed25519NodePublicKey),
-}
-
-impl Display for NodePublicKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", zbase32::encode_full_bytes(&bincode::serialize(self).unwrap()))
-    }
 }
 
 impl NodePublicKey {
@@ -123,6 +121,12 @@ impl NodePublicKey {
 
     pub fn to_bytes(&self) -> Vec<u8> {
         return bincode::serialize(self).unwrap();
+    }
+}
+
+impl Display for NodePublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", zbase32::encode_full_bytes(&bincode::serialize(self).unwrap()))
     }
 }
 
@@ -145,14 +149,14 @@ impl NodeSecret {
         return Ok(bincode::deserialize(message).map_err(|e| format!("Bincode decode failed: {}", e))?);
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        return bincode::serialize(self).unwrap();
-    }
-
     pub fn get_identity(&self) -> NodePublicKey {
         match self {
             NodeSecret::Ed25519(v) => NodePublicKey::Ed25519(v.get_identity()),
         }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        return bincode::serialize(self).unwrap();
     }
 }
 

@@ -1,44 +1,43 @@
 use {
+    async_trait::async_trait,
     crate::{
         cap_fn,
         interface::{
             stored::{
-                self,
                 announcement::Announcement,
                 dbidentity::DbIdentity,
                 record::record_utils::{
-                    join_record_key,
                     RecordKey,
+                    join_record_key,
                 },
+                self,
             },
             wire::{
-                self,
                 api::admin::v1::{
                     AdminAllowIdentityBody,
                     AdminIdentity,
                 },
+                self,
             },
         },
         service::node::Node,
         ta_res,
         ta_vis_res,
         utils::{
+            ResultVisErr,
+            VisErr,
             db_util::{
-                setup_db,
                 DbTx,
+                setup_db,
             },
             identity_secret::IdentitySigner,
             publish_util,
-            signed::IdentSignatureMethods,
             tls_util::{
                 cert_der_hash,
                 create_leaf_cert_der_local,
             },
-            ResultVisErr,
-            VisErr,
         },
     },
-    async_trait::async_trait,
     deadpool_sqlite::Pool,
     flowcontrol::shed,
     good_ormning::runtime::GoodError,
@@ -48,10 +47,9 @@ use {
     },
     http_body_util::BodyExt,
     htwrap::htserve::{
-        self,
         auth::{
-            check_auth_token_hash,
             AuthTokenHash,
+            check_auth_token_hash,
         },
         responses::{
             response_200,
@@ -61,12 +59,13 @@ use {
             response_404,
             response_503,
         },
+        self,
     },
     loga::{
-        ea,
         DebugDisplay,
         Log,
         ResultContext,
+        ea,
     },
     p256::pkcs8::EncodePrivateKey,
     rustls::pki_types::{
@@ -75,7 +74,10 @@ use {
         PrivatePkcs8KeyDer,
     },
     serde::Deserialize,
-    spaghettinuum::interface::public_key::PublicKey,
+    spaghettinuum::interface::{
+        id::Identity,
+        signature_chain::verify_chain_now,
+    },
     std::{
         collections::HashMap,
         net::SocketAddr,
@@ -99,31 +101,866 @@ good_ormning::good_module!(pub db, "publisher");
 
 good_ormning::good_module!(pub admin_db, "publisher_admin");
 
-pub struct SingleCertResolver(pub Arc<RwLock<Arc<rustls::sign::CertifiedKey>>>);
+pub const API_ROUTE_PUBLISH: &str = "publish";
 
-impl std::fmt::Debug for SingleCertResolver {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("SingleCertResolver").field(&self.0.read().unwrap()).finish()
-    }
+#[async_trait]
+pub trait PublisherAuthorizer: Sync + Send {
+    async fn is_identity_allowed(&self, identity: &Identity) -> Result<bool, loga::Error>;
 }
 
-impl rustls::server::ResolvesServerCert for SingleCertResolver {
-    fn resolve(&self, _client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        return Some(self.0.read().unwrap().clone());
+pub async fn build_api_endpoints_with_authorizer(
+    log: &Log,
+    publisher: &Arc<Publisher>,
+    authorizer: Arc<dyn PublisherAuthorizer>,
+) -> Result<htserve::handler::PathRouter<htserve::responses::Body>, loga::Error> {
+    struct State {
+        authorizer: Arc<dyn PublisherAuthorizer>,
+        log: Log,
+        publisher: Arc<Publisher>,
     }
+
+    let state = Arc::new(State {
+        log: log.clone(),
+        publisher: publisher.clone(),
+        authorizer: authorizer,
+    });
+    let mut routes = htserve::handler::PathRouter::default();
+    routes.insert("/v1", {
+        let mut routes = htserve::handler::PathRouter::default();
+        routes.insert("/announce", {
+            let state = state.clone();
+            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: responses:: Body) {
+                match async {
+                    ta_res!(Response < htserve:: responses:: Body >);
+
+                    // Params
+                    let req =
+                        match serde_json::from_slice::<wire::api::publish::v1::AnnounceRequest>(
+                            &r.body.collect().await?.to_bytes(),
+                        ) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
+                            },
+                        };
+                    match &req.announcement {
+                        Announcement::V1(a) => {
+                            if a.root_public_key.identity() != req.identity {
+                                return Ok(response_400("Announcement public key doesn't match request identity"));
+                            }
+                            let Ok(_) = a.verify() else {
+                                return Ok(response_400("Couldn't verify payload"));
+                            };
+                        },
+                    };
+
+                    // Auth
+                    if !state.authorizer.is_identity_allowed(&req.identity).await? {
+                        return Ok(response_401());
+                    }
+
+                    // Publish it
+                    state.publisher.announce(&req.identity, req.announcement).await?;
+                    return Ok(response_200());
+                }.await {
+                    Ok(r) => {
+                        return r;
+                    },
+                    Err(e) => {
+                        state.log.log_err(loga::WARN, e.context("Error publishing key values"));
+                        return response_503();
+                    },
+                }
+            }))
+        }).unwrap();
+        routes.insert("/clear_identity", {
+            let state = state.clone();
+            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: responses:: Body) {
+                match async {
+                    ta_res!(Response < htserve:: responses:: Body >);
+
+                    // Params
+                    let req =
+                        match serde_json::from_slice::<wire::api::publish::v1::DeleteAnnouncementRequest>(
+                            &r.body.collect().await?.to_bytes(),
+                        ) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
+                            },
+                        };
+                    if req.root_public_key.identity() != req.identity {
+                        return Ok(response_400("Request public key doesn't match request identity"));
+                    }
+                    let Ok(leaf) = verify_chain_now(&req.root_public_key, &req.chain) else {
+                        return Ok(response_400("Couldn't verify chain"));
+                    };
+                    let Ok(_) = req.challenge.verify(&leaf) else {
+                        return Ok(response_400("Couldn't verify payload"));
+                    };
+
+                    // Auth
+                    if !state.authorizer.is_identity_allowed(&req.identity).await? {
+                        return Ok(response_401());
+                    }
+
+                    // Respond
+                    state.publisher.clear_identity(&req.identity).await?;
+                    return Ok(response_200());
+                }.await {
+                    Ok(r) => {
+                        return r;
+                    },
+                    Err(e) => {
+                        state.log.log_err(loga::WARN, e.context("Error unpublishing key values"));
+                        return response_503();
+                    },
+                }
+            }))
+        }).unwrap();
+        routes.insert("/publish", {
+            let state = state.clone();
+            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: responses:: Body) {
+                match async {
+                    ta_res!(Response < htserve:: responses:: Body >);
+
+                    // Params
+                    let req =
+                        match serde_json::from_slice::<wire::api::publish::v1::PublishRequest>(
+                            &r.body.collect().await?.to_bytes(),
+                        ) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
+                            },
+                        };
+                    if req.root_public_key.identity() != req.identity {
+                        return Ok(response_400("Request public key doesn't match request identity"));
+                    }
+                    let Ok(leaf) = verify_chain_now(&req.root_public_key, &req.chain) else {
+                        return Ok(response_400("Couldn't verify chain"));
+                    };
+                    let Ok(body) = req.content.verify(&leaf) else {
+                        return Ok(response_400("Couldn't verify payload"));
+                    };
+
+                    // Auth
+                    if !state.authorizer.is_identity_allowed(&req.identity).await? {
+                        return Ok(response_401());
+                    }
+
+                    // Publish it
+                    state.publisher.modify_values(&req.identity, publish_util::PublishArgs {
+                        missing_ttl: body.missing_ttl,
+                        clear_all: body.clear_all,
+                        clear: body.clear,
+                        set: body.set.into_iter().collect(),
+                    }).await?;
+                    return Ok(response_200());
+                }.await {
+                    Ok(r) => {
+                        return r;
+                    },
+                    Err(e) => {
+                        state.log.log_err(loga::WARN, e.context("Error publishing key values"));
+                        return response_503();
+                    },
+                }
+            }))
+        }).unwrap();
+        routes.insert("/info", {
+            let state = state.clone();
+            Box::new(htwrap::handler!((state: Arc < State >)(_r -> htserve:: responses:: Body) {
+                return response_200_json(wire::api::publish::v1::InfoResponse {
+                    advertise_addr: state.publisher.advertise_addr,
+                    cert_pub_hash: state.publisher.cert_pub_hash.clone(),
+                });
+            }))
+        }).unwrap();
+        Box::new(routes)
+    }).unwrap();
+    return Ok(routes);
+}
+
+pub async fn build_api_publish_external_endpoints(
+    log: &Log,
+    publisher: &Arc<Publisher>,
+    admin_token: &AuthTokenHash,
+    persist_dir: &Path,
+) -> Result<htserve::handler::PathRouter<htserve::responses::Body>, loga::Error> {
+    let db_pool =
+        setup_db(&persist_dir.join("publisher_admin.sqlite3"), |conn| admin_db::migrate(conn, None).map(|_| ()))
+            .await
+            .context("Error initializing database")?;
+
+    struct State {
+        db_pool: Pool,
+        log: Log,
+        publisher: Arc<Publisher>,
+    }
+
+    impl State {
+        async fn allow_identity(&self, identity: &Identity, group: String) -> Result<(), loga::Error> {
+            let db_identity = DbIdentity(identity.clone());
+            self.db_pool.get().await?.interact(move |conn| {
+                let mut db = admin_db::DbPublisherAdmin(conn);
+                good_ormning::sqlite::good_query!(
+                    admin_db,
+                    "publisher_admin",
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"INSERT INTO
+                         allowed_identities (identity, "group")
+                       VALUES
+                         (
+                           ${ident = &db_identity},
+                           ${string = group.as_str()}
+                         )
+                       ON CONFLICT (identity) DO UPDATE
+                       SET
+                         "group" = excluded."group"
+                       "#;
+                    &mut db
+                )?;
+                return Ok(()) as Result<(), GoodError>;
+            }).await??;
+            return Ok(());
+        }
+
+        async fn disallow_identity(&self, identity: &Identity) -> Result<(), loga::Error> {
+            let db_identity = DbIdentity(identity.clone());
+            self.db_pool.get().await?.interact(move |conn| {
+                let mut db = admin_db::DbPublisherAdmin(conn);
+                good_ormning::sqlite::good_query!(
+                    admin_db,
+                    "publisher_admin",
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"DELETE FROM allowed_identities
+                       WHERE
+                         identity = ${ident = &db_identity}
+                       "#;
+                    &mut db
+                )?;
+                return Ok(()) as Result<(), GoodError>;
+            }).await??;
+            return Ok(());
+        }
+
+        async fn list_allowed_identities(
+            &self,
+            after: Option<&Identity>,
+        ) -> Result<Vec<AdminIdentity>, loga::Error> {
+            let after = after.cloned();
+            return Ok(match after {
+                None => {
+                    self.db_pool.get().await?.interact(|conn| {
+                        let mut db = admin_db::DbPublisherAdmin(conn);
+                        good_ormning::sqlite::good_query_many!(
+                            admin_db,
+                            "publisher_admin",
+                            //# genemichaels-external: sql-formatter-sqlite
+                            r#"SELECT
+                                 identity,
+                                 "group"
+                               FROM
+                                 allowed_identities
+                               ORDER BY
+                                 identity ASC
+                               LIMIT
+                                 50
+                               "#;
+                            &mut db
+                        )
+                    }).await??.into_iter().map(|r| AdminIdentity {
+                        identity: r.identity.0,
+                        group: r.group,
+                    }).collect()
+                },
+                Some(a) => {
+                    let after_ident = DbIdentity(a);
+                    self.db_pool.get().await?.interact(move |conn| {
+                        let mut db = admin_db::DbPublisherAdmin(conn);
+                        good_ormning::sqlite::good_query_many!(
+                            admin_db,
+                            "publisher_admin",
+                            //# genemichaels-external: sql-formatter-sqlite
+                            r#"SELECT
+                                 identity,
+                                 "group"
+                               FROM
+                                 allowed_identities
+                               WHERE
+                                 identity > ${ident = &after_ident}
+                               ORDER BY
+                                 identity ASC
+                               LIMIT
+                                 50
+                               "#;
+                            &mut db
+                        )
+                    }).await??.into_iter().map(|r| AdminIdentity {
+                        identity: r.identity.0,
+                        group: r.group,
+                    }).collect()
+                },
+            });
+        }
+    }
+
+    #[async_trait]
+    impl PublisherAuthorizer for State {
+        async fn is_identity_allowed(&self, identity: &Identity) -> Result<bool, loga::Error> {
+            let db_identity = DbIdentity(identity.clone());
+            return Ok(self.db_pool.get().await?.interact(move |conn| {
+                let mut db = admin_db::DbPublisherAdmin(conn);
+                return Ok(good_ormning::sqlite::good_query_opt!(
+                    admin_db,
+                    "publisher_admin",
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"SELECT
+                         identity
+                       FROM
+                         allowed_identities
+                       WHERE
+                         identity = ${ident = &db_identity}
+                       "#;
+                    &mut db
+                )?.is_some()) as Result<bool, GoodError>;
+            }).await??);
+        }
+    }
+
+    let state = Arc::new(State {
+        log: log.clone(),
+        db_pool: db_pool,
+        publisher: publisher.clone(),
+    });
+    let mut routes = build_api_endpoints_with_authorizer(log, publisher, state.clone()).await?;
+    let admin_token = admin_token.clone();
+    routes.insert("/admin", {
+        let mut routes = htserve::handler::PathRouter::default();
+        routes.insert("/allowed_identities", {
+            let state = state.clone();
+            let admin_token = admin_token.clone();
+            Box::new(
+                htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
+                    match async {
+                        ta_vis_res!(Response < htserve:: responses:: Body >);
+                        if !check_auth_token_hash(
+                            &admin_token,
+                            &htserve::auth::get_auth_token(&r.head.headers).err_external()?,
+                        ) {
+                            return Ok(response_401());
+                        }
+                        match r.head.method {
+                            Method::GET => {
+                                #[derive(Debug, Deserialize)]
+                                struct Params {
+                                    after: Option<String>,
+                                }
+
+                                let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                                    Ok(q) => q,
+                                    Err(e) => {
+                                        return Ok(response_400(format!("Invalid query parameters: {}", e)));
+                                    },
+                                };
+                                let after = match &query.after {
+                                    Some(i) => {
+                                        Some(Identity::from_str(i).map_err(loga::err).err_external()?)
+                                    },
+                                    None => None,
+                                };
+                                return Ok(
+                                    response_200_json(
+                                        state.list_allowed_identities(after.as_ref()).await.err_internal()?,
+                                    ),
+                                );
+                            },
+                            Method::POST => {
+                                let Some(identity) = r.subpath.strip_prefix("/") else {
+                                    return Ok(response_400("Missing identity in path"));
+                                };
+                                let identity = Identity::from_str(&identity).map_err(loga::err).err_external()?;
+                                let body =
+                                    serde_json::from_slice::<AdminAllowIdentityBody>(
+                                        &r.body.collect().await.err_external()?.to_bytes(),
+                                    )
+                                        .context("Bad request body")
+                                        .err_external()?;
+                                return Ok(
+                                    response_200_json(
+                                        state.allow_identity(&identity, body.group).await.err_internal()?,
+                                    ),
+                                );
+                            },
+                            Method::DELETE => {
+                                let Some(identity) = r.subpath.strip_prefix("/") else {
+                                    return Ok(response_400("Missing identity in path"));
+                                };
+                                let identity = Identity::from_str(&identity).map_err(loga::err).err_external()?;
+                                state.disallow_identity(&identity).await.err_internal()?;
+                                state.publisher.clear_identity(&identity).await.err_internal()?;
+                                return Ok(response_200());
+                            },
+                            _ => return Ok(response_404()),
+                        }
+                    }.await {
+                        Ok(d) => {
+                            return d;
+                        },
+                        Err(e) => match e {
+                            VisErr::Internal(e) => {
+                                state.log.log_err(loga::WARN, e.context("Error getting published identities"));
+                                return response_503();
+                            },
+                            VisErr::External(e) => {
+                                return response_400(e);
+                            },
+                        },
+                    }
+                }),
+            )
+        }).unwrap();
+        routes.insert("/keys", {
+            let state = state.clone();
+            let admin_token = admin_token.clone();
+            Box::new(
+                htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
+                    match async {
+                        ta_res!(Response < htserve:: responses:: Body >);
+                        if !check_auth_token_hash(&admin_token, &htserve::auth::get_auth_token(&r.head.headers)?) {
+                            return Ok(response_401());
+                        }
+                        let Some(identity) = r.subpath.strip_prefix("/") else {
+                            return Ok(response_400("Missing identity in path"));
+                        };
+                        let identity = Identity::from_str(&identity).map_err(loga::err)?;
+
+                        #[derive(Debug, Deserialize)]
+                        struct Params {
+                            after: Option<String>,
+                        }
+
+                        let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                            Ok(q) => q,
+                            Err(e) => {
+                                return Ok(response_400(format!("Invalid query parameters: {}", e)));
+                            },
+                        };
+
+                        // Respond
+                        return Ok(response_200_json(state.publisher.list_value_keys(&identity, query.after).await?));
+                    }.await {
+                        Ok(d) => {
+                            return d;
+                        },
+                        Err(e) => {
+                            state
+                                .publisher
+                                .log
+                                .log_err(loga::WARN, e.context("Error getting published keys for identity"));
+                            return response_503();
+                        },
+                    }
+                }),
+            )
+        }).unwrap();
+        routes.insert("/announcements", {
+            let state = state.clone();
+            let admin_token = admin_token.clone();
+            Box::new(
+                htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
+                    match async {
+                        ta_res!(Response < htserve:: responses:: Body >);
+                        if !check_auth_token_hash(&admin_token, &htserve::auth::get_auth_token(&r.head.headers)?) {
+                            return Ok(response_401());
+                        }
+
+                        #[derive(Debug, Deserialize)]
+                        struct Params {
+                            after: Option<String>,
+                        }
+
+                        let query = match serde_urlencoded::from_str::<Params>(&r.query) {
+                            Ok(q) => q,
+                            Err(e) => {
+                                return Ok(response_400(format!("Invalid query parameters: {}", e)));
+                            },
+                        };
+                        let after = match query.after {
+                            Some(i) => {
+                                Some(Identity::from_str(&i).map_err(loga::err)?)
+                            },
+                            None => None,
+                        };
+
+                        // Respond
+                        return Ok(
+                            response_200_json(
+                                state
+                                    .publisher
+                                    .list_announcements(after.as_ref())
+                                    .await?
+                                    .into_iter()
+                                    .map(|e| e.0)
+                                    .collect::<Vec<_>>(),
+                            ),
+                        );
+                    }.await {
+                        Ok(d) => {
+                            return d;
+                        },
+                        Err(e) => {
+                            state.log.log_err(loga::WARN, e.context("Error getting published identities"));
+                            return response_503();
+                        },
+                    }
+                }),
+            )
+        }).unwrap();
+        Box::new(routes)
+    }).unwrap();
+    return Ok(routes);
 }
 
 /// A publisher is basically an http server that responds to resolver queries with
 /// record values.
 pub struct Publisher {
+    advertise_addr: SocketAddr,
+    cert_pub_hash: Vec<u8>,
+    db_pool: Pool,
     log: Log,
     node: Node,
-    cert_pub_hash: Vec<u8>,
-    advertise_addr: SocketAddr,
-    db_pool: Pool,
 }
 
 impl Publisher {
+    pub async fn announce(
+        &self,
+        identity: &Identity,
+        announcement: stored::announcement::Announcement,
+    ) -> Result<(), loga::Error> {
+        let remote_announcement = self.node.put(identity.clone(), announcement.clone()).await;
+        match remote_announcement {
+            Some(remote_announcement) => {
+                let new_published = match &announcement {
+                    Announcement::V1(a) => a.parse_unwrap().announced,
+                };
+                let remote_published = match remote_announcement {
+                    Announcement::V1(a) => a.parse_unwrap().announced,
+                };
+                if remote_published > new_published {
+                    // A newer announcement was found elsewhere in the network; just drop the outdated
+                    // announcement we're trying to publish here
+                    return Ok(());
+                }
+            },
+            None => (),
+        }
+        self.db_pool.tx({
+            let db_identity = DbIdentity(identity.clone());
+            let announcement = announcement.clone();
+            move |conn| {
+                let mut db = db::DbPublisher(conn);
+                good_ormning::sqlite::good_query!(
+                    db,
+                    "publisher",
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"INSERT INTO
+                         announce (identity, value)
+                       VALUES
+                         (
+                           ${ident = &db_identity},
+                           ${announcement = &announcement}
+                         )
+                       ON CONFLICT (identity) DO UPDATE
+                       SET
+                         value = excluded.value
+                       "#;
+                    &mut db
+                )?;
+                Ok(())
+            }
+        }).await?;
+        return Ok(())
+    }
+
+    pub async fn clear_identity(&self, identity: &Identity) -> Result<(), loga::Error> {
+        self.db_pool.tx({
+            let db_identity = DbIdentity(identity.clone());
+            move |conn| {
+                let mut db = db::DbPublisher(conn);
+                good_ormning::sqlite::good_query!(
+                    db,
+                    "publisher",
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"DELETE FROM announce
+                       WHERE
+                         identity = ${ident = &db_identity}
+                       "#;
+                    &mut db
+                )?;
+                good_ormning::sqlite::good_query!(
+                    db,
+                    "publisher",
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"DELETE FROM publish_values
+                       WHERE
+                         identity = ${ident = &db_identity}
+                       "#;
+                    &mut db
+                )?;
+                return Ok(());
+            }
+        }).await?;
+        return Ok(());
+    }
+
+    pub async fn get_values(
+        &self,
+        identity: &Identity,
+        keys: Vec<RecordKey>,
+    ) -> Result<HashMap<RecordKey, wire::resolve::latest::ResolveValue>, loga::Error> {
+        let db_identity = DbIdentity(identity.clone());
+        return Ok(self.db_pool.tx(move |conn| {
+            let mut db = db::DbPublisher(conn);
+            let mut out = HashMap::new();
+            let missing_ttl = good_ormning::sqlite::good_query_opt!(
+                db,
+                "publisher",
+                //# genemichaels-external: sql-formatter-sqlite
+                r#"SELECT
+                     missing_ttl
+                   FROM
+                     publish_idents
+                   WHERE
+                     identity = ${ident = &db_identity}
+                   "#;
+                &mut db
+            )?.unwrap_or(0);
+            let now = SystemTime::now();
+            for k in keys {
+                let expires;
+                let data;
+                let key = join_record_key(&k);
+                match good_ormning::sqlite::good_query_opt!(
+                    db,
+                    "publisher",
+                    //# genemichaels-external: sql-formatter-sqlite
+                    r#"SELECT
+                         "values"
+                       FROM
+                         publish_values
+                       WHERE
+                         identity = ${ident = &db_identity}
+                         AND key = ${string = key.as_str()}
+                       "#;
+                    &mut db
+                )? {
+                    Some(v) => match v {
+                        stored::record::RecordValue::V1(v) => {
+                            expires = now + v.ttl.as_duration();
+                            data = v.data;
+                        },
+                    },
+                    None => {
+                        expires = now + Duration::from_secs(60 * missing_ttl as u64);
+                        data = None;
+                    },
+                }
+                out.insert(k.clone(), wire::resolve::v1::ResolveValue {
+                    expires: expires.into(),
+                    data: data,
+                });
+            }
+            return Ok(out);
+        }).await?);
+    }
+
+    pub async fn list_announcements(
+        &self,
+        after: Option<&Identity>,
+    ) -> Result<Vec<(Identity, Announcement)>, loga::Error> {
+        let after = after.cloned();
+        return Ok(match after {
+            None => {
+                self.db_pool.tx(move |conn| {
+                    let mut db = db::DbPublisher(conn);
+                    Ok(good_ormning::sqlite::good_query_many!(
+                        db,
+                        "publisher",
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"SELECT
+                             identity,
+                             value
+                           FROM
+                             announce
+                           ORDER BY
+                             identity ASC
+                           LIMIT
+                             50
+                           "#;
+                        &mut db
+                    )?)
+                }).await?.into_iter().map(|p| (p.identity.0, p.value)).collect()
+            },
+            Some(a) => {
+                let after_ident = DbIdentity(a);
+                self.db_pool.tx(move |conn| {
+                    let mut db = db::DbPublisher(conn);
+                    Ok(good_ormning::sqlite::good_query_many!(
+                        db,
+                        "publisher",
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"SELECT
+                             identity,
+                             value
+                           FROM
+                             announce
+                           WHERE
+                             identity > ${ident = &after_ident}
+                           ORDER BY
+                             identity ASC
+                           LIMIT
+                             50
+                           "#;
+                        &mut db
+                    )?)
+                }).await?.into_iter().map(|p| (p.identity.0, p.value)).collect()
+            },
+        });
+    }
+
+    pub async fn list_value_keys(
+        &self,
+        identity: &Identity,
+        after: Option<String>,
+    ) -> Result<Vec<String>, loga::Error> {
+        let db_identity = DbIdentity(identity.clone());
+        return Ok(self.db_pool.tx(move |conn| {
+            let mut db = db::DbPublisher(conn);
+            Ok(match after {
+                None => {
+                    good_ormning::sqlite::good_query_many!(
+                        db,
+                        "publisher",
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"SELECT
+                             key
+                           FROM
+                             publish_values
+                           WHERE
+                             identity = ${ident = &db_identity}
+                           ORDER BY
+                             key ASC
+                           LIMIT
+                             50
+                           "#;
+                        &mut db
+                    )?.into_iter().collect()
+                },
+                Some(v) => {
+                    good_ormning::sqlite::good_query_many!(
+                        db,
+                        "publisher",
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"SELECT
+                             key
+                           FROM
+                             publish_values
+                           WHERE
+                             identity = ${ident = &db_identity}
+                             AND key > ${string = v.as_str()}
+                           ORDER BY
+                             key ASC
+                           LIMIT
+                             50
+                           "#;
+                        &mut db
+                    )?.into_iter().collect()
+                },
+            })
+        }).await?);
+    }
+
+    pub async fn modify_values(
+        &self,
+        identity: &Identity,
+        args: publish_util::PublishArgs,
+    ) -> Result<(), loga::Error> {
+        self.db_pool.tx({
+            let db_identity = DbIdentity(identity.clone());
+            move |conn| {
+                let mut db = db::DbPublisher(conn);
+                if let Some(missing_ttl) = args.missing_ttl {
+                    let missing_ttl_val = missing_ttl as i64;
+                    good_ormning::sqlite::good_query!(
+                        db,
+                        "publisher",
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"INSERT INTO
+                             publish_idents (identity, missing_ttl)
+                           VALUES
+                             (${ident = &db_identity}, ${i64 = missing_ttl_val})
+                           ON CONFLICT (identity) DO UPDATE
+                           SET
+                             missing_ttl = excluded.missing_ttl
+                           "#;
+                        &mut db
+                    )?;
+                }
+                if args.clear_all {
+                    good_ormning::sqlite::good_query!(
+                        db,
+                        "publisher",
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"DELETE FROM publish_values
+                           WHERE
+                             identity = ${ident = &db_identity}
+                           "#;
+                        &mut db
+                    )?;
+                }
+                for k in args.clear {
+                    let key = join_record_key(&k);
+                    good_ormning::sqlite::good_query!(
+                        db,
+                        "publisher",
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"DELETE FROM publish_values
+                           WHERE
+                             identity = ${ident = &db_identity}
+                             AND key = ${string = key.as_str()}
+                           "#;
+                        &mut db
+                    )?;
+                }
+                for (k, v) in args.set {
+                    let key = join_record_key(&k);
+                    good_ormning::sqlite::good_query!(
+                        db,
+                        "publisher",
+                        //# genemichaels-external: sql-formatter-sqlite
+                        r#"INSERT INTO
+                             publish_values (identity, key, "values")
+                           VALUES
+                             (
+                               ${ident = &db_identity},
+                               ${string = key.as_str()},
+                               ${record_value = &v}
+                             )
+                           ON CONFLICT (identity, key) DO UPDATE
+                           SET
+                             "values" = excluded."values"
+                           "#;
+                        &mut db
+                    )?;
+                }
+                return Ok(());
+            }
+        }).await?;
+        return Ok(());
+    }
+
     /// Launch a new dynamic publisher in task manager.
     ///
     /// * `advertise_addr`: The address to use in announcements to the network. This should
@@ -198,7 +1035,7 @@ impl Publisher {
                                 r#"INSERT INTO
                                      certs ("unique", certs)
                                    VALUES
-                                     (0, ${certs =&certs_val})
+                                     (0, ${certs = &certs_val})
                                    "#;
                                 &mut db
                             )?;
@@ -320,7 +1157,7 @@ impl Publisher {
                         };
                         for (identity, local_announcement) in announce_pairs {
                             log.log_with(loga::DEBUG, "Sending announcement", ea!(identity = identity));
-                            let remote_announcement = node.put(identity.id(), local_announcement.clone()).await;
+                            let remote_announcement = node.put(identity.clone(), local_announcement.clone()).await;
 
                             // Check to see if discovered a newer remote announcement - some other publisher
                             // node has surplanted this one (and delete our own announcement).
@@ -424,333 +1261,6 @@ impl Publisher {
     pub fn pub_cert_hash(&self) -> Vec<u8> {
         return self.cert_pub_hash.clone();
     }
-
-    pub async fn announce(
-        &self,
-        identity: &PublicKey,
-        announcement: stored::announcement::Announcement,
-    ) -> Result<(), loga::Error> {
-        let remote_announcement = self.node.put(identity.id(), announcement.clone()).await;
-        match remote_announcement {
-            Some(remote_announcement) => {
-                let new_published = match &announcement {
-                    Announcement::V1(a) => a.parse_unwrap().announced,
-                };
-                let remote_published = match remote_announcement {
-                    Announcement::V1(a) => a.parse_unwrap().announced,
-                };
-                if remote_published > new_published {
-                    // A newer announcement was found elsewhere in the network; just drop the outdated
-                    // announcement we're trying to publish here
-                    return Ok(());
-                }
-            },
-            None => (),
-        }
-        self.db_pool.tx({
-            let db_identity = DbIdentity(identity.clone());
-            let announcement = announcement.clone();
-            move |conn| {
-                let mut db = db::DbPublisher(conn);
-                good_ormning::sqlite::good_query!(
-                    db,
-                    "publisher",
-                    //# genemichaels-external: sql-formatter-sqlite
-                    r#"INSERT INTO
-                         announce (identity, value)
-                       VALUES
-                         (
-                           ${ident = &db_identity},
-                           ${announcement =&announcement}
-                         )
-                       ON CONFLICT (identity) DO UPDATE
-                       SET
-                         value = excluded.value
-                       "#;
-                    &mut db
-                )?;
-                Ok(())
-            }
-        }).await?;
-        return Ok(())
-    }
-
-    pub async fn clear_identity(&self, identity: &PublicKey) -> Result<(), loga::Error> {
-        self.db_pool.tx({
-            let db_identity = DbIdentity(identity.clone());
-            move |conn| {
-                let mut db = db::DbPublisher(conn);
-                good_ormning::sqlite::good_query!(
-                    db,
-                    "publisher",
-                    //# genemichaels-external: sql-formatter-sqlite
-                    r#"DELETE FROM announce
-                       WHERE
-                         identity = ${ident = &db_identity}
-                       "#;
-                    &mut db
-                )?;
-                good_ormning::sqlite::good_query!(
-                    db,
-                    "publisher",
-                    //# genemichaels-external: sql-formatter-sqlite
-                    r#"DELETE FROM publish_values
-                       WHERE
-                         identity = ${ident = &db_identity}
-                       "#;
-                    &mut db
-                )?;
-                return Ok(());
-            }
-        }).await?;
-        return Ok(());
-    }
-
-    pub async fn list_announcements(
-        &self,
-        after: Option<&PublicKey>,
-    ) -> Result<Vec<(PublicKey, Announcement)>, loga::Error> {
-        let after = after.cloned();
-        return Ok(match after {
-            None => {
-                self.db_pool.tx(move |conn| {
-                    let mut db = db::DbPublisher(conn);
-                    Ok(good_ormning::sqlite::good_query_many!(
-                        db,
-                        "publisher",
-                        //# genemichaels-external: sql-formatter-sqlite
-                        r#"SELECT
-                             identity,
-                             value
-                           FROM
-                             announce
-                           ORDER BY
-                             identity ASC
-                           LIMIT
-                             50
-                           "#;
-                        &mut db
-                    )?)
-                }).await?.into_iter().map(|p| (p.identity.0, p.value)).collect()
-            },
-            Some(a) => {
-                let after_ident = DbIdentity(a);
-                self.db_pool.tx(move |conn| {
-                    let mut db = db::DbPublisher(conn);
-                    Ok(good_ormning::sqlite::good_query_many!(
-                        db,
-                        "publisher",
-                        //# genemichaels-external: sql-formatter-sqlite
-                        r#"SELECT
-                             identity,
-                             value
-                           FROM
-                             announce
-                           WHERE
-                             identity > ${ident = &after_ident}
-                           ORDER BY
-                             identity ASC
-                           LIMIT
-                             50
-                           "#;
-                        &mut db
-                    )?)
-                }).await?.into_iter().map(|p| (p.identity.0, p.value)).collect()
-            },
-        });
-    }
-
-    pub async fn modify_values(
-        &self,
-        identity: &PublicKey,
-        args: publish_util::PublishArgs,
-    ) -> Result<(), loga::Error> {
-        self.db_pool.tx({
-            let db_identity = DbIdentity(identity.clone());
-            move |conn| {
-                let mut db = db::DbPublisher(conn);
-                if let Some(missing_ttl) = args.missing_ttl {
-                    let missing_ttl_val = missing_ttl as i64;
-                    good_ormning::sqlite::good_query!(
-                        db,
-                        "publisher",
-                        //# genemichaels-external: sql-formatter-sqlite
-                        r#"INSERT INTO
-                             publish_idents (identity, missing_ttl)
-                           VALUES
-                             (${ident = &db_identity}, ${i64 = missing_ttl_val})
-                           ON CONFLICT (identity) DO UPDATE
-                           SET
-                             missing_ttl = excluded.missing_ttl
-                           "#;
-                        &mut db
-                    )?;
-                }
-                if args.clear_all {
-                    good_ormning::sqlite::good_query!(
-                        db,
-                        "publisher",
-                        //# genemichaels-external: sql-formatter-sqlite
-                        r#"DELETE FROM publish_values
-                           WHERE
-                             identity = ${ident = &db_identity}
-                           "#;
-                        &mut db
-                    )?;
-                }
-                for k in args.clear {
-                    let key = join_record_key(&k);
-                    good_ormning::sqlite::good_query!(
-                        db,
-                        "publisher",
-                        //# genemichaels-external: sql-formatter-sqlite
-                        r#"DELETE FROM publish_values
-                           WHERE
-                             identity = ${ident = &db_identity}
-                             AND key = ${string = key.as_str()}
-                           "#;
-                        &mut db
-                    )?;
-                }
-                for (k, v) in args.set {
-                    let key = join_record_key(&k);
-                    good_ormning::sqlite::good_query!(
-                        db,
-                        "publisher",
-                        //# genemichaels-external: sql-formatter-sqlite
-                        r#"INSERT INTO
-                             publish_values (identity, key, "values")
-                           VALUES
-                             (
-                               ${ident = &db_identity},
-                               ${string = key.as_str()},
-                               ${record_value =&v}
-                             )
-                           ON CONFLICT (identity, key) DO UPDATE
-                           SET
-                             "values" = excluded."values"
-                           "#;
-                        &mut db
-                    )?;
-                }
-                return Ok(());
-            }
-        }).await?;
-        return Ok(());
-    }
-
-    pub async fn get_values(
-        &self,
-        identity: &PublicKey,
-        keys: Vec<RecordKey>,
-    ) -> Result<HashMap<RecordKey, wire::resolve::latest::ResolveValue>, loga::Error> {
-        let db_identity = DbIdentity(identity.clone());
-        return Ok(self.db_pool.tx(move |conn| {
-            let mut db = db::DbPublisher(conn);
-            let mut out = HashMap::new();
-            let missing_ttl = good_ormning::sqlite::good_query_opt!(
-                db,
-                "publisher",
-                //# genemichaels-external: sql-formatter-sqlite
-                r#"SELECT
-                     missing_ttl
-                   FROM
-                     publish_idents
-                   WHERE
-                     identity = ${ident = &db_identity}
-                   "#;
-                &mut db
-            )?.unwrap_or(0);
-            let now = SystemTime::now();
-            for k in keys {
-                let expires;
-                let data;
-                let key = join_record_key(&k);
-                match good_ormning::sqlite::good_query_opt!(
-                    db,
-                    "publisher",
-                    //# genemichaels-external: sql-formatter-sqlite
-                    r#"SELECT
-                         "values"
-                       FROM
-                         publish_values
-                       WHERE
-                         identity = ${ident = &db_identity}
-                         AND key = ${string = key.as_str()}
-                       "#;
-                    &mut db
-                )? {
-                    Some(v) => match v {
-                        stored::record::RecordValue::V1(v) => {
-                            expires = now + v.ttl.as_duration();
-                            data = v.data;
-                        },
-                    },
-                    None => {
-                        expires = now + Duration::from_secs(60 * missing_ttl as u64);
-                        data = None;
-                    },
-                }
-                out.insert(k.clone(), wire::resolve::v1::ResolveValue {
-                    expires: expires.into(),
-                    data: data,
-                });
-            }
-            return Ok(out);
-        }).await?);
-    }
-
-    pub async fn list_value_keys(
-        &self,
-        identity: &PublicKey,
-        after: Option<String>,
-    ) -> Result<Vec<String>, loga::Error> {
-        let db_identity = DbIdentity(identity.clone());
-        return Ok(self.db_pool.tx(move |conn| {
-            let mut db = db::DbPublisher(conn);
-            Ok(match after {
-                None => {
-                    good_ormning::sqlite::good_query_many!(
-                        db,
-                        "publisher",
-                        //# genemichaels-external: sql-formatter-sqlite
-                        r#"SELECT
-                             key
-                           FROM
-                             publish_values
-                           WHERE
-                             identity = ${ident = &db_identity}
-                           ORDER BY
-                             key ASC
-                           LIMIT
-                             50
-                           "#;
-                        &mut db
-                    )?.into_iter().collect()
-                },
-                Some(v) => {
-                    good_ormning::sqlite::good_query_many!(
-                        db,
-                        "publisher",
-                        //# genemichaels-external: sql-formatter-sqlite
-                        r#"SELECT
-                             key
-                           FROM
-                             publish_values
-                           WHERE
-                             identity = ${ident = &db_identity}
-                             AND key > ${string = v.as_str()}
-                           ORDER BY
-                             key ASC
-                           LIMIT
-                             50
-                           "#;
-                        &mut db
-                    )?.into_iter().collect()
-                },
-            })
-        }).await?);
-    }
 }
 
 #[async_trait]
@@ -761,518 +1271,22 @@ impl crate::publishing::Publisher for Publisher {
         identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
         content: publish_util::PublishArgs,
     ) -> Result<(), loga::Error> {
-        let identity = identity_signer.lock().unwrap().identity()?;
+        let identity = identity_signer.lock().unwrap().root_public_key()?.identity();
         self.modify_values(&identity, content).await?;
         return Ok(());
     }
 }
 
-#[async_trait]
-pub trait PublisherAuthorizer: Sync + Send {
-    async fn is_identity_allowed(&self, identity: &PublicKey) -> Result<bool, loga::Error>;
+pub struct SingleCertResolver(pub Arc<RwLock<Arc<rustls::sign::CertifiedKey>>>);
+
+impl rustls::server::ResolvesServerCert for SingleCertResolver {
+    fn resolve(&self, _client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        return Some(self.0.read().unwrap().clone());
+    }
 }
 
-pub const API_ROUTE_PUBLISH: &str = "publish";
-
-pub async fn build_api_endpoints_with_authorizer(
-    log: &Log,
-    publisher: &Arc<Publisher>,
-    authorizer: Arc<dyn PublisherAuthorizer>,
-) -> Result<htserve::handler::PathRouter<htserve::responses::Body>, loga::Error> {
-    struct State {
-        log: Log,
-        publisher: Arc<Publisher>,
-        authorizer: Arc<dyn PublisherAuthorizer>,
+impl std::fmt::Debug for SingleCertResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SingleCertResolver").field(&self.0.read().unwrap()).finish()
     }
-
-    let state = Arc::new(State {
-        log: log.clone(),
-        publisher: publisher.clone(),
-        authorizer: authorizer,
-    });
-    let mut routes = htserve::handler::PathRouter::default();
-    routes.insert("/v1", {
-        let mut routes = htserve::handler::PathRouter::default();
-        routes.insert("/announce", {
-            let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: responses:: Body) {
-                match async {
-                    ta_res!(Response < htserve:: responses:: Body >);
-
-                    // Params
-                    let req =
-                        match serde_json::from_slice::<wire::api::publish::v1::AnnounceRequest>(
-                            &r.body.collect().await?.to_bytes(),
-                        ) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
-                            },
-                        };
-                    match &req.announcement {
-                        Announcement::V1(a) => {
-                            if a.public_key != req.identity {
-                                return Ok(response_400("Announcement public key doesn't match request identity"));
-                            }
-                            let Ok(_) = a.verify() else {
-                                return Ok(response_400("Couldn't verify payload"));
-                            };
-                        },
-                    };
-
-                    // Auth
-                    if !state.authorizer.is_identity_allowed(&req.identity).await? {
-                        return Ok(response_401());
-                    }
-
-                    // Publish it
-                    state.publisher.announce(&req.identity, req.announcement).await?;
-                    return Ok(response_200());
-                }.await {
-                    Ok(r) => {
-                        return r;
-                    },
-                    Err(e) => {
-                        state.log.log_err(loga::WARN, e.context("Error publishing key values"));
-                        return response_503();
-                    },
-                }
-            }))
-        }).unwrap();
-        routes.insert("/clear_identity", {
-            let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: responses:: Body) {
-                match async {
-                    ta_res!(Response < htserve:: responses:: Body >);
-
-                    // Params
-                    let req =
-                        match serde_json::from_slice::<wire::api::publish::v1::DeleteAnnouncementRequest>(
-                            &r.body.collect().await?.to_bytes(),
-                        ) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
-                            },
-                        };
-                    let Ok(_) = req.challenge.verify(&req.identity) else {
-                        return Ok(response_400("Couldn't verify payload"));
-                    };
-
-                    // Auth
-                    if !state.authorizer.is_identity_allowed(&req.identity).await? {
-                        return Ok(response_401());
-                    }
-
-                    // Respond
-                    state.publisher.clear_identity(&req.identity).await?;
-                    return Ok(response_200());
-                }.await {
-                    Ok(r) => {
-                        return r;
-                    },
-                    Err(e) => {
-                        state.log.log_err(loga::WARN, e.context("Error unpublishing key values"));
-                        return response_503();
-                    },
-                }
-            }))
-        }).unwrap();
-        routes.insert("/publish", {
-            let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc < State >)(r -> htserve:: responses:: Body) {
-                match async {
-                    ta_res!(Response < htserve:: responses:: Body >);
-
-                    // Params
-                    let req =
-                        match serde_json::from_slice::<wire::api::publish::v1::PublishRequest>(
-                            &r.body.collect().await?.to_bytes(),
-                        ) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
-                            },
-                        };
-                    let Ok(body) = req.content.verify(&req.identity) else {
-                        return Ok(response_400("Couldn't verify payload"));
-                    };
-
-                    // Auth
-                    if !state.authorizer.is_identity_allowed(&req.identity).await? {
-                        return Ok(response_401());
-                    }
-
-                    // Publish it
-                    state.publisher.modify_values(&req.identity, publish_util::PublishArgs {
-                        missing_ttl: body.missing_ttl,
-                        clear_all: body.clear_all,
-                        clear: body.clear,
-                        set: body.set.into_iter().collect(),
-                    }).await?;
-                    return Ok(response_200());
-                }.await {
-                    Ok(r) => {
-                        return r;
-                    },
-                    Err(e) => {
-                        state.log.log_err(loga::WARN, e.context("Error publishing key values"));
-                        return response_503();
-                    },
-                }
-            }))
-        }).unwrap();
-        routes.insert("/info", {
-            let state = state.clone();
-            Box::new(htwrap::handler!((state: Arc < State >)(_r -> htserve:: responses:: Body) {
-                return response_200_json(wire::api::publish::v1::InfoResponse {
-                    advertise_addr: state.publisher.advertise_addr,
-                    cert_pub_hash: state.publisher.cert_pub_hash.clone(),
-                });
-            }))
-        }).unwrap();
-        Box::new(routes)
-    }).unwrap();
-    return Ok(routes);
-}
-
-pub async fn build_api_publish_external_endpoints(
-    log: &Log,
-    publisher: &Arc<Publisher>,
-    admin_token: &AuthTokenHash,
-    persist_dir: &Path,
-) -> Result<htserve::handler::PathRouter<htserve::responses::Body>, loga::Error> {
-    let db_pool =
-        setup_db(&persist_dir.join("publisher_admin.sqlite3"), |conn| admin_db::migrate(conn, None).map(|_| ()))
-            .await
-            .context("Error initializing database")?;
-
-    struct State {
-        log: Log,
-        db_pool: Pool,
-        publisher: Arc<Publisher>,
-    }
-
-    impl State {
-        async fn allow_identity(&self, identity: &PublicKey, group: String) -> Result<(), loga::Error> {
-            let db_identity = DbIdentity(identity.clone());
-            self.db_pool.get().await?.interact(move |conn| {
-                let mut db = admin_db::DbPublisherAdmin(conn);
-                good_ormning::sqlite::good_query!(
-                    admin_db,
-                    "publisher_admin",
-                    //# genemichaels-external: sql-formatter-sqlite
-                    r#"INSERT INTO
-                         allowed_identities (identity, "group")
-                       VALUES
-                         (
-                           ${ident = &db_identity},
-                           ${string = group.as_str()}
-                         )
-                       ON CONFLICT (identity) DO UPDATE
-                       SET
-                         "group" = excluded."group"
-                       "#;
-                    &mut db
-                )?;
-                return Ok(()) as Result<(), GoodError>;
-            }).await??;
-            return Ok(());
-        }
-
-        async fn disallow_identity(&self, identity: &PublicKey) -> Result<(), loga::Error> {
-            let db_identity = DbIdentity(identity.clone());
-            self.db_pool.get().await?.interact(move |conn| {
-                let mut db = admin_db::DbPublisherAdmin(conn);
-                good_ormning::sqlite::good_query!(
-                    admin_db,
-                    "publisher_admin",
-                    //# genemichaels-external: sql-formatter-sqlite
-                    r#"DELETE FROM allowed_identities
-                       WHERE
-                         identity = ${ident = &db_identity}
-                       "#;
-                    &mut db
-                )?;
-                return Ok(()) as Result<(), GoodError>;
-            }).await??;
-            return Ok(());
-        }
-
-        async fn list_allowed_identities(
-            &self,
-            after: Option<&PublicKey>,
-        ) -> Result<Vec<AdminIdentity>, loga::Error> {
-            let after = after.cloned();
-            return Ok(match after {
-                None => {
-                    self.db_pool.get().await?.interact(|conn| {
-                        let mut db = admin_db::DbPublisherAdmin(conn);
-                        good_ormning::sqlite::good_query_many!(
-                            admin_db,
-                            "publisher_admin",
-                            //# genemichaels-external: sql-formatter-sqlite
-                            r#"SELECT
-                                 identity,
-                                 "group"
-                               FROM
-                                 allowed_identities
-                               ORDER BY
-                                 identity ASC
-                               LIMIT
-                                 50
-                               "#;
-                            &mut db
-                        )
-                    }).await??.into_iter().map(|r| AdminIdentity {
-                        identity: r.identity.0,
-                        group: r.group,
-                    }).collect()
-                },
-                Some(a) => {
-                    let after_ident = DbIdentity(a);
-                    self.db_pool.get().await?.interact(move |conn| {
-                        let mut db = admin_db::DbPublisherAdmin(conn);
-                        good_ormning::sqlite::good_query_many!(
-                            admin_db,
-                            "publisher_admin",
-                            //# genemichaels-external: sql-formatter-sqlite
-                            r#"SELECT
-                                 identity,
-                                 "group"
-                               FROM
-                                 allowed_identities
-                               WHERE
-                                 identity > ${ident = &after_ident}
-                               ORDER BY
-                                 identity ASC
-                               LIMIT
-                                 50
-                               "#;
-                            &mut db
-                        )
-                    }).await??.into_iter().map(|r| AdminIdentity {
-                        identity: r.identity.0,
-                        group: r.group,
-                    }).collect()
-                },
-            });
-        }
-    }
-
-    #[async_trait]
-    impl PublisherAuthorizer for State {
-        async fn is_identity_allowed(&self, identity: &PublicKey) -> Result<bool, loga::Error> {
-            let db_identity = DbIdentity(identity.clone());
-            return Ok(self.db_pool.get().await?.interact(move |conn| {
-                let mut db = admin_db::DbPublisherAdmin(conn);
-                return Ok(good_ormning::sqlite::good_query_opt!(
-                    admin_db,
-                    "publisher_admin",
-                    //# genemichaels-external: sql-formatter-sqlite
-                    r#"SELECT
-                         identity
-                       FROM
-                         allowed_identities
-                       WHERE
-                         identity = ${ident = &db_identity}
-                       "#;
-                    &mut db
-                )?.is_some()) as Result<bool, GoodError>;
-            }).await??);
-        }
-    }
-
-    let state = Arc::new(State {
-        log: log.clone(),
-        db_pool: db_pool,
-        publisher: publisher.clone(),
-    });
-    let mut routes = build_api_endpoints_with_authorizer(log, publisher, state.clone()).await?;
-    let admin_token = admin_token.clone();
-    routes.insert("/admin", {
-        let mut routes = htserve::handler::PathRouter::default();
-        routes.insert("/allowed_identities", {
-            let state = state.clone();
-            let admin_token = admin_token.clone();
-            Box::new(
-                htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
-                    match async {
-                        ta_vis_res!(Response < htserve:: responses:: Body >);
-                        if !check_auth_token_hash(
-                            &admin_token,
-                            &htserve::auth::get_auth_token(&r.head.headers).err_external()?,
-                        ) {
-                            return Ok(response_401());
-                        }
-                        match r.head.method {
-                            Method::GET => {
-                                #[derive(Debug, Deserialize)]
-                                struct Params {
-                                    after: Option<String>,
-                                }
-
-                                let query = match serde_urlencoded::from_str::<Params>(&r.query) {
-                                    Ok(q) => q,
-                                    Err(e) => {
-                                        return Ok(response_400(format!("Invalid query parameters: {}", e)));
-                                    },
-                                };
-                                let after = match &query.after {
-                                    Some(i) => {
-                                        Some(PublicKey::from_str(i).map_err(loga::err).err_external()?)
-                                    },
-                                    None => None,
-                                };
-                                return Ok(
-                                    response_200_json(
-                                        state.list_allowed_identities(after.as_ref()).await.err_internal()?,
-                                    ),
-                                );
-                            },
-                            Method::POST => {
-                                let Some(identity) = r.subpath.strip_prefix("/") else {
-                                    return Ok(response_400("Missing identity in path"));
-                                };
-                                let identity = PublicKey::from_str(&identity).map_err(loga::err).err_external()?;
-                                let body =
-                                    serde_json::from_slice::<AdminAllowIdentityBody>(
-                                        &r.body.collect().await.err_external()?.to_bytes(),
-                                    )
-                                        .context("Bad request body")
-                                        .err_external()?;
-                                return Ok(
-                                    response_200_json(
-                                        state.allow_identity(&identity, body.group).await.err_internal()?,
-                                    ),
-                                );
-                            },
-                            Method::DELETE => {
-                                let Some(identity) = r.subpath.strip_prefix("/") else {
-                                    return Ok(response_400("Missing identity in path"));
-                                };
-                                let identity = PublicKey::from_str(&identity).map_err(loga::err).err_external()?;
-                                state.disallow_identity(&identity).await.err_internal()?;
-                                state.publisher.clear_identity(&identity).await.err_internal()?;
-                                return Ok(response_200());
-                            },
-                            _ => return Ok(response_404()),
-                        }
-                    }.await {
-                        Ok(d) => {
-                            return d;
-                        },
-                        Err(e) => match e {
-                            VisErr::Internal(e) => {
-                                state.log.log_err(loga::WARN, e.context("Error getting published identities"));
-                                return response_503();
-                            },
-                            VisErr::External(e) => {
-                                return response_400(e);
-                            },
-                        },
-                    }
-                }),
-            )
-        }).unwrap();
-        routes.insert("/keys", {
-            let state = state.clone();
-            let admin_token = admin_token.clone();
-            Box::new(
-                htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
-                    match async {
-                        ta_res!(Response < htserve:: responses:: Body >);
-                        if !check_auth_token_hash(&admin_token, &htserve::auth::get_auth_token(&r.head.headers)?) {
-                            return Ok(response_401());
-                        }
-                        let Some(identity) = r.subpath.strip_prefix("/") else {
-                            return Ok(response_400("Missing identity in path"));
-                        };
-                        let identity = PublicKey::from_str(&identity).map_err(loga::err)?;
-
-                        #[derive(Debug, Deserialize)]
-                        struct Params {
-                            after: Option<String>,
-                        }
-
-                        let query = match serde_urlencoded::from_str::<Params>(&r.query) {
-                            Ok(q) => q,
-                            Err(e) => {
-                                return Ok(response_400(format!("Invalid query parameters: {}", e)));
-                            },
-                        };
-
-                        // Respond
-                        return Ok(response_200_json(state.publisher.list_value_keys(&identity, query.after).await?));
-                    }.await {
-                        Ok(d) => {
-                            return d;
-                        },
-                        Err(e) => {
-                            state
-                                .publisher
-                                .log
-                                .log_err(loga::WARN, e.context("Error getting published keys for identity"));
-                            return response_503();
-                        },
-                    }
-                }),
-            )
-        }).unwrap();
-        routes.insert("/announcements", {
-            let state = state.clone();
-            let admin_token = admin_token.clone();
-            Box::new(
-                htwrap::handler!((state: Arc < State >, admin_token: AuthTokenHash)(r -> htserve:: responses:: Body) {
-                    match async {
-                        ta_res!(Response < htserve:: responses:: Body >);
-                        if !check_auth_token_hash(&admin_token, &htserve::auth::get_auth_token(&r.head.headers)?) {
-                            return Ok(response_401());
-                        }
-
-                        #[derive(Debug, Deserialize)]
-                        struct Params {
-                            after: Option<String>,
-                        }
-
-                        let query = match serde_urlencoded::from_str::<Params>(&r.query) {
-                            Ok(q) => q,
-                            Err(e) => {
-                                return Ok(response_400(format!("Invalid query parameters: {}", e)));
-                            },
-                        };
-                        let after = match query.after {
-                            Some(i) => {
-                                Some(PublicKey::from_str(&i).map_err(loga::err)?)
-                            },
-                            None => None,
-                        };
-
-                        // Respond
-                        return Ok(
-                            response_200_json(
-                                state
-                                    .publisher
-                                    .list_announcements(after.as_ref())
-                                    .await?
-                                    .into_iter()
-                                    .map(|e| e.0)
-                                    .collect::<Vec<_>>(),
-                            ),
-                        );
-                    }.await {
-                        Ok(d) => {
-                            return d;
-                        },
-                        Err(e) => {
-                            state.log.log_err(loga::WARN, e.context("Error getting published identities"));
-                            return response_503();
-                        },
-                    }
-                }),
-            )
-        }).unwrap();
-        Box::new(routes)
-    }).unwrap();
-    return Ok(routes);
 }

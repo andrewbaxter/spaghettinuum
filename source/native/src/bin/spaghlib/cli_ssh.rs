@@ -1,11 +1,11 @@
 use {
     aargvark::Aargvark,
     loga::{
-        ea,
         DebugDisplay,
         ErrContext,
         Log,
         ResultContext,
+        ea,
     },
     path_absolutize::Absolutize,
     russh::{
@@ -14,13 +14,13 @@ use {
     },
     russh_sftp::client::SftpSession,
     spaghettinuum_native::utils::ssh_util::{
+        SshConn,
+        SshConnectHandler,
         download,
         quote,
         run_command_capture,
         ssh_connect,
         upload,
-        SshConn,
-        SshConnectHandler,
     },
     std::{
         env,
@@ -30,114 +30,40 @@ use {
     tokio::{
         fs::create_dir_all,
         io::{
-            stdin,
-            stdout,
             AsyncReadExt,
             AsyncWriteExt,
+            stdin,
+            stdout,
         },
     },
 };
 
 #[derive(Aargvark)]
-pub struct SshShell {
-    /// User, defaults to root.
-    #[vark(flag = "-u", flag = "--user")]
-    pub user: Option<String>,
-    /// Host to connect to.
-    pub host: String,
-    /// Ssh port, defaults to 22.
-    #[vark(flag = "-p", flag = "--port")]
-    pub port: Option<u16>,
+pub struct Args {
+    command: Command,
     /// Use a specific key file instead of whatever's automatically detected.
-    #[vark(flag = "-i", flag = "--keyfile")]
-    pub key: Option<PathBuf>,
-    /// Run a command and exit.
-    pub command: Option<Vec<String>>,
-}
-
-#[derive(Aargvark)]
-pub enum Preposition {
-    /// Place the file or directory as a child of the destination path, using the
-    /// filename of the source path to name the destination file.
-    In,
-    /// Place the file or directory at the exact destination path. If a file, the
-    /// destination must not exist or be a file. If a directory, the destination must
-    /// not exist or be a directory, and the contents of the source will be created in
-    /// the destination.
-    At,
-}
-
-#[derive(Aargvark)]
-pub struct SshDownload {
-    // User, defaults to root.
-    #[vark(flag = "-u", flag = "--user")]
-    pub user: Option<String>,
-    pub host: String,
-    #[vark(flag = "-p", flag = "--port")]
-    // Ssh port, defaults to 22.
-    pub port: Option<u16>,
-    /// Use a specific key file instead of whatever's automatically detected.
-    #[vark(flag = "-i", flag = "--keyfile")]
-    pub key: Option<PathBuf>,
-    /// Absolute path to a file or directory to download.
-    pub remote: PathBuf,
-    pub preposition: Preposition,
-    /// Path of where to place the file on the local host.
-    pub local: PathBuf,
-    /// Create the parent directories on the destination if they don't already exist.
-    pub create_dirs: Option<()>,
-    /// By default, newer files in the destination are skipped. This flag disables that
-    /// behavior.
-    pub no_skip_newer: Option<()>,
-    /// By default, files in the destination with the same size as the corresponding
-    /// local files are skipped. This flag disables that behavior.
-    pub no_skip_same_size: Option<()>,
-    /// When transfering a directory, delete files in the destination that aren't in
-    /// the source so that the directory contents are equal afterwards.
-    pub sync: Option<()>,
-}
-
-#[derive(Aargvark)]
-pub struct SshUpload {
-    // User, defaults to root.
-    #[vark(flag = "-u", flag = "--user")]
-    pub user: Option<String>,
-    pub host: String,
-    #[vark(flag = "-p", flag = "--port")]
-    // Ssh port, defaults to 22.
-    pub port: Option<u16>,
-    /// Path to a file or directory to upload.
-    pub local: PathBuf,
-    pub preposition: Preposition,
-    /// Absolute path of where to place the file on the remote.
-    pub remote: PathBuf,
-    /// Create the parent directories on the destination if they don't already exist.
-    pub create_dirs: Option<()>,
-    /// By default, newer files in the destination are skipped. This flag disables that
-    /// behavior.
-    pub no_skip_newer: Option<()>,
-    /// By default, files in the destination with the same size as the corresponding
-    /// local files are skipped. This flag disables that behavior.
-    pub no_skip_same_size: Option<()>,
-    /// When transfering a directory, delete files in the destination that aren't in
-    /// the source so that the directory contents are equal afterwards.
-    pub sync: Option<()>,
+    #[vark(flag = "--keyfile", flag = "-i")]
+    key: Option<PathBuf>,
 }
 
 #[derive(Aargvark)]
 #[vark(break_help)]
 pub enum Command {
-    Shell(SshShell),
     Download(SshDownload),
+    Shell(SshShell),
     Upload(SshUpload),
 }
 
 #[derive(Aargvark)]
-pub struct Args {
-    /// Use a specific key file instead of whatever's automatically detected.
-    #[vark(flag = "--keyfile", flag = "-i")]
-    key: Option<PathBuf>,
-    command: Command,
+pub enum Preposition {
+    /// Place the file or directory at the exact destination path. If a file, the
+    /// destination must not exist or be a file. If a directory, the destination must
+    /// not exist or be a directory, and the contents of the source will be created in
+    /// the destination.
+    At,
+    /// Place the file or directory as a child of the destination path, using the
+    /// filename of the source path to name the destination file.
+    In,
 }
 
 pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
@@ -369,7 +295,7 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
                                         "Couldn't convert remote parent path to string, required by sftp subsystem",
                                         ea!(path = config.remote.to_string_lossy()),
                                     )?
-                                    .to_string()
+                                    .to_string(),
                             ],
                         ).await?;
                     }
@@ -400,4 +326,78 @@ pub async fn run(log: &Log, args: Args) -> Result<(), loga::Error> {
         },
     }
     return Ok(());
+}
+
+#[derive(Aargvark)]
+pub struct SshDownload {
+    /// Create the parent directories on the destination if they don't already exist.
+    pub create_dirs: Option<()>,
+    pub host: String,
+    /// Use a specific key file instead of whatever's automatically detected.
+    #[vark(flag = "-i", flag = "--keyfile")]
+    pub key: Option<PathBuf>,
+    /// Path of where to place the file on the local host.
+    pub local: PathBuf,
+    /// By default, newer files in the destination are skipped. This flag disables that
+    /// behavior.
+    pub no_skip_newer: Option<()>,
+    /// By default, files in the destination with the same size as the corresponding
+    /// local files are skipped. This flag disables that behavior.
+    pub no_skip_same_size: Option<()>,
+    #[vark(flag = "-p", flag = "--port")]
+    // Ssh port, defaults to 22.
+    pub port: Option<u16>,
+    pub preposition: Preposition,
+    /// Absolute path to a file or directory to download.
+    pub remote: PathBuf,
+    /// When transfering a directory, delete files in the destination that aren't in
+    /// the source so that the directory contents are equal afterwards.
+    pub sync: Option<()>,
+    // User, defaults to root.
+    #[vark(flag = "-u", flag = "--user")]
+    pub user: Option<String>,
+}
+
+#[derive(Aargvark)]
+pub struct SshShell {
+    /// Run a command and exit.
+    pub command: Option<Vec<String>>,
+    /// Host to connect to.
+    pub host: String,
+    /// Use a specific key file instead of whatever's automatically detected.
+    #[vark(flag = "-i", flag = "--keyfile")]
+    pub key: Option<PathBuf>,
+    /// Ssh port, defaults to 22.
+    #[vark(flag = "-p", flag = "--port")]
+    pub port: Option<u16>,
+    /// User, defaults to root.
+    #[vark(flag = "-u", flag = "--user")]
+    pub user: Option<String>,
+}
+
+#[derive(Aargvark)]
+pub struct SshUpload {
+    /// Create the parent directories on the destination if they don't already exist.
+    pub create_dirs: Option<()>,
+    pub host: String,
+    /// Path to a file or directory to upload.
+    pub local: PathBuf,
+    /// By default, newer files in the destination are skipped. This flag disables that
+    /// behavior.
+    pub no_skip_newer: Option<()>,
+    /// By default, files in the destination with the same size as the corresponding
+    /// local files are skipped. This flag disables that behavior.
+    pub no_skip_same_size: Option<()>,
+    #[vark(flag = "-p", flag = "--port")]
+    // Ssh port, defaults to 22.
+    pub port: Option<u16>,
+    pub preposition: Preposition,
+    /// Absolute path of where to place the file on the remote.
+    pub remote: PathBuf,
+    /// When transfering a directory, delete files in the destination that aren't in
+    /// the source so that the directory contents are equal afterwards.
+    pub sync: Option<()>,
+    // User, defaults to root.
+    #[vark(flag = "-u", flag = "--user")]
+    pub user: Option<String>,
 }

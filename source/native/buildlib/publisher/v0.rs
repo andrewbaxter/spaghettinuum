@@ -1,4 +1,5 @@
 use {
+    crate::buildlib::db_shared::field_ident,
     good_ormning::sqlite::{
         Version,
         schema::field::{
@@ -8,7 +9,6 @@ use {
         },
         types::type_str,
     },
-    crate::buildlib::db_shared::field_ident,
 };
 
 pub fn build() -> Version {
@@ -17,10 +17,7 @@ pub fn build() -> Version {
     // Publisher-resolver certs
     let certs = v.table("certs");
     let certs_unique = certs.field("unique", field_i32().build());
-    v
-        .custom_type("certs")
-        .rust_type("crate::interface::stored::publisher::Certs")
-        .base_type(type_str().build());
+    v.custom_type("certs").rust_type("crate::interface::stored::publisher::Certs").base_type(type_str().build());
     certs.field(
         "certs",
         v

@@ -7,53 +7,43 @@ use std::net::{
 
 pub trait UnstableIpv4 {
     #[must_use]
-    fn unstable_is_unspecified(&self) -> bool;
-    #[must_use]
-    fn unstable_is_loopback(&self) -> bool;
-    #[must_use]
-    fn unstable_is_private(&self) -> bool;
-    #[must_use]
-    fn unstable_is_link_local(&self) -> bool;
-    #[must_use]
-    fn unstable_is_global(&self) -> bool;
-    #[must_use]
-    fn unstable_is_shared(&self) -> bool;
-    #[must_use]
     fn unstable_is_benchmarking(&self) -> bool;
-    #[must_use]
-    fn unstable_is_reserved(&self) -> bool;
-    #[must_use]
-    fn unstable_is_multicast(&self) -> bool;
     #[must_use]
     fn unstable_is_broadcast(&self) -> bool;
     #[must_use]
     fn unstable_is_documentation(&self) -> bool;
+    #[must_use]
+    fn unstable_is_global(&self) -> bool;
+    #[must_use]
+    fn unstable_is_link_local(&self) -> bool;
+    #[must_use]
+    fn unstable_is_loopback(&self) -> bool;
+    #[must_use]
+    fn unstable_is_multicast(&self) -> bool;
+    #[must_use]
+    fn unstable_is_private(&self) -> bool;
+    #[must_use]
+    fn unstable_is_reserved(&self) -> bool;
+    #[must_use]
+    fn unstable_is_shared(&self) -> bool;
+    #[must_use]
+    fn unstable_is_unspecified(&self) -> bool;
 }
 
 impl UnstableIpv4 for Ipv4Addr {
     #[inline]
-    fn unstable_is_unspecified(&self) -> bool {
-        u32::from_be_bytes(self.octets()) == 0
+    fn unstable_is_benchmarking(&self) -> bool {
+        self.octets()[0] == 198 && (self.octets()[1] & 0xfe) == 18
     }
 
     #[inline]
-    fn unstable_is_loopback(&self) -> bool {
-        self.octets()[0] == 127
+    fn unstable_is_broadcast(&self) -> bool {
+        u32::from_be_bytes(self.octets()) == u32::from_be_bytes(Self::BROADCAST.octets())
     }
 
     #[inline]
-    fn unstable_is_private(&self) -> bool {
-        match self.octets() {
-            [10, ..] => true,
-            [172, b, ..] if b >= 16 && b <= 31 => true,
-            [192, 168, ..] => true,
-            _ => false,
-        }
-    }
-
-    #[inline]
-    fn unstable_is_link_local(&self) -> bool {
-        matches!(self.octets(), [169, 254, ..])
+    fn unstable_is_documentation(&self) -> bool {
+        matches!(self.octets(), [192, 0, 2, _] | [198, 51, 100, _] | [203, 0, 113, _])
     }
 
     #[inline]
@@ -70,18 +60,13 @@ impl UnstableIpv4 for Ipv4Addr {
     }
 
     #[inline]
-    fn unstable_is_shared(&self) -> bool {
-        self.octets()[0] == 100 && (self.octets()[1] & 0b1100_0000 == 0b0100_0000)
+    fn unstable_is_link_local(&self) -> bool {
+        matches!(self.octets(), [169, 254, ..])
     }
 
     #[inline]
-    fn unstable_is_benchmarking(&self) -> bool {
-        self.octets()[0] == 198 && (self.octets()[1] & 0xfe) == 18
-    }
-
-    #[inline]
-    fn unstable_is_reserved(&self) -> bool {
-        self.octets()[0] & 240 == 240 && !self.unstable_is_broadcast()
+    fn unstable_is_loopback(&self) -> bool {
+        self.octets()[0] == 127
     }
 
     #[inline]
@@ -90,48 +75,63 @@ impl UnstableIpv4 for Ipv4Addr {
     }
 
     #[inline]
-    fn unstable_is_broadcast(&self) -> bool {
-        u32::from_be_bytes(self.octets()) == u32::from_be_bytes(Self::BROADCAST.octets())
+    fn unstable_is_private(&self) -> bool {
+        match self.octets() {
+            [10, ..] => true,
+            [172, b, ..] if b >= 16 && b <= 31 => true,
+            [192, 168, ..] => true,
+            _ => false,
+        }
     }
 
     #[inline]
-    fn unstable_is_documentation(&self) -> bool {
-        matches!(self.octets(), [192, 0, 2, _] | [198, 51, 100, _] | [203, 0, 113, _])
+    fn unstable_is_reserved(&self) -> bool {
+        self.octets()[0] & 240 == 240 && !self.unstable_is_broadcast()
+    }
+
+    #[inline]
+    fn unstable_is_shared(&self) -> bool {
+        self.octets()[0] == 100 && (self.octets()[1] & 0b1100_0000 == 0b0100_0000)
+    }
+
+    #[inline]
+    fn unstable_is_unspecified(&self) -> bool {
+        u32::from_be_bytes(self.octets()) == 0
     }
 }
 
 pub trait UnstableIpv6 {
     #[must_use]
-    fn unstable_is_unspecified(&self) -> bool;
-    #[must_use]
-    fn unstable_is_loopback(&self) -> bool;
-    #[must_use]
-    fn unstable_is_global(&self) -> bool;
-    #[must_use]
-    fn unstable_is_unique_local(&self) -> bool;
-    #[must_use]
-    fn unstable_is_unicast(&self) -> bool;
-    #[must_use]
-    fn unstable_is_unicast_link_local(&self) -> bool;
+    fn unstable_is_benchmarking(&self) -> bool;
     #[must_use]
     fn unstable_is_documentation(&self) -> bool;
     #[must_use]
-    fn unstable_is_benchmarking(&self) -> bool;
+    fn unstable_is_global(&self) -> bool;
+    #[must_use]
+    fn unstable_is_loopback(&self) -> bool;
+    #[must_use]
+    fn unstable_is_multicast(&self) -> bool;
+    #[must_use]
+    fn unstable_is_unicast(&self) -> bool;
     #[must_use]
     fn unstable_is_unicast_global(&self) -> bool;
     #[must_use]
-    fn unstable_is_multicast(&self) -> bool;
+    fn unstable_is_unicast_link_local(&self) -> bool;
+    #[must_use]
+    fn unstable_is_unique_local(&self) -> bool;
+    #[must_use]
+    fn unstable_is_unspecified(&self) -> bool;
 }
 
 impl UnstableIpv6 for Ipv6Addr {
     #[inline]
-    fn unstable_is_unspecified(&self) -> bool {
-        u128::from_be_bytes(self.octets()) == u128::from_be_bytes(Ipv6Addr::UNSPECIFIED.octets())
+    fn unstable_is_benchmarking(&self) -> bool {
+        (self.segments()[0] == 0x2001) && (self.segments()[1] == 0x2) && (self.segments()[2] == 0)
     }
 
     #[inline]
-    fn unstable_is_loopback(&self) -> bool {
-        u128::from_be_bytes(self.octets()) == u128::from_be_bytes(Ipv6Addr::LOCALHOST.octets())
+    fn unstable_is_documentation(&self) -> bool {
+        (self.segments()[0] == 0x2001) && (self.segments()[1] == 0xdb8)
     }
 
     #[inline]
@@ -161,28 +161,18 @@ impl UnstableIpv6 for Ipv6Addr {
     }
 
     #[inline]
-    fn unstable_is_unique_local(&self) -> bool {
-        (self.segments()[0] & 0xfe00) == 0xfc00
+    fn unstable_is_loopback(&self) -> bool {
+        u128::from_be_bytes(self.octets()) == u128::from_be_bytes(Ipv6Addr::LOCALHOST.octets())
+    }
+
+    #[inline]
+    fn unstable_is_multicast(&self) -> bool {
+        (self.segments()[0] & 0xff00) == 0xff00
     }
 
     #[inline]
     fn unstable_is_unicast(&self) -> bool {
         !self.unstable_is_multicast()
-    }
-
-    #[inline]
-    fn unstable_is_unicast_link_local(&self) -> bool {
-        (self.segments()[0] & 0xffc0) == 0xfe80
-    }
-
-    #[inline]
-    fn unstable_is_documentation(&self) -> bool {
-        (self.segments()[0] == 0x2001) && (self.segments()[1] == 0xdb8)
-    }
-
-    #[inline]
-    fn unstable_is_benchmarking(&self) -> bool {
-        (self.segments()[0] == 0x2001) && (self.segments()[1] == 0x2) && (self.segments()[2] == 0)
     }
 
     #[inline]
@@ -196,7 +186,17 @@ impl UnstableIpv6 for Ipv6Addr {
     }
 
     #[inline]
-    fn unstable_is_multicast(&self) -> bool {
-        (self.segments()[0] & 0xff00) == 0xff00
+    fn unstable_is_unicast_link_local(&self) -> bool {
+        (self.segments()[0] & 0xffc0) == 0xfe80
+    }
+
+    #[inline]
+    fn unstable_is_unique_local(&self) -> bool {
+        (self.segments()[0] & 0xfe00) == 0xfc00
+    }
+
+    #[inline]
+    fn unstable_is_unspecified(&self) -> bool {
+        u128::from_be_bytes(self.octets()) == u128::from_be_bytes(Ipv6Addr::UNSPECIFIED.octets())
     }
 }

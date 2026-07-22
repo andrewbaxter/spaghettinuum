@@ -1,3 +1,6 @@
+pub mod v1;
+
+pub use v1 as latest;
 use {
     good_ormning::runtime::sqlite::GoodOrmningCustomString,
     serde::{
@@ -6,10 +9,6 @@ use {
     },
     spaghettinuum::versioned,
 };
-
-pub mod v1;
-
-pub use v1 as latest;
 
 versioned!(
     Protocol,
@@ -24,11 +23,11 @@ pub enum NodeState {
 }
 
 impl GoodOrmningCustomString<NodeState> for NodeState {
-    fn to_sql<'a>(value: &'a NodeState) -> String {
-        return serde_json::to_string(value).unwrap().into();
-    }
-
     fn from_sql(value: String) -> Result<NodeState, String> {
         return Ok(serde_json::from_str(&value).map_err(|e| e.to_string())?);
+    }
+
+    fn to_sql<'a>(value: &'a NodeState) -> String {
+        return serde_json::to_string(value).unwrap().into();
     }
 }

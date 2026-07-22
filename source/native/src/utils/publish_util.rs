@@ -1,14 +1,7 @@
 use {
-    super::{
-        fs_util,
-        identity_secret::IdentitySigner,
-        signed::IdentSignatureMethods,
-        time_util::UtcSecs,
-    },
     crate::{
         interface::{
             stored::{
-                self,
                 announcement::latest::AnnouncementPublisher,
                 record::{
                     RecordValue,
@@ -19,11 +12,12 @@ use {
                     record_utils::RecordKey,
                     v1::Minutes,
                 },
+                self,
                 shared::SerialAddr,
             },
             wire::{
-                self,
                 api::publish::v1::InfoResponse,
+                self,
             },
         },
         resolving::{
@@ -33,8 +27,8 @@ use {
         service::publisher::API_ROUTE_PUBLISH,
     },
     htwrap::htreq::{
-        self,
         Limits,
+        self,
     },
     loga::{
         DebugDisplay,
@@ -43,7 +37,7 @@ use {
         ea,
     },
     spaghettinuum::{
-        interface::public_key::PublicKey,
+        interface::id::Identity,
         jsonsig::JsonSignature,
     },
     std::{
@@ -58,163 +52,13 @@ use {
         },
         time::SystemTime,
     },
+    super::{
+        fs_util,
+        identity_secret::IdentitySigner,
+        signed::IdentSignatureMethods,
+        time_util::UtcSecs,
+    },
 };
-
-pub fn generate_publish_announce(
-    signer: &Arc<Mutex<dyn IdentitySigner>>,
-    publishers_info: Vec<InfoResponse>,
-) -> Result<(PublicKey, stored::announcement::Announcement), String> {
-    let announce_message = bincode::serialize(&stored::announcement::latest::AnnouncementContent {
-        publishers: publishers_info.into_iter().map(|info| AnnouncementPublisher {
-            addr: SerialAddr(info.advertise_addr),
-            cert_hash: info.cert_pub_hash,
-        }).collect(),
-        announced: UtcSecs::from(SystemTime::now()),
-    }).unwrap();
-    let (identity, request_message_sig) =
-        signer.lock().unwrap().sign(&announce_message).map_err(|e| e.to_string())?;
-    return Ok(
-        (
-            identity,
-            stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
-                public_key: identity,
-                signed: stored::announcement::latest::BincodeSignature {
-                    message: announce_message,
-                    signature: request_message_sig,
-                    _p: Default::default(),
-                },
-            }),
-        ),
-    );
-}
-
-pub async fn announce(
-    log: &Log,
-    resolvers: &[UrlPair],
-    publishers: &[UrlPair],
-    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-) -> Result<(), loga::Error> {
-    let limits = Limits {
-        read_body_size: 100,
-        ..Default::default()
-    };
-    let mut publishers_info = vec![];
-    for s in publishers {
-        let url = s.join("publish/v1/info");
-        let info_body =
-            htreq::get(
-                &log,
-                Limits {
-                    read_body_size: 100 * 1024,
-                    ..Default::default()
-                },
-                &mut connect_publisher_node(limits, &log, resolvers, &url)
-                    .await
-                    .context("Error connecting to publisher")?,
-                &url.url,
-                &HashMap::new(),
-            )
-                .await
-                .context("Error getting publisher info")?;
-        let info =
-            serde_json::from_slice::<wire::api::publish::latest::InfoResponse>(
-                &info_body,
-            ).stack_context_with(
-                log,
-                "Error parsing info response from publisher as json",
-                ea!(body = String::from_utf8_lossy(&info_body)),
-            )?;
-        log.log_with(
-            loga::DEBUG,
-            "Got publisher information",
-            ea!(info = serde_json::to_string_pretty(&info).unwrap()),
-        );
-        publishers_info.push(info);
-    }
-    let (identity, announcement) =
-        generate_publish_announce(
-            identity_signer,
-            publishers_info,
-        ).map_err(|e| log.err_with("Error generating publisher announcement", ea!(err = e)))?;
-    let request = wire::api::publish::v1::AnnounceRequest {
-        identity: identity,
-        announcement: announcement,
-    };
-    for s in publishers {
-        let url = s.join("publish/v1/announce");
-        htreq::post(
-            log,
-            limits,
-            &mut connect_publisher_node(limits, log, resolvers, &url)
-                .await
-                .context("Error connecting to publisher")?,
-            &url.url,
-            &HashMap::new(),
-            serde_json::to_vec(&request).unwrap(),
-        )
-            .await
-            .context("Error making announce request")?;
-    }
-    return Ok(());
-}
-
-#[derive(Default, Clone)]
-pub struct PublishArgs {
-    /// Update TTL for negative responses (in minutes). Defaults to 0 (don't cache
-    /// missing responses).
-    pub missing_ttl: Option<u32>,
-    /// Stop publishing all keys
-    pub clear_all: bool,
-    /// Stop publishing keys
-    pub clear: HashSet<RecordKey>,
-    /// Start publishing values for keys
-    pub set: HashMap<RecordKey, RecordValue>,
-}
-
-pub async fn remote_publish(
-    log: &Log,
-    resolvers: &[UrlPair],
-    publishers: &[UrlPair],
-    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
-    args: PublishArgs,
-) -> Result<(), loga::Error> {
-    let (identity, signed_request_content) =
-        JsonSignature::sign(&mut *identity_signer.lock().unwrap(), wire::api::publish::latest::PublishRequestContent {
-            missing_ttl: args.missing_ttl,
-            clear_all: args.clear_all,
-            clear: args.clear,
-            set: args.set.into_iter().collect(),
-        }).stack_context(&log, "Failed to sign publish request content")?;
-    let request = wire::api::publish::latest::PublishRequest {
-        identity: identity,
-        content: signed_request_content,
-    };
-    let limits = Limits {
-        read_body_size: 100,
-        ..Default::default()
-    };
-    for s in publishers {
-        let url = s.join(format!("{}/v1/publish", API_ROUTE_PUBLISH));
-        log.log_with(
-            loga::DEBUG,
-            "Sending publish request",
-            ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
-        );
-        htreq::post(
-            log,
-            limits,
-            &mut connect_publisher_node(limits, &log, resolvers, &url)
-                .await
-                .context("Error connecting to publisher")?,
-            &url.url,
-            &HashMap::new(),
-            serde_json::to_vec(&request).unwrap(),
-        )
-            .await
-            .context("Error making publish request")?;
-    }
-    return Ok(());
-}
 
 /// Add an ip address record to a set to publish
 pub fn add_ip_record(
@@ -289,5 +133,164 @@ pub async fn add_ssh_host_key_records(
             ).unwrap(),
         ),
     }));
+    return Ok(());
+}
+
+pub async fn announce(
+    log: &Log,
+    resolvers: &[UrlPair],
+    publishers: &[UrlPair],
+    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
+) -> Result<(), loga::Error> {
+    let limits = Limits {
+        read_body_size: 100,
+        ..Default::default()
+    };
+    let mut publishers_info = vec![];
+    for s in publishers {
+        let url = s.join("publish/v1/info");
+        let info_body =
+            htreq::get(
+                &log,
+                Limits {
+                    read_body_size: 100 * 1024,
+                    ..Default::default()
+                },
+                &mut connect_publisher_node(limits, &log, resolvers, &url)
+                    .await
+                    .context("Error connecting to publisher")?,
+                &url.url,
+                &HashMap::new(),
+            )
+                .await
+                .context("Error getting publisher info")?;
+        let info =
+            serde_json::from_slice::<wire::api::publish::latest::InfoResponse>(
+                &info_body,
+            ).stack_context_with(
+                log,
+                "Error parsing info response from publisher as json",
+                ea!(body = String::from_utf8_lossy(&info_body)),
+            )?;
+        log.log_with(
+            loga::DEBUG,
+            "Got publisher information",
+            ea!(info = serde_json::to_string_pretty(&info).unwrap()),
+        );
+        publishers_info.push(info);
+    }
+    let (identity, announcement) =
+        generate_publish_announce(
+            identity_signer,
+            publishers_info,
+        ).map_err(|e| log.err_with("Error generating publisher announcement", ea!(err = e)))?;
+    let request = wire::api::publish::v1::AnnounceRequest {
+        identity: identity,
+        announcement: announcement,
+    };
+    for s in publishers {
+        let url = s.join("publish/v1/announce");
+        htreq::post(
+            log,
+            limits,
+            &mut connect_publisher_node(limits, log, resolvers, &url)
+                .await
+                .context("Error connecting to publisher")?,
+            &url.url,
+            &HashMap::new(),
+            serde_json::to_vec(&request).unwrap(),
+        )
+            .await
+            .context("Error making announce request")?;
+    }
+    return Ok(());
+}
+
+pub fn generate_publish_announce(
+    signer: &Arc<Mutex<dyn IdentitySigner>>,
+    publishers_info: Vec<InfoResponse>,
+) -> Result<(Identity, stored::announcement::Announcement), String> {
+    let announce_message = bincode::serialize(&stored::announcement::latest::AnnouncementContent {
+        publishers: publishers_info.into_iter().map(|info| AnnouncementPublisher {
+            addr: SerialAddr(info.advertise_addr),
+            cert_hash: info.cert_pub_hash,
+        }).collect(),
+        announced: UtcSecs::from(SystemTime::now()),
+    }).unwrap();
+    let (root_public_key, chain, request_message_sig) =
+        signer.lock().unwrap().sign(&announce_message).map_err(|e| e.to_string())?;
+    return Ok(
+        (
+            root_public_key.identity(),
+            stored::announcement::Announcement::V1(stored::announcement::latest::Announcement {
+                root_public_key: root_public_key,
+                chain: chain,
+                signed: stored::announcement::latest::BincodeSignature {
+                    message: announce_message,
+                    signature: request_message_sig,
+                    _p: Default::default(),
+                },
+            }),
+        ),
+    );
+}
+
+#[derive(Default, Clone)]
+pub struct PublishArgs {
+    /// Stop publishing keys
+    pub clear: HashSet<RecordKey>,
+    /// Stop publishing all keys
+    pub clear_all: bool,
+    /// Update TTL for negative responses (in minutes). Defaults to 0 (don't cache
+    /// missing responses).
+    pub missing_ttl: Option<u32>,
+    /// Start publishing values for keys
+    pub set: HashMap<RecordKey, RecordValue>,
+}
+
+pub async fn remote_publish(
+    log: &Log,
+    resolvers: &[UrlPair],
+    publishers: &[UrlPair],
+    identity_signer: &Arc<Mutex<dyn IdentitySigner>>,
+    args: PublishArgs,
+) -> Result<(), loga::Error> {
+    let (root_public_key, chain, signed_request_content) =
+        JsonSignature::sign(&mut *identity_signer.lock().unwrap(), wire::api::publish::latest::PublishRequestContent {
+            missing_ttl: args.missing_ttl,
+            clear_all: args.clear_all,
+            clear: args.clear,
+            set: args.set.into_iter().collect(),
+        }).stack_context(&log, "Failed to sign publish request content")?;
+    let request = wire::api::publish::latest::PublishRequest {
+        identity: root_public_key.identity(),
+        root_public_key: root_public_key,
+        chain: chain,
+        content: signed_request_content,
+    };
+    let limits = Limits {
+        read_body_size: 100,
+        ..Default::default()
+    };
+    for s in publishers {
+        let url = s.join(format!("{}/v1/publish", API_ROUTE_PUBLISH));
+        log.log_with(
+            loga::DEBUG,
+            "Sending publish request",
+            ea!(url = url, body = serde_json::to_string_pretty(&request).unwrap()),
+        );
+        htreq::post(
+            log,
+            limits,
+            &mut connect_publisher_node(limits, &log, resolvers, &url)
+                .await
+                .context("Error connecting to publisher")?,
+            &url.url,
+            &HashMap::new(),
+            serde_json::to_vec(&request).unwrap(),
+        )
+            .await
+            .context("Error making publish request")?;
+    }
     return Ok(());
 }

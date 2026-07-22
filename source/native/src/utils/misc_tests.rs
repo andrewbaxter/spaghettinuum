@@ -9,12 +9,12 @@ mod tests {
         sequoia_openpgp::{
             crypto::Signer,
             packet::{
+                Key,
                 key::{
                     SecretParts,
                     UnspecifiedRole,
                 },
                 prelude::Key4,
-                Key,
             },
         },
         spaghettinuum::interface::public_key,
@@ -39,8 +39,8 @@ mod tests {
         let ident = pgp_pubkey_to_ident(gpg_k.public()).unwrap();
         eprintln!("gpg pub {:?}", gpg_k.public());
         match &ident {
-            public_key::PublicKey::V1(v1) => match v1 {
-                public_key::v1::PublicKey::Ed25519(i) => eprintln!(
+            public_key::IdentityPublicKey::V1(v1) => match v1 {
+                public_key::v1::IdentityPublicKey::Ed25519(i) => eprintln!(
                     "dalek pub {:02x}",
                     i.0.as_bytes().iter().format(" ")
                 ),

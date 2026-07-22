@@ -4,13 +4,52 @@ use {
         utils::time_util::UtcSecs,
     },
     serde::{
-        de::DeserializeOwned,
         Deserialize,
         Serialize,
+        de::DeserializeOwned,
     },
-    spaghettinuum::interface::public_key::PublicKey,
+    spaghettinuum::interface::{
+        public_key::IdentityPublicKey,
+        signature_chain::{
+            ChainLink,
+            verify_chain,
+        },
+    },
     std::marker::PhantomData,
 };
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct Announcement {
+    #[serde(default)]
+    pub chain: Vec<ChainLink>,
+    pub root_public_key: IdentityPublicKey,
+    pub signed: BincodeSignature<AnnouncementContent, IdentityPublicKey>,
+}
+
+impl Announcement {
+    pub fn identity(&self) -> spaghettinuum::interface::id::Identity {
+        return self.root_public_key.identity();
+    }
+
+    pub fn parse_unwrap(&self) -> AnnouncementContent {
+        return bincode::deserialize(&self.signed.message).unwrap();
+    }
+
+    pub fn verify(&self) -> Result<AnnouncementContent, ()> {
+        let content = bincode::deserialize::<AnnouncementContent>(&self.signed.message).map_err(|_| ())?;
+        let leaf = verify_chain(&self.root_public_key, &self.chain, content.announced.0)?;
+        leaf.verify(&self.signed.message, &self.signed.signature).map_err(|_| ())?;
+        return Ok(content);
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct AnnouncementContent {
+    pub announced: UtcSecs,
+    pub publishers: Vec<AnnouncementPublisher>,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -19,20 +58,13 @@ pub struct AnnouncementPublisher {
     pub cert_hash: Vec<u8>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct AnnouncementContent {
-    pub publishers: Vec<AnnouncementPublisher>,
-    pub announced: UtcSecs,
-}
-
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct BincodeSignature<T: Serialize + DeserializeOwned, I> {
-    pub message: Vec<u8>,
-    pub signature: Vec<u8>,
     #[serde(skip)]
     pub _p: PhantomData<(T, I)>,
+    pub message: Vec<u8>,
+    pub signature: Vec<u8>,
 }
 
 impl<T: Serialize + DeserializeOwned + std::fmt::Debug, I> std::fmt::Debug for BincodeSignature<T, I> {
@@ -44,27 +76,5 @@ impl<T: Serialize + DeserializeOwned + std::fmt::Debug, I> std::fmt::Debug for B
             self.message.fmt(f)?;
         }
         return Ok(());
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct Announcement {
-    pub public_key: PublicKey,
-    pub signed: BincodeSignature<AnnouncementContent, PublicKey>,
-}
-
-impl Announcement {
-    pub fn verify(&self) -> Result<AnnouncementContent, ()> {
-        self.public_key.verify(&self.signed.message, &self.signed.signature).map_err(|_| ())?;
-        return Ok(bincode::deserialize(&self.signed.message).map_err(|_| ())?);
-    }
-
-    pub fn parse_unwrap(&self) -> AnnouncementContent {
-        return bincode::deserialize(&self.signed.message).unwrap();
-    }
-
-    pub fn id(&self) -> spaghettinuum::interface::id::Id {
-        return self.public_key.id();
     }
 }

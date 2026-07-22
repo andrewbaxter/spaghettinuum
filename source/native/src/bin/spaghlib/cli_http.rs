@@ -9,8 +9,8 @@ use {
     },
     http_body_util::Full,
     htwrap::htreq::{
-        self,
         Limits,
+        self,
     },
     hyper::body::Bytes,
     loga::{
@@ -47,30 +47,30 @@ use {
 };
 
 #[derive(Aargvark)]
-pub enum HttpMethod {
-    Head,
-    Options,
-    Get,
-    Put,
-    Post,
-    Patch,
-    Delete,
-}
-
-#[derive(Aargvark)]
 pub struct Args {
-    pub method: HttpMethod,
-    pub url: Uri,
-    pub headers: Option<HashMap<String, String>>,
-    pub params: Option<HashMap<String, String>>,
     pub body: Option<String>,
     /// Like `body` but read from a file.
     pub body_file: Option<AargvarkFile>,
-    /// Output to file instead of stdout.
-    pub output: Option<PathBuf>,
+    pub headers: Option<HashMap<String, String>>,
     /// Write output metadata as json. If output is not a file, output will be a field
     /// in the JSON.
     pub json: Option<()>,
+    pub method: HttpMethod,
+    /// Output to file instead of stdout.
+    pub output: Option<PathBuf>,
+    pub params: Option<HashMap<String, String>>,
+    pub url: Uri,
+}
+
+#[derive(Aargvark)]
+pub enum HttpMethod {
+    Delete,
+    Get,
+    Head,
+    Options,
+    Patch,
+    Post,
+    Put,
 }
 
 pub async fn run(log: &Log, config: Args) -> Result<(), loga::Error> {

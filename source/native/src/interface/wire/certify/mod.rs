@@ -1,10 +1,9 @@
+pub mod v1;
+
 use serde::{
     Serialize,
     Deserialize,
 };
-
-pub mod v1;
-
 pub use v1 as latest;
 
 #[derive(Serialize, Deserialize, Clone)]
