@@ -1,0 +1,46 @@
+[package]
+name = "infra"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+enum-as-inner = "=0.5.1"
+terrars = "0.1"
+terrars-andrewbaxter-dinker = { version = "0.1", features = ["image"] }
+terrars-andrewbaxter-localrun = { version = "0.1", features = ["data_run"] }
+certifier = { path = "../software/certifier" }
+serde_json = { version = "1" }
+terrars-dnsimple-dnsimple = { version = "0.1", features = ["zone_record"] }
+terrars-hectorj-googlesiteverification = { version = "0.1", features = [
+    "dns",
+    "data_dns_token",
+] }
+terrars-hashicorp-google = { version = "0.1", features = [
+    "project_service",
+    "cloud_run_service",
+    "cloud_run_domain_mapping",
+    "cloud_run_service_iam_binding",
+    "artifact_registry_repository",
+    "artifact_registry_repository_iam_binding",
+    "service_account",
+    "service_account_key",
+    "kms_key_ring",
+    "kms_key_ring_iam_binding",
+    "kms_crypto_key",
+    "kms_crypto_key_iam_binding",
+    "storage_bucket",
+    "storage_bucket_iam_binding",
+] }
+terrars-integrations-github = { version = "0.1", features = [
+    "actions_variable",
+    "data_actions_public_key",
+    "actions_secret",
+] }
+
+[patch.crates-io]
+terrars-hashicorp-google = { git = "https://github.com/andrewbaxter/terrars-hashicorp-google", rev = "f897fa593c1a777b66fcdd93728c00cba65e9823" }
+
+[lints.clippy]
+all = "allow"

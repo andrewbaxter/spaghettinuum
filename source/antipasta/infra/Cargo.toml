@@ -1,0 +1,30 @@
+[package]
+name = "infra"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+enum-as-inner = "=0.5.1"
+terrars = "0.1"
+terrars-andrewbaxter-dinker = { version = "0.1", features = ["image"] }
+terrars-andrewbaxter-localrun = { version = "0.1", features = ["data_run"] }
+serde_json = "1"
+terrars-dnsimple-dnsimple = { version = "0.1", features = ["zone_record"] }
+terrars-hashicorp-google = { version = "0.1", git = "https://github.com/andrewbaxter/terrars-hashicorp-google.git", features = [
+    "project_service",
+    "storage_bucket",
+    "storage_bucket_object",
+    "storage_bucket_iam_binding",
+    "compute_network",
+    "compute_subnetwork",
+    "compute_firewall",
+    "compute_image",
+    "compute_disk",
+    "compute_address",
+    "compute_instance",
+] }
+
+[lints.clippy]
+all = "allow"

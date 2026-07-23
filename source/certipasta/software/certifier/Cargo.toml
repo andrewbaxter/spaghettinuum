@@ -1,0 +1,52 @@
+[package]
+name = "certifier"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+google-cloudkms1 = "5"
+google-storage1 = "5"
+google-hyper-rustls = { package = "hyper-rustls", version = "0.25.0", features = [
+    "webpki-tokio",
+] }
+yup-oauth2 = "9"
+governor = "0.6"
+spaghettinuum = { path = "../../../shared", default-features = false }
+spaghettinuum_native = { path = "../../../native", default-features = false }
+chrono = { version = "*", features = ["serde"] }
+der = "0.7"
+hyper-rustls = { version = "0.26", features = [] }
+hyper-util = { version = "0.1", features = [
+    "service",
+    "server-auto",
+    "http1",
+    "client-legacy",
+    "tokio",
+] }
+loga = "0.5"
+mime = "0.3"
+pem = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+sha2 = "0.10"
+signature = "2"
+taskmanager = "0.6"
+tokio = { version = "1", features = ["macros", "rt", "fs"] }
+tokio-stream = { version = "0.1", features = ["sync", "net"] }
+x509-cert = { version = "0.2", features = ["builder"] }
+aargvark = { version = "0.8", features = ["serde_json"] }
+rand = "0.8"
+sec1 = "0.7"
+const-oid = "0.9"
+urlencoding = "2"
+http = "1"
+http-body-util = "0.1"
+http-body = "1"
+htwrap = "0.15"
+async-trait = "0.1"
+flowcontrol = "0.2"
+
+[lints.clippy]
+all = "allow"
