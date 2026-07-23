@@ -1,7 +1,16 @@
 use {
     crate::{
         byteszb32::BytesZb32,
-        interface::identity::IdentityPublicKey,
+        interface::{
+            identity::{
+                Identity,
+                IdentityPublicKey,
+            },
+            signature_chain::{
+                ChainLink,
+                verify_signed,
+            },
+        },
     },
     schemars::JsonSchema,
     serde::{
@@ -22,8 +31,8 @@ pub struct JsonSignature<T: Serialize + DeserializeOwned, I> {
 }
 
 impl<T: Serialize + DeserializeOwned> JsonSignature<T, IdentityPublicKey> {
-    pub fn verify(&self, public_key: &IdentityPublicKey) -> Result<T, String> {
-        public_key.verify(&self.message.as_bytes(), &self.signature.0).map_err(|e| e.to_string())?;
+    pub fn verify(&self, identity: &Identity, root: &IdentityPublicKey, chain: &[ChainLink]) -> Result<T, String> {
+        verify_signed(identity, root, chain, self.message.as_bytes(), &self.signature.0)?;
         return Ok(
             serde_json::from_str(
                 &self.message,

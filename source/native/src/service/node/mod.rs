@@ -591,10 +591,7 @@ impl Node {
                     let new_announced;
                     match &m.value {
                         stored::announcement::Announcement::V1(value) => {
-                            if value.public_key_root.identity() != m.key {
-                                return Err(log.err("Store request key doesn't match announcement public key id"));
-                            }
-                            let Ok(new_content) = value.verify() else {
+                            let Ok(new_content) = value.verify(&m.key) else {
                                 return Err(log.err("Store request failed signature validation"));
                             };
                             new_announced = new_content.announced;
@@ -820,11 +817,7 @@ impl Node {
                         let found_published;
                         match &value {
                             stored::announcement::Announcement::V1(found) => {
-                                if found.public_key_root.identity() != goal_identity {
-                                    log.log(loga::DEBUG, "Got value whose public key doesn't match goal id");
-                                    break;
-                                }
-                                let Ok(content) = found.verify() else {
+                                let Ok(content) = found.verify(&goal_identity) else {
                                     log.log(loga::DEBUG, "Got value with bad signature");
                                     break;
                                 };

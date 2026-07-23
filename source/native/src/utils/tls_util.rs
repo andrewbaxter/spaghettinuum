@@ -29,7 +29,7 @@ use {
     signature::SignerMut,
     spaghettinuum::interface::{
         identity::Identity,
-        signature_chain::verify_chain_now,
+        signature_chain::verify_signed,
     },
     std::{
         collections::HashSet,
@@ -348,8 +348,6 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
                 },
             };
 
-            // Get identity fingerprint from SAN and confirm it matches the extension's root
-            // public key
             let rustls::pki_types::ServerName::DnsName(server_name) = server_name else {
                 break;
             };
@@ -371,13 +369,13 @@ impl rustls::client::danger::ServerCertVerifier for SpaghTlsClientVerifier {
             let Ok(san_identity) = Identity::from_str(raw_id) else {
                 break;
             };
-            if root.identity() != san_identity {
-                break;
-            }
-            let Ok(leaf) = verify_chain_now(&root, &chain) else {
-                break;
-            };
-            if leaf.verify(&cert.tbs_certificate.subject_public_key_info.to_der().unwrap(), &signature).is_ok() {
+            if verify_signed(
+                &san_identity,
+                &root,
+                &chain,
+                &cert.tbs_certificate.subject_public_key_info.to_der().unwrap(),
+                &signature,
+            ).is_ok() {
                 return Ok(rustls::client::danger::ServerCertVerified::assertion());
             }
         }

@@ -74,10 +74,7 @@ use {
         PrivatePkcs8KeyDer,
     },
     serde::Deserialize,
-    spaghettinuum::interface::{
-        identity::Identity,
-        signature_chain::verify_chain_now,
-    },
+    spaghettinuum::interface::identity::Identity,
     std::{
         collections::HashMap,
         net::SocketAddr,
@@ -143,14 +140,14 @@ pub async fn build_api_endpoints_with_authorizer(
                                 return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
                             },
                         };
-                    let identity = match &req.announcement {
+                    let identity = req.announcement.identity();
+                    match &req.announcement {
                         Announcement::V1(a) => {
-                            let Ok(_) = a.verify() else {
+                            let Ok(_) = a.verify(&identity) else {
                                 return Ok(response_400("Couldn't verify payload"));
                             };
-                            a.public_key_root.identity()
                         },
-                    };
+                    }
 
                     // Auth
                     if !state.authorizer.is_identity_allowed(&identity).await? {
@@ -187,13 +184,10 @@ pub async fn build_api_endpoints_with_authorizer(
                                 return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
                             },
                         };
-                    let Ok(leaf) = verify_chain_now(&req.public_key_root, &req.public_key_chain) else {
-                        return Ok(response_400("Couldn't verify chain"));
-                    };
-                    let Ok(_) = req.challenge.verify(&leaf) else {
+                    let identity = req.public_key_root.identity();
+                    let Ok(_) = req.challenge.verify(&identity, &req.public_key_root, &req.public_key_chain) else {
                         return Ok(response_400("Couldn't verify payload"));
                     };
-                    let identity = req.public_key_root.identity();
 
                     // Auth
                     if !state.authorizer.is_identity_allowed(&identity).await? {
@@ -230,13 +224,10 @@ pub async fn build_api_endpoints_with_authorizer(
                                 return Ok(response_400(format!("Invalid json: {}", e))) as Result<_, loga::Error>;
                             },
                         };
-                    let Ok(leaf) = verify_chain_now(&req.public_key_root, &req.public_key_chain) else {
-                        return Ok(response_400("Couldn't verify chain"));
-                    };
-                    let Ok(body) = req.content.verify(&leaf) else {
+                    let identity = req.public_key_root.identity();
+                    let Ok(body) = req.content.verify(&identity, &req.public_key_root, &req.public_key_chain) else {
                         return Ok(response_400("Couldn't verify payload"));
                     };
-                    let identity = req.public_key_root.identity();
 
                     // Auth
                     if !state.authorizer.is_identity_allowed(&identity).await? {

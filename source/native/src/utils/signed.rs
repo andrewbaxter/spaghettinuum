@@ -31,7 +31,6 @@ where
     Self: Sized {
     fn parse_unwrap(&self) -> B;
     fn sign(signer: &mut dyn IdentitySigner, body: B) -> Result<(I, Vec<ChainLink>, Self), loga::Error>;
-    fn verify(&self, leaf: &IdentityPublicKey) -> Result<B, ()>;
 }
 
 impl<
@@ -53,11 +52,6 @@ impl<
             _p: Default::default(),
         }));
     }
-
-    fn verify(&self, leaf: &IdentityPublicKey) -> Result<B, ()> {
-        leaf.verify(self.message.as_bytes(), &self.signature.0).map_err(|_| ())?;
-        return Ok(serde_json::from_str(&self.message).map_err(|_| ())?);
-    }
 }
 
 impl<
@@ -78,37 +72,6 @@ impl<
             signature: signature,
             _p: Default::default(),
         }));
-    }
-
-    fn verify(&self, leaf: &IdentityPublicKey) -> Result<B, ()> {
-        leaf.verify(&self.message, &self.signature).map_err(|_| ())?;
-        return Ok(bincode::deserialize(&self.message).map_err(|_| ())?);
-    }
-}
-
-impl<
-    B: Serialize + DeserializeOwned,
-> IdentSignatureMethods<B, IdentityPublicKey> for wire::node::v1::BincodeSignature<B, IdentityPublicKey> {
-    fn parse_unwrap(&self) -> B {
-        return bincode::deserialize(&self.message).map_err(|_| ()).unwrap();
-    }
-
-    fn sign(
-        signer: &mut dyn IdentitySigner,
-        body: B,
-    ) -> Result<(IdentityPublicKey, Vec<ChainLink>, Self), loga::Error> {
-        let message = bincode::serialize(&body).unwrap();
-        let (root_public_key, chain, signature) = signer.sign(&message)?;
-        return Ok((root_public_key, chain, Self {
-            message: message,
-            signature: signature,
-            _p: Default::default(),
-        }));
-    }
-
-    fn verify(&self, leaf: &IdentityPublicKey) -> Result<B, ()> {
-        leaf.verify(&self.message, &self.signature).map_err(|_| ())?;
-        return Ok(bincode::deserialize(&self.message).map_err(|_| ())?);
     }
 }
 

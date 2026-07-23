@@ -14,8 +14,6 @@ use {
 pub struct X509ExtSpagh {
     #[serde(default)]
     pub chain: Vec<ChainLink>,
-    /// Root public key whose fingerprint appears in the SAN, and start of the
-    /// signature chain.
     pub root: IdentityPublicKey,
     /// Signature of the X509 SPKI
     pub signature: Vec<u8>,

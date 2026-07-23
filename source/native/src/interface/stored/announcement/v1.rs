@@ -36,7 +36,10 @@ impl Announcement {
         return bincode::deserialize(&self.signed.message).unwrap();
     }
 
-    pub fn verify(&self) -> Result<AnnouncementContent, ()> {
+    pub fn verify(&self, identity: &spaghettinuum::interface::identity::Identity) -> Result<AnnouncementContent, ()> {
+        if self.public_key_root.identity() != *identity {
+            return Err(());
+        }
         let content = bincode::deserialize::<AnnouncementContent>(&self.signed.message).map_err(|_| ())?;
         let leaf = verify_chain(&self.public_key_root, &self.public_key_chain, content.announced.0)?;
         leaf.verify(&self.signed.message, &self.signed.signature).map_err(|_| ())?;
